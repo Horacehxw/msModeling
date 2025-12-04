@@ -1,1 +1,0 @@
-资料地址已移动，[点击跳转](https://gitcode.com/Ascend/msit/blob/master/msit/docs/profile/README.md)

@@ -1,3 +1,0 @@
-# Copyright Huawei Technologies Co., Ltd. 2022-2022. All rights reserved.
-
-from msmodelslim.pytorch.low_rank_decompose.low_rank_decompose import Decompose
