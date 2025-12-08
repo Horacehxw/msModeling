@@ -5,8 +5,6 @@ import time
 from enum import Enum
 from pathlib import Path
 
-import experimental
-
 RUN_TIME = time.strftime("%Y%m%d%H%M%S", time.localtime())
 INSTALL_PATH = Path(experimental.__path__[0])
 RUN_PATH = Path(os.getcwd())
