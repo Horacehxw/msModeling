@@ -18,7 +18,6 @@ from loguru import logger
 from pydantic import BaseModel, field_validator, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict, PydanticBaseSettingsSource, TomlConfigSettingsSource
 
-import experimental
 from experimental.common import is_vllm, is_mindie, ais_bench_exists
 from experimental.config.custom_command import BenchmarkCommandConfig, VllmBenchmarkCommandConfig, \
     MindieCommandConfig, VllmCommandConfig, AisBenchCommandConfig, KubectlCommandConfig
