@@ -22,7 +22,8 @@ import numpy as np
 from loguru import logger
 
 from experimental.optimizer.register import simulates
-from experimental.config.config import get_settings, map_param_with_value, CommunicationConfig, Stage, OptimizerConfigField
+from experimental.config.config import get_settings, map_param_with_value, CommunicationConfig, Stage, \
+    OptimizerConfigField
 from experimental.optimizer.communication import CommunicationForFile, CustomCommand
 
 
@@ -114,6 +115,7 @@ class Scheduler:
  
     def init(self):
         _cmd, _param = self.get_cmd_param()
+        logger.debug("params {}", _param)
         if not _cmd:
             return False
         logger.info("cmd {}", _cmd)
@@ -159,4 +161,4 @@ def main(engine: str):
             time.sleep(1)
         except KeyboardInterrupt:
             logger.info("Keyboard interrupt received, exiting.")
-            sys.exit(0)
+            break
