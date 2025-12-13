@@ -1,11 +1,11 @@
-# MindStudio-Modeling
+# MindStudio Modeling
 
 ## 🔥 最新消息
-- \[2025.12.09\]: 自动寻优工具资料结构整改。
+- \[2025.12.09\]: 服务化自动寻优工具资料结构整改。
 
 ## 📖 简介
 
-**MindStudio-Modeling** 是 MindStudio 建模寻优工具，评估模型及服务化场景下的理论性能，并在此基础上寻找性能较优的部署策略等参数。
+**MindStudio Modeling** 是 MindStudio 建模寻优工具，评估模型及服务化场景下的理论性能，并在此基础上寻找性能较优的部署策略等参数。
  
 ## 🗂️ 目录结构
 关键目录如下，详细目录介绍参见[项目目录](./docs/zh/dir_structure.md)。
@@ -22,7 +22,7 @@
  
 ## 🏷️[版本说明](docs/zh/release_notes.md)
  
-包含msserviceprofiler的软件版本配套关系和软件包下载以及每个版本的特性变更说明。
+包含msServiceProfiler的软件版本配套关系和软件包下载以及每个版本的特性变更说明。
  
 ## ⚙️ 环境部署
  
@@ -35,15 +35,15 @@
 以上环境依赖请根据实际环境选择适配的版本。
  
 ## 🛠️ 工具安装
-安装MindStudio-Modeling工具，详情请参见[安装指南](./docs/zh/ServiceParam_Optimizer.md/#使用前准备)。
+安装MindStudio Modeling工具，详情请参见[安装指南](./docs/zh/ServiceParam_Optimizer.md/#使用前准备)。
  
 ## 🚀 快速入门
-参见MindStudio-Modeling[快速入门](./docs/zh/ServiceParam_Optimizer.md/#快速入门)。
+参见MindStudio Modeling[快速入门](./docs/zh/ServiceParam_Optimizer.md/#快速入门)。
  
 ## 🧰 功能介绍
  
 ## 功能介绍
-- [optimizer 自动寻优工具](./docs/zh/ServiceParam_Optimizer.md)
+- [服务化自动寻优工具](./docs/zh/ServiceParam_Optimizer.md)
 
     支持对 `MindIE` 和 `VLLM` 进行自动寻优，获取符合时延要求的最佳吞吐参数组合。
  
@@ -63,7 +63,7 @@
  
 ## 🔒 安全声明
  
-描述MindStudio-Modeling产品的安全加固信息、公网地址信息及通信矩阵等内容。详情请参见[MindStudio-Modeling工具安全声明](./docs/zh/security_statement.md)。
+描述MindStudio Modeling产品的安全加固信息、公网地址信息及通信矩阵等内容。详情请参见[MindStudio Modeling工具安全声明](./docs/zh/security_statement.md)。
  
 ## 💬 建议与交流
  
@@ -75,9 +75,9 @@
  
 ## ❤️ 致谢
  
-MindStudio-Modeling由华为公司的下列部门联合贡献：
+MindStudio Modeling由华为公司的下列部门联合贡献：
  
 - 昇腾计算MindStudio开发部
 - 2012软件工程实验室
  
-感谢来自社区的每一个PR，欢迎贡献MindStudio-Modeling！
+感谢来自社区的每一个PR，欢迎贡献MindStudio Modeling！
