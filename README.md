@@ -35,15 +35,15 @@
 以上环境依赖请根据实际环境选择适配的版本。
  
 ## 🛠️ 工具安装
-安装MindStudio Modeling工具，详情请参见[安装指南](./docs/zh/ServiceParam_Optimizer.md/#使用前准备)。
+安装MindStudio Modeling工具，详情请参见[安装指南](./docs/zh/serviceparam_optimizer.md/#使用前准备)。
  
 ## 🚀 快速入门
-参见MindStudio Modeling[快速入门](./docs/zh/ServiceParam_Optimizer.md/#快速入门)。
+参见MindStudio Modeling[快速入门](./docs/zh/serviceparam_optimizer.md/#快速入门)。
  
 ## 🧰 功能介绍
  
 ## 功能介绍
-- [服务化自动寻优工具](./docs/zh/ServiceParam_Optimizer.md)
+- [服务化自动寻优工具](./docs/zh/serviceparam_optimizer.md)
 
     支持对 `MindIE` 和 `VLLM` 进行自动寻优，获取符合时延要求的最佳吞吐参数组合。
  
