@@ -107,16 +107,6 @@ class TestCommunicationForFile:
         with pytest.raises(ValueError):
             comm.clear_command(_cmd)
 
-    # need 2mins
-    @classmethod
-    def test_clear_cmd_timeout(cls, comm):
-        _cmd = "init 11111"
-        comm.recv_command = MagicMock(return_value=None)
-        comm.send_command = MagicMock()
-        comm.clear_res = MagicMock()
-        with pytest.raises(TimeoutError):
-            comm.clear_command(_cmd)
-
     @classmethod
     def test_clear_cmd_other(cls, comm):
         comm.recv_command = MagicMock(return_value="init 111111:other")

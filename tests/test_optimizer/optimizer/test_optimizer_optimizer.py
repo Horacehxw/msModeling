@@ -435,8 +435,8 @@ def test_refine_optimization_candidates_last_concurrency(field_to_param_patch):
     assert len(res) == 2
 
 
-@patch("experimental.optimizer.optimizer.is_mindie", return_value=True)
-@patch("experimental.config.model_config.MindieModelConfig")
+@patch("src.optimize.experimental.optimizer.optimizer.is_mindie", return_value=True)
+@patch("src.optimize.experimental.config.model_config.MindieModelConfig")
 def test_prepare(mock_mindie_model_config, mock_is_mindie, mindie_config_file):
     optimizer = PSOOptimizer(MagicMock(), target_field=default_support_field[:5])
     with open(mindie_config_file, 'r') as f:
@@ -469,10 +469,10 @@ def test_run_plugin():
                                          success_rate=1)
     # 模拟prepare方法
 
-    with patch('experimental.optimizer.global_best_custom.CustomGlobalBestPSO',
+    with patch('src.optimize.experimental.optimizer.global_best_custom.CustomGlobalBestPSO',
                            autospec=True) as mock_custom_global_best_pso:
         # 模拟enable_simulate上下文管理器
-        with patch('experimental.optimizer.optimizer.enable_simulate',
+        with patch('src.optimize.experimental.optimizer.optimizer.enable_simulate',
                                autospec=True) as mock_enable_simulate:
             custom_global_instance = mock_custom_global_best_pso.return_value
             custom_global_instareturn_value = (100, [200, 10, 100])
@@ -502,9 +502,9 @@ def test_run_plugin():
             optimizer.scheduler.data_storage.get_best_result.assert_called_once()
 
 
-@patch("experimental.optimizer.optimizer.PSOOptimizer")
-@patch("experimental.optimizer.scheduler.Scheduler")
-@patch("experimental.optimizer.scheduler.ScheduleWithMultiMachine")
+@patch("src.optimize.experimental.optimizer.optimizer.PSOOptimizer")
+@patch("src.optimize.experimental.optimizer.scheduler.Scheduler")
+@patch("src.optimize.experimental.optimizer.scheduler.ScheduleWithMultiMachine")
 def test_plugin_main(scheduler_multi, scheduler, psooptimizer):
     args = MagicMock()
     args.benchmark_policy = BenchMarkPolicy.vllm_benchmark.value

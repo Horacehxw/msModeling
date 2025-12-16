@@ -19,9 +19,9 @@ import numpy as np
 import pytest
 import torch
 
-from src.optimize.experimental.inference.constant import BatchStage
-from src.optimize.experimental.inference.simulate import ServiceField
-from src.optimize.experimental.inference.simulate_vllm import SimulateVllm
+from experimental.inference.constant import BatchStage
+from experimental.inference.simulate import ServiceField
+from experimental.inference.simulate_vllm import SimulateVllm
 
 
 class TestGenerateFeatures:

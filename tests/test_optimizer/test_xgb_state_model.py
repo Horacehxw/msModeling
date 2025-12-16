@@ -126,10 +126,10 @@ class TestStateXgbModel():
 
 
     @staticmethod
-    @patch('experimental.model.xgb_state_model.xgboost.train')
-    @patch('experimental.model.xgb_state_model.xgboost.DMatrix')
-    @patch('experimental.model.xgb_state_model.plot_feature_importance')
-    @patch('experimental.model.xgb_state_model.plot_pred_and_test')
+    @patch('src.optimize.experimental.model.xgb_state_model.xgboost.train')
+    @patch('src.optimize.experimental.model.xgb_state_model.xgboost.DMatrix')
+    @patch('src.optimize.experimental.model.xgb_state_model.plot_feature_importance')
+    @patch('src.optimize.experimental.model.xgb_state_model.plot_pred_and_test')
     def test_train_with_visualization(mock_plot_pred, mock_plot_feat, mock_dmatrix, mock_train, mock_dataset,
                                       tmp_path):
         # 设置mock返回

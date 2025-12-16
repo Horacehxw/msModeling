@@ -60,9 +60,9 @@ class TestScheduleWithMultiMachine:
             # 验证cmd属性是否被正确设置
             assert scheduler.cmd == mock_custom_command
 
-            # 验证send_command和clear_command方法是否被正确调用
+            # 验证send_command和clear_cmd方法是否被正确调用
             mock_communication.send_command.assert_called_once_with(mock_custom_command.init)
-            mock_communication.clear_command.assert_called_once_with(mock_custom_command.init)
+            mock_communication.clear_cmd.assert_called_once_with(mock_custom_command.init)
     
     @classmethod
     def test_run_simulate(cls, schedule_with_multi_machine):
@@ -70,7 +70,7 @@ class TestScheduleWithMultiMachine:
         schedule_with_multi_machine.cmd = CustomCommand()
         schedule_with_multi_machine.benchmark.prepare.return_value = None
         schedule_with_multi_machine.communication.send_command.return_value = None
-        schedule_with_multi_machine.communication.clear_command.return_value = None
+        schedule_with_multi_machine.communication.clear_cmd.return_value = None
         schedule_with_multi_machine.simulator.run.return_value = None
         schedule_with_multi_machine.wait_simulate = MagicMock(return_value=None)
         _params = np.random.random(len(default_support_field))
@@ -81,7 +81,7 @@ class TestScheduleWithMultiMachine:
         # 验证方法调用
         schedule_with_multi_machine.benchmark.prepare.assert_called_once()
         assert schedule_with_multi_machine.communication.send_command.call_count == 2
-        assert schedule_with_multi_machine.communication.clear_command.call_count == 2
+        assert schedule_with_multi_machine.communication.clear_cmd.call_count == 2
         schedule_with_multi_machine.wait_simulate.assert_called_once()
 
     @pytest.fixture
@@ -115,7 +115,7 @@ class TestScheduleWithMultiMachine:
         schedule_with_multi_machine.benchmark.bak_path == bak_path
         schedule_with_multi_machine.communication.send_command.assert_called_once_with(
             f'{schedule_with_multi_machine.cmd.backup} params:{bak_path}')
-        schedule_with_multi_machine.communication.clear_command.assert_called_once_with(
+        schedule_with_multi_machine.communication.clear_cmd.assert_called_once_with(
             f'{schedule_with_multi_machine.cmd.backup} params:{bak_path}')
 
     @patch('experimental.optimizer.scheduler.time.sleep', return_value=None)
@@ -123,7 +123,7 @@ class TestScheduleWithMultiMachine:
         type(schedule_with_multi_machine.cmd).process_poll = PropertyMock(return_value="mocked process poll")
         schedule_with_multi_machine.communication.send_command = MagicMock()
         schedule_with_multi_machine.simulator.process.poll = MagicMock(return_value=None)
-        schedule_with_multi_machine.communication.clear_command = MagicMock(return_value=None)
+        schedule_with_multi_machine.communication.clear_cmd = MagicMock(return_value=None)
         schedule_with_multi_machine.benchmark.check_success = MagicMock(return_value=True)
         schedule_with_multi_machine.stop_target_server = MagicMock()
 
@@ -131,7 +131,7 @@ class TestScheduleWithMultiMachine:
 
         schedule_with_multi_machine.communication.send_command.assert_called_with("mocked process poll")
         schedule_with_multi_machine.simulator.process.poll.assert_called()
-        schedule_with_multi_machine.communication.clear_command.assert_called_with("mocked process poll")
+        schedule_with_multi_machine.communication.clear_cmd.assert_called_with("mocked process poll")
         schedule_with_multi_machine.benchmark.check_success.assert_called()
         schedule_with_multi_machine.stop_target_server.assert_not_called()
 
@@ -140,7 +140,7 @@ class TestScheduleWithMultiMachine:
         type(schedule_with_multi_machine.cmd).process_poll = PropertyMock(return_value='mocked process poll')
         schedule_with_multi_machine.communication.send_command = MagicMock()
         schedule_with_multi_machine.simulator.process.poll = MagicMock(return_value=1)
-        schedule_with_multi_machine.communication.clear_command = MagicMock(return_value=None)
+        schedule_with_multi_machine.communication.clear_cmd = MagicMock(return_value=None)
         schedule_with_multi_machine.benchmark.check_success = MagicMock(return_value=False)
         schedule_with_multi_machine.stop_target_server = MagicMock()
 
@@ -149,7 +149,7 @@ class TestScheduleWithMultiMachine:
 
         schedule_with_multi_machine.communication.send_command.assert_called_with('mocked process poll')
         schedule_with_multi_machine.simulator.process.poll.assert_called()
-        schedule_with_multi_machine.communication.clear_command.assert_called_with('mocked process poll')
+        schedule_with_multi_machine.communication.clear_cmd.assert_called_with('mocked process poll')
         schedule_with_multi_machine.benchmark.check_success.assert_not_called()
         schedule_with_multi_machine.stop_target_server.assert_called()
 
@@ -162,11 +162,11 @@ class TestScheduleWithMultiMachine:
         # 验证Scheduler.stop_target_server被调用
         mock_super_stop.assert_called_once_with(True)
 
-        # 验证communication.send_command和communication.clear_command被正确调用
+        # 验证communication.send_command和communication.clear_cmd被正确调用
         assert "params:True" in schedule_with_multi_machine.cmd.history[-1]
         schedule_with_multi_machine.communication.send_command.assert_called_once_with(
             f"{schedule_with_multi_machine.cmd.history[-1]}")
-        schedule_with_multi_machine.communication.clear_command.assert_called_once_with(
+        schedule_with_multi_machine.communication.clear_cmd.assert_called_once_with(
             f"{schedule_with_multi_machine.cmd.history[-1]}")
         
 

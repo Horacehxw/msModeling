@@ -51,8 +51,8 @@ def test_update_data_exists(tmpdir):
     assert cache_predict.label.equals(pd.Series([1.0], name=cache_predict.label_name))
 
 
-@patch('experimental.inference.state_eval_v1.DataProcessor')
-@patch('experimental.inference.state_eval_v1.XGBStateEvaluate')
+@patch('src.optimize.experimental.inference.state_eval_v1.DataProcessor')
+@patch('src.optimize.experimental.inference.state_eval_v1.XGBStateEvaluate')
 def test_predict_v1(mock_data_processor, mock_xgb_state_evaluate, tmpdir, static_file):
     mock_data_processor.return_value = MagicMock()
     mock_xgb_state_evaluate.return_value = MagicMock()
@@ -194,8 +194,8 @@ def run_case(process_num: int, save_result_path: Path, fl: FileReader, call_func
         p.join()
 
 
-@patch('experimental.inference.state_eval_v1.XGBStateEvaluate')
-@patch('experimental.inference.state_eval_v1.InputData')
+@patch('src.optimize.experimental.inference.state_eval_v1.XGBStateEvaluate')
+@patch('src.optimize.experimental.inference.state_eval_v1.InputData')
 def test_predict_v1_with_cache(mock_input_data, mock_xgb_state_eval, tmpdir, static_file):
     mock_input_data.return_value = MagicMock()
     mock_xgb_state_eval.return_value = MagicMock()
@@ -258,15 +258,15 @@ class TestCachePredict(unittest.TestCase):
         self.assertEqual(loader.label.tolist(), [1, 2, 3])
         self.assertEqual(loader.data.columns.tolist(), ['feature1', 'feature2'])
 
-    @patch('experimental.config.config.settings')
-    @patch('experimental.inference.state_eval_v1.CachePredict')
+    @patch('src.optimize.experimental.config.config.settings')
+    @patch('src.optimize.experimental.inference.state_eval_v1.CachePredict')
     def test_no_cache_data(self, mock_cache_predict, mock_settings):
         mock_settings.latency_model.cache_data = 'default_cache_data'
         cache, _ = XGBStateEvaluate.load_cache_predict()
         self.assertIsNone(cache)
 
-    @patch('experimental.config.config.settings')
-    @patch('experimental.inference.state_eval_v1.CachePredict')
+    @patch('src.optimize.experimental.config.config.settings')
+    @patch('src.optimize.experimental.inference.state_eval_v1.CachePredict')
     def test_empty_cache_data(self, mock_cache_predict, mock_settings):
         mock_settings.latency_model.cache_data = 'default_cache_data'
         cache_data = Path('empty_cache_data')
@@ -274,9 +274,9 @@ class TestCachePredict(unittest.TestCase):
         cache, _ = XGBStateEvaluate.load_cache_predict(cache_data)
         self.assertIsNone(cache)
 
-    @patch('experimental.config.config.settings')
-    @patch('experimental.inference.state_eval_v1.CachePredict')
-    @patch('experimental.inference.state_eval_v1.read_csv_s')
+    @patch('src.optimize.experimental.config.config.settings')
+    @patch('src.optimize.experimental.inference.state_eval_v1.CachePredict')
+    @patch('src.optimize.experimental.inference.state_eval_v1.read_csv_s')
     def test_non_empty_cache_data(self, mock_read_csv_s, mock_cache_predict, mock_settings):
         mock_settings.latency_model.cache_data = 'default_cache_data'
         cache_data = Path('non_empty_cache_data')
