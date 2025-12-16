@@ -27,7 +27,7 @@ def static_file():
         with open(sf.hardware_path, "w") as hf:
             data = {
                 "cpu_count": 256,
-                "cpu_mem": 1953351,
+                "cpu_mem": 2063351,
                 "soc_name": "xxxx",
                 "npu_mem": 62259
             }
@@ -131,7 +131,7 @@ def static_file():
         with open(sf.hardware_path, "w") as hf:
             data = {
                 "cpu_count": 256,
-                "cpu_mem": 1953351,
+                "cpu_mem": 2063351,
                 "soc_name": "xxxx",
                 "npu_mem": 62259
             }

@@ -14,7 +14,7 @@
 
 import unittest
 import os
-import tempfile
+from pathlib import Path
 import shutil
 from unittest.mock import patch, MagicMock
 import pandas as pd
@@ -26,7 +26,8 @@ from src.optimize.experimental.optimizer.analyze_profiler import analyze
 class TestFindFirstSimulateCSV(unittest.TestCase):
     def setUp(self):
         # Create a temporary directory
-        self.test_dir = tempfile.mkdtemp()
+        self.test_dir = Path("test_analyze_profiler")
+        self.test_dir.mkdir(exist_ok=True)
         
     def tearDown(self):
         # Remove the temporary directory
