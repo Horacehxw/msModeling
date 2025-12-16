@@ -7,6 +7,7 @@ import pytest
 
 from src.optimize.experimental.config.config import CommunicationConfig, get_settings, \
     map_param_with_value, default_support_field
+from src.optimize.experimental.optimizer.register import simulates
 from src.optimize.experimental.optimizer.server import Scheduler
 from src.optimize.experimental.optimizer.communication import CommunicationForFile, CustomCommand
 
@@ -19,7 +20,7 @@ def test_scheduler_init(tmpdir):
     communication_config = CommunicationConfig(cmd_file=res_file, res_file=cmd_file)
 
     # 创建Scheduler对象
-    scheduler = Scheduler(communication_config)
+    scheduler = Scheduler(simulates, communication_config)
 
     # 检查communication_config是否被正确传递
     assert scheduler.communication_config == communication_config
