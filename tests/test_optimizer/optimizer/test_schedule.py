@@ -19,15 +19,15 @@ from unittest.mock import MagicMock, patch, PropertyMock
 import numpy as np
 import pytest
 
-from src.optimize.experimental.config.config import (
+from experimental.config.config import (
     CommunicationConfig, map_param_with_value, 
     get_settings, default_support_field, Stage,
     OptimizerConfigField, PerformanceIndex
 )
-from src.optimize.experimental.optimizer.communication import CommunicationForFile, CustomCommand
-from src.optimize.experimental.optimizer.scheduler import ScheduleWithMultiMachine
-from src.optimize.experimental.config.base_config import FOLDER_LIMIT_SIZE
-from src.optimize.experimental.optimizer.scheduler import Scheduler
+from experimental.optimizer.communication import CommunicationForFile, CustomCommand
+from experimental.optimizer.scheduler import ScheduleWithMultiMachine
+from experimental.config.base_config import FOLDER_LIMIT_SIZE
+from experimental.optimizer.scheduler import Scheduler
 
 
 class TestScheduleWithMultiMachine:
@@ -39,9 +39,9 @@ class TestScheduleWithMultiMachine:
         mock_custom_command = MagicMock(spec=CustomCommand)
 
         # 模拟CommunicationForFile和CustomCommand的构造函数
-        with patch('src.optimize.experimental.optimizer.scheduler.CommunicationForFile',
+        with patch('experimental.optimizer.scheduler.CommunicationForFile',
                    return_value=mock_communication) as mock_communication_class, \
-                patch('src.optimize.experimental.optimizer.scheduler.CustomCommand',
+                patch('experimental.optimizer.scheduler.CustomCommand',
                       return_value=mock_custom_command) as mock_custom_command_class:
             mock_communication_config.cmd_file = None
             mock_communication_config.res_file = None
@@ -91,16 +91,16 @@ class TestScheduleWithMultiMachine:
         mock_custom_command = MagicMock(spec=CustomCommand)
         mock_communication_config.cmd_file = None
         mock_communication_config.res_file = None
-        with patch('src.optimize.experimental.optimizer.scheduler.CommunicationForFile',
+        with patch('experimental.optimizer.scheduler.CommunicationForFile',
                    return_value=mock_communication, autospec=True) as mock_communication_class, \
-                patch('src.optimize.experimental.optimizer.scheduler.CustomCommand',
+                patch('experimental.optimizer.scheduler.CustomCommand',
                       return_value=mock_custom_command, autospec=True) as mock_custom_command_class:
             schedule = ScheduleWithMultiMachine(get_settings().communication, MagicMock(), MagicMock(), MagicMock())
             schedule.cmd = MagicMock()
             schedule.communication = MagicMock()
             yield schedule
 
-    @patch('src.optimize.experimental.optimizer.scheduler.get_train_sub_path')
+    @patch('experimental.optimizer.scheduler.get_train_sub_path')
     def test_set_back_up_path_with_bak_path(self, mock_get_train_sub_path, schedule_with_multi_machine, tmpdir):
         # Arrange
         bak_path = Path(tmpdir)
@@ -118,7 +118,7 @@ class TestScheduleWithMultiMachine:
         schedule_with_multi_machine.communication.clear_command.assert_called_once_with(
             f'{schedule_with_multi_machine.cmd.backup} params:{bak_path}')
 
-    @patch('src.optimize.experimental.optimizer.scheduler.time.sleep', return_value=None)
+    @patch('experimental.optimizer.scheduler.time.sleep', return_value=None)
     def test_monitoring_status_success(self, mock_sleep, schedule_with_multi_machine):
         type(schedule_with_multi_machine.cmd).process_poll = PropertyMock(return_value="mocked process poll")
         schedule_with_multi_machine.communication.send_command = MagicMock()
@@ -135,7 +135,7 @@ class TestScheduleWithMultiMachine:
         schedule_with_multi_machine.benchmark.check_success.assert_called()
         schedule_with_multi_machine.stop_target_server.assert_not_called()
 
-    @patch('src.optimize.experimental.optimizer.scheduler.time.sleep', return_value=None)
+    @patch('experimental.optimizer.scheduler.time.sleep', return_value=None)
     def test_monitoring_status_failure(self, mock_sleep, schedule_with_multi_machine):
         type(schedule_with_multi_machine.cmd).process_poll = PropertyMock(return_value='mocked process poll')
         schedule_with_multi_machine.communication.send_command = MagicMock()
@@ -153,7 +153,7 @@ class TestScheduleWithMultiMachine:
         schedule_with_multi_machine.benchmark.check_success.assert_not_called()
         schedule_with_multi_machine.stop_target_server.assert_called()
 
-    @patch('src.optimize.experimental.optimizer.scheduler.Scheduler.stop_target_server')
+    @patch('experimental.optimizer.scheduler.Scheduler.stop_target_server')
     def test_stop_target_server_with_del_log(self, mock_super_stop, schedule_with_multi_machine):
         # 测试当del_log为True时的行为
         schedule_with_multi_machine.cmd = CustomCommand()
@@ -178,13 +178,13 @@ class TestScheduler(unittest.TestCase):
         self.bak_path = MagicMock()
         self.scheduler = Scheduler(self.simulator, self.benchmark, self.data_storage, self.bak_path)
 
-    @patch('src.optimize.experimental.optimizer.utils.get_folder_size')
+    @patch('experimental.optimizer.utils.get_folder_size')
     def test_set_back_up_path_folder_size_exceeds_limit(self, mock_get_folder_size):
         mock_get_folder_size.return_value = FOLDER_LIMIT_SIZE + 1
         self.scheduler.set_back_up_path()
 
-    @patch('src.optimize.experimental.optimizer.utils.get_folder_size')
-    @patch('src.optimize.experimental.common.get_train_sub_path')
+    @patch('experimental.optimizer.utils.get_folder_size')
+    @patch('experimental.common.get_train_sub_path')
     def test_set_back_up_path_folder_size_within_limit(self, mock_get_train_sub_path, mock_get_folder_size):
         mock_get_folder_size.return_value = FOLDER_LIMIT_SIZE - 1
         mock_get_train_sub_path.return_value = 'sub_path'
@@ -257,7 +257,7 @@ class TestSchedulerRunMethods(unittest.TestCase):
         self.assertEqual(req_rate_field.max, 50.0)
     
     @patch('time.time')
-    @patch('src.optimize.experimental.optimizer.scheduler.logger')
+    @patch('experimental.optimizer.scheduler.logger')
     def test_run_logging(self, mock_logger, mock_time):
         """测试run方法的日志记录"""
         # 设置模拟返回值

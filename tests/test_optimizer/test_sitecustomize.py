@@ -20,8 +20,8 @@ from src.optimize.experimental.sitecustomize import dispatch, MODEL_EVAL_STATE_S
 
 class TestDispatch(unittest.TestCase):
     
-    @patch('src.optimize.experimental.sitecustomize.logger')
-    @patch('src.optimize.experimental.patch.enable_patch')
+    @patch('experimental.sitecustomize.logger')
+    @patch('experimental.patch.enable_patch')
     def test_dispatch_simulate_true(self, mock_enable_patch, mock_logger):
         # Set environment variable for simulation
         os.environ[MODEL_EVAL_STATE_SIMULATE] = 'True'
@@ -29,8 +29,8 @@ class TestDispatch(unittest.TestCase):
         mock_logger.info.assert_called_with(f"The collected patch is successfully installed.")
         mock_enable_patch.assert_called_with(MODEL_EVAL_STATE_SIMULATE)
 
-    @patch('src.optimize.experimental.sitecustomize.logger')
-    @patch('src.optimize.experimental.patch.enable_patch')
+    @patch('experimental.sitecustomize.logger')
+    @patch('experimental.patch.enable_patch')
     def test_dispatch_all_true(self, mock_enable_patch, mock_logger):
         # Set environment variable for optimization
         os.environ[MODEL_EVAL_STATE_ALL] = 'true'
@@ -38,21 +38,21 @@ class TestDispatch(unittest.TestCase):
         mock_logger.info.assert_called_with(f"The collected patch is successfully installed.")
         mock_enable_patch.assert_called_with(MODEL_EVAL_STATE_ALL)
 
-    @patch('src.optimize.experimental.sitecustomize.logger')
+    @patch('experimental.sitecustomize.logger')
     def test_dispatch_simulate_false(self, mock_logger):
         # Set environment variable for simulation to false
         os.environ[MODEL_EVAL_STATE_SIMULATE] = 'False'
         dispatch(MODEL_EVAL_STATE_SIMULATE)
         mock_logger.debug.assert_called_with(f"{MODEL_EVAL_STATE_SIMULATE}: False")
 
-    @patch('src.optimize.experimental.sitecustomize.logger')
+    @patch('experimental.sitecustomize.logger')
     def test_dispatch_all_false(self, mock_logger):
         # Set environment variable for optimization to false
         os.environ[MODEL_EVAL_STATE_ALL] = 'false'
         dispatch(MODEL_EVAL_STATE_ALL)
         mock_logger.debug.assert_called_with(f"{MODEL_EVAL_STATE_ALL}: false")
 
-    @patch('src.optimize.experimental.sitecustomize.logger')
+    @patch('experimental.sitecustomize.logger')
     def test_dispatch_simulate_not_set(self, mock_logger):
         # Do not set environment variable for simulation
         if MODEL_EVAL_STATE_SIMULATE in os.environ:
@@ -60,7 +60,7 @@ class TestDispatch(unittest.TestCase):
         dispatch(MODEL_EVAL_STATE_SIMULATE)
         mock_logger.debug.assert_called_with(f"{MODEL_EVAL_STATE_SIMULATE}: None")
 
-    @patch('src.optimize.experimental.sitecustomize.logger')
+    @patch('experimental.sitecustomize.logger')
     def test_dispatch_all_not_set(self, mock_logger):
         # Do not set environment variable for optimization
         if MODEL_EVAL_STATE_ALL in os.environ:

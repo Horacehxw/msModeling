@@ -23,18 +23,18 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.optimize.experimental.config.config import (
+from experimental.config.config import (
     BenchMarkPolicy, DeployPolicy, field_to_param, get_settings,
     default_support_field, PerformanceIndex, OptimizerConfigField, 
 )
-from src.optimize.experimental.config.model_config import MindieModelConfig
-from src.optimize.experimental.config.base_config import (
+from experimental.config.model_config import MindieModelConfig
+from experimental.config.base_config import (
     EnginePolicy, DeployPolicy, AnalyzeTool,
     ServiceType, BenchMarkPolicy, PDPolicy
 )
-from src.optimize.experimental.optimizer.optimizer import PSOOptimizer, plugin_main, arg_parse
-from src.optimize.experimental.optimizer.experience_fine_tunning import StopFineTune
-from src.optimize.experimental.optimizer.plugins.simulate import VllmSimulator
+from experimental.optimizer.optimizer import PSOOptimizer, plugin_main, arg_parse
+from experimental.optimizer.experience_fine_tunning import StopFineTune
+from experimental.optimizer.plugins.simulate import VllmSimulator
 
 
 @pytest.fixture
@@ -353,7 +353,7 @@ class TestPSOOptimizer:
         return PSOOptimizer(MagicMock(), target_field=default_support_field)
 
 
-@patch("src.optimize.experimental.config.config.field_to_param", )
+@patch("experimental.config.config.field_to_param", )
 def test_refine_optimization_candidates(field_to_param_patch):
     field_to_param_patch.side_effect = [[3, 4], [7, 1]]
     pso = PSOOptimizer(MagicMock(), target_field=default_support_field)
@@ -375,7 +375,7 @@ def test_refine_optimization_candidates(field_to_param_patch):
     assert len(res) == 3
 
 
-@patch("src.optimize.experimental.config.config.field_to_param", )
+@patch("experimental.config.config.field_to_param", )
 def test_refine_optimization_candidates_last_concurrency(field_to_param_patch):
     field_to_param_patch.side_effect = [[3, 4], [7, 1], [2, 5], [3, 1], [2, 6], [9, 1]]
     my_support_field = [
@@ -435,8 +435,8 @@ def test_refine_optimization_candidates_last_concurrency(field_to_param_patch):
     assert len(res) == 2
 
 
-@patch("src.optimize.experimental.optimizer.optimizer.is_mindie", return_value=True)
-@patch("src.optimize.experimental.config.model_config.MindieModelConfig")
+@patch("experimental.optimizer.optimizer.is_mindie", return_value=True)
+@patch("experimental.config.model_config.MindieModelConfig")
 def test_prepare(mock_mindie_model_config, mock_is_mindie, mindie_config_file):
     optimizer = PSOOptimizer(MagicMock(), target_field=default_support_field[:5])
     with open(mindie_config_file, 'r') as f:
@@ -469,13 +469,13 @@ def test_run_plugin():
                                          success_rate=1)
     # 模拟prepare方法
 
-    with patch('src.optimize.experimental.optimizer.global_best_custom.CustomGlobalBestPSO',
+    with patch('experimental.optimizer.global_best_custom.CustomGlobalBestPSO',
                            autospec=True) as mock_custom_global_best_pso:
         # 模拟enable_simulate上下文管理器
-        with patch('src.optimize.experimental.optimizer.optimizer.enable_simulate',
+        with patch('experimental.optimizer.optimizer.enable_simulate',
                                autospec=True) as mock_enable_simulate:
             custom_global_instance = mock_custom_global_best_pso.return_value
-            custom_global_instance.optimize.return_value = (100, [200, 10, 100])
+            custom_global_instareturn_value = (100, [200, 10, 100])
             # 模拟op_func方法
             optimizer.prepare_plugin = MagicMock()
             optimizer.op_func = MagicMock()
@@ -502,9 +502,9 @@ def test_run_plugin():
             optimizer.scheduler.data_storage.get_best_result.assert_called_once()
 
 
-@patch("src.optimize.experimental.optimizer.optimizer.PSOOptimizer")
-@patch("src.optimize.experimental.optimizer.scheduler.Scheduler")
-@patch("src.optimize.experimental.optimizer.scheduler.ScheduleWithMultiMachine")
+@patch("experimental.optimizer.optimizer.PSOOptimizer")
+@patch("experimental.optimizer.scheduler.Scheduler")
+@patch("experimental.optimizer.scheduler.ScheduleWithMultiMachine")
 def test_plugin_main(scheduler_multi, scheduler, psooptimizer):
     args = MagicMock()
     args.benchmark_policy = BenchMarkPolicy.vllm_benchmark.value
@@ -514,9 +514,9 @@ def test_plugin_main(scheduler_multi, scheduler, psooptimizer):
     args.engine = EnginePolicy.vllm.value
  
     # 调用被测试的方法
-    with patch("src.optimize.experimental.optimizer.register.register_simulator"):
+    with patch("experimental.optimizer.register.register_simulator"):
         # 模拟 simulates 字典，确保 'vllm' 对应的模拟器类存在
-        with patch("src.optimize.experimental.optimizer.optimizer.simulates", {'vllm': VllmSimulator}):
+        with patch("experimental.optimizer.optimizer.simulates", {'vllm': VllmSimulator}):
             with patch("shutil.which", return_value="path/to/benchmark"):
                 plugin_main(args)
     
@@ -525,7 +525,7 @@ def test_plugin_main(scheduler_multi, scheduler, psooptimizer):
 
 
 def test_best_params(generate_store):
-    from src.optimize.experimental.optimizer.experience_fine_tunning import FineTune
+    from experimental.optimizer.experience_fine_tunning import FineTune
     optimizer_result = pd.read_csv(generate_store)
     my_support_field = [
     # max batch size 最小值要大于max_prefill_batch_size的最大值。
@@ -644,7 +644,7 @@ def test_best_params(generate_store):
 
 
 def test_best_params2(generate_store2):
-    from src.optimize.experimental.optimizer.experience_fine_tunning import FineTune
+    from experimental.optimizer.experience_fine_tunning import FineTune
     optimizer_result = pd.read_csv(generate_store2)
     my_support_field = [
     # max batch size 最小值要大于max_prefill_batch_size的最大值。
@@ -751,7 +751,7 @@ def test_mindie_prepare_valid_input():
 
 
 class TestArgParse(unittest.TestCase):
-    @patch('src.optimize.experimental.plugins.load_general_plugins')
+    @patch('experimental.plugins.load_general_plugins')
     def test_arg_parse_with_plugin(self, mock_load_general_plugins):
         mock_load_general_plugins.return_value = True
         parser = argparse.ArgumentParser()
@@ -760,7 +760,7 @@ class TestArgParse(unittest.TestCase):
         args = parser.parse_args(['optimizer'])
         self.assertEqual(args.func, plugin_main)
 
-    @patch('src.optimize.experimental.plugins.load_general_plugins')
+    @patch('experimental.plugins.load_general_plugins')
     def test_arg_parse_with_load_breakpoint(self, mock_load_general_plugins):
         mock_load_general_plugins.return_value = True
         parser = argparse.ArgumentParser()
@@ -769,7 +769,7 @@ class TestArgParse(unittest.TestCase):
         args = parser.parse_args(['optimizer', '--load_breakpoint'])
         self.assertTrue(args.load_breakpoint)
 
-    @patch('src.optimize.experimental.plugins.load_general_plugins')
+    @patch('experimental.plugins.load_general_plugins')
     def test_arg_parse_with_backup(self, mock_load_general_plugins):
         mock_load_general_plugins.return_value = True
         parser = argparse.ArgumentParser()
@@ -778,7 +778,7 @@ class TestArgParse(unittest.TestCase):
         args = parser.parse_args(['optimizer', '--backup'])
         self.assertTrue(args.backup)
 
-    @patch('src.optimize.experimental.plugins.load_general_plugins')
+    @patch('experimental.plugins.load_general_plugins')
     def test_arg_parse_with_deploy_policy(self, mock_load_general_plugins):
         mock_load_general_plugins.return_value = True
         parser = argparse.ArgumentParser()
@@ -787,7 +787,7 @@ class TestArgParse(unittest.TestCase):
         args = parser.parse_args(['optimizer', '--deploy_policy', 'single'])
         self.assertEqual(args.deploy_policy, 'single')
 
-    @patch('src.optimize.experimental.plugins.load_general_plugins')
+    @patch('experimental.plugins.load_general_plugins')
     def test_arg_parse_with_pd(self, mock_load_general_plugins):
         mock_load_general_plugins.return_value = True
         parser = argparse.ArgumentParser()

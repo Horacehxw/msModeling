@@ -41,8 +41,8 @@ class TestMyDataSetWithSwifter(unittest.TestCase):
         })
         self.dataset = MyDataSetWithSwifter()
 
-    @patch('src.optimize.experimental.data_feature.dataset_with_swifter.logger.debug')
-    @patch('src.optimize.experimental.data_feature.dataset_with_swifter.MyDataSetWithSwifter.'\
+    @patch('experimental.data_feature.dataset_with_swifter.logger.debug')
+    @patch('experimental.data_feature.dataset_with_swifter.MyDataSetWithSwifter.'\
            'proprocess_with_swifter')
     def test_preprocess_dispatch_success(self, mock_process, mock_logger):
         """测试swifter预处理成功路径"""
@@ -58,10 +58,10 @@ class TestMyDataSetWithSwifter(unittest.TestCase):
         mock_process.assert_called_once_with(self.sample_data)
         self.assertEqual(result, (expected_features, expected_labels))
 
-    @patch('src.optimize.experimental.data_feature.dataset_with_swifter.logger.error')
-    @patch('src.optimize.experimental.data_feature.dataset_with_swifter.MyDataSetWithSwifter.'\
+    @patch('experimental.data_feature.dataset_with_swifter.logger.error')
+    @patch('experimental.data_feature.dataset_with_swifter.MyDataSetWithSwifter.'\
         'proprocess_with_swifter')
-    @patch('src.optimize.experimental.data_feature.dataset_with_swifter.MyDataSet.preprocess_dispatch')
+    @patch('experimental.data_feature.dataset_with_swifter.MyDataSet.preprocess_dispatch')
     def test_preprocess_dispatch_fallback(self, mock_parent, mock_process, mock_logger):
         """测试swifter失败时回退到父类实现"""
         # 模拟swifter处理失败
@@ -78,8 +78,8 @@ class TestMyDataSetWithSwifter(unittest.TestCase):
         mock_parent.assert_called_once_with(self.sample_data)
         self.assertEqual(result, expected_fallback)
 
-    @patch('src.optimize.experimental.data_feature.dataset_with_swifter.logger.info')
-    @patch('src.optimize.experimental.data_feature.dataset_with_swifter.MyDataSetWithSwifter.'\
+    @patch('experimental.data_feature.dataset_with_swifter.logger.info')
+    @patch('experimental.data_feature.dataset_with_swifter.MyDataSetWithSwifter.'\
            'proprocess_with_swifter')
     def test_preprocess_dispatch_none_input(self, mock_process, mock_logger):
         """测试None输入直接回退父类"""

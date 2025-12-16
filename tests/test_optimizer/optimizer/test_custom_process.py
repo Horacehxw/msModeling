@@ -6,12 +6,12 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-from src.optimize.experimental.config.config import (
+from experimental.config.config import (
     CUSTOM_OUTPUT,
     MODEL_EVAL_STATE_CONFIG_PATH,
     OptimizerConfigField
 )
-from src.optimize.experimental.optimizer.custom_process import CustomProcess, tempfile, os
+from experimental.optimizer.custom_process import CustomProcess, tempfile, os
 
 
 def test_before_run_no_run_params(monkeypatch):
@@ -97,7 +97,7 @@ def test_check_success_process_failed(tmpdir):
 
 
 @patch("psutil.process_iter")
-@patch("src.optimize.experimental.optimizer.custom_process.kill_process")
+@patch("experimental.optimizer.custom_process.kill_process")
 def test_check_env_no_residual_process(mock_kill_process, mock_process_iter):
     # 模拟没有残留进程的情况
     mock_process_iter.return_value = [
@@ -114,7 +114,7 @@ def test_check_env_no_residual_process(mock_kill_process, mock_process_iter):
  
  
 @patch("psutil.process_iter")
-@patch("src.optimize.experimental.optimizer.custom_process.kill_process")
+@patch("experimental.optimizer.custom_process.kill_process")
 def test_check_env_with_residual_process(mock_kill_process, mock_process_iter):
     # 模拟有残留进程的情况
     mock_process_iter.return_value = [
@@ -131,7 +131,7 @@ def test_check_env_with_residual_process(mock_kill_process, mock_process_iter):
  
  
 @patch("psutil.process_iter")
-@patch("src.optimize.experimental.optimizer.custom_process.kill_process")
+@patch("experimental.optimizer.custom_process.kill_process")
 def test_check_env_kill_process_exception(mock_kill_process, mock_process_iter):
     # 模拟在尝试杀死进程时发生异常的情况
     mock_process_iter.return_value = [
@@ -146,9 +146,9 @@ def test_check_env_kill_process_exception(mock_kill_process, mock_process_iter):
  
  
 # 测试用例1：测试process_name存在且check_env成功的情况
-@patch('src.optimize.experimental.optimizer.custom_process.CustomProcess.kill_residual_process')
-@patch('src.optimize.experimental.optimizer.custom_process.CustomProcess.before_run')
-@patch('src.optimize.experimental.optimizer.custom_process.subprocess.Popen')
+@patch('experimental.optimizer.custom_process.CustomProcess.kill_residual_process')
+@patch('experimental.optimizer.custom_process.CustomProcess.before_run')
+@patch('experimental.optimizer.custom_process.subprocess.Popen')
 def test_run_process_name_exists_and_check_env_success(mock_popen, mock_before_run, mock_check_env):
     process = CustomProcess()
     process.process_name = 'test_process'
@@ -162,9 +162,9 @@ def test_run_process_name_exists_and_check_env_success(mock_popen, mock_before_r
  
  
 # 测试用例2：测试process_name存在但check_env失败的情况
-@patch('src.optimize.experimental.optimizer.custom_process.CustomProcess.kill_residual_process')
-@patch('src.optimize.experimental.optimizer.custom_process.CustomProcess.before_run')
-@patch('src.optimize.experimental.optimizer.custom_process.subprocess.Popen')
+@patch('experimental.optimizer.custom_process.CustomProcess.kill_residual_process')
+@patch('experimental.optimizer.custom_process.CustomProcess.before_run')
+@patch('experimental.optimizer.custom_process.subprocess.Popen')
 def test_run_process_name_exists_and_check_env_fail(mock_popen, mock_before_run, mock_check_env):
     process = CustomProcess()
     process.process_name = 'test_process'
@@ -180,8 +180,8 @@ def test_run_process_name_exists_and_check_env_fail(mock_popen, mock_before_run,
  
  
 # 测试用例3：测试process_name不存在的情况
-@patch('src.optimize.experimental.optimizer.custom_process.CustomProcess.before_run')
-@patch('src.optimize.experimental.optimizer.custom_process.subprocess.Popen')
+@patch('experimental.optimizer.custom_process.CustomProcess.before_run')
+@patch('experimental.optimizer.custom_process.subprocess.Popen')
 def test_run_process_name_not_exists(mock_popen, mock_before_run):
     process = CustomProcess()
     process.process_name = None
@@ -194,8 +194,8 @@ def test_run_process_name_not_exists(mock_popen, mock_before_run):
  
  
 # 测试用例4：测试subprocess.Popen抛出OSError的情况
-@patch('src.optimize.experimental.optimizer.custom_process.CustomProcess.before_run')
-@patch('src.optimize.experimental.optimizer.custom_process.subprocess.Popen')
+@patch('experimental.optimizer.custom_process.CustomProcess.before_run')
+@patch('experimental.optimizer.custom_process.subprocess.Popen')
 def test_run_subprocess_popen_os_error(mock_popen, mock_before_run):
     process = CustomProcess()
     process.process_name = None

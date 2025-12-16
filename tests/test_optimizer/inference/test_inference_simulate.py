@@ -297,7 +297,7 @@ def test_predict_without_sleep(predict_setup, monkeypatch):
     assert len(Simulate.predict_cache) == 1
 
 
-@patch('src.optimize.experimental.inference.simulate.Simulate.predict')
+@patch('experimental.inference.simulate.Simulate.predict')
 def test_predict_and_save(mock_predict):
     # 测试predict_and_save方法
     # 模拟predict方法的返回值

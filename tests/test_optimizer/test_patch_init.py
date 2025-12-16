@@ -73,7 +73,7 @@ class TestEnablePatch(unittest.TestCase):
         enable_patch("MODEL_EVAL_STATE_SIMULATE")
         self.mock_logger.info.assert_not_called()
 
-    @patch('src.optimize.experimental.patch.get_module_version')
+    @patch('experimental.patch.get_module_version')
     def test_mindie_successful_patch(self, mock_get_version):
         """测试mindie成功应用补丁"""
         mock_patch = MagicMock()
@@ -87,7 +87,7 @@ class TestEnablePatch(unittest.TestCase):
         mock_patch.patch.assert_called_once()
         self.mock_logger.info.assert_called_once()
 
-    @patch('src.optimize.experimental.patch.get_module_version')
+    @patch('experimental.patch.get_module_version')
     def test_vllm_successful_patch(self, mock_get_version):
         """测试vllm_ascend成功应用补丁"""
         mock_patch = MagicMock()
@@ -101,7 +101,7 @@ class TestEnablePatch(unittest.TestCase):
         mock_patch.patch.assert_called_once()
         self.mock_logger.info.assert_called_once()
 
-    @patch('src.optimize.experimental.patch.get_module_version')
+    @patch('experimental.patch.get_module_version')
     def test_combination_patch_success(self, mock_get_version):
         """测试mindie和vllm同时成功应用补丁"""
         # 准备 mindie 的补丁
@@ -122,7 +122,7 @@ class TestEnablePatch(unittest.TestCase):
         self.mock_logger.info.assert_called_once()
         self.assertIn("patch list", self.mock_logger.info.call_args[0][0])
 
-    @patch('src.optimize.experimental.patch.get_module_version')
+    @patch('experimental.patch.get_module_version')
     def test_version_check_failure(self, mock_get_version):
         """测试版本检查失败"""
         mock_patch = MagicMock()
@@ -135,7 +135,7 @@ class TestEnablePatch(unittest.TestCase):
         mock_patch.patch.assert_not_called()
         self.mock_logger.info.assert_not_called()
 
-    @patch('src.optimize.experimental.patch.get_module_version')
+    @patch('experimental.patch.get_module_version')
     def test_mixed_success_failure(self, mock_get_version):
         """测试部分补丁成功、部分失败的情况"""
         # 准备 mindie 的补丁 - 成功
@@ -173,7 +173,7 @@ class TestEnablePatch(unittest.TestCase):
         mock_patch.patch.assert_not_called()
         self.mock_logger.info.assert_not_called()
 
-    @patch('src.optimize.experimental.patch.get_module_version')
+    @patch('experimental.patch.get_module_version')
     def test_all_target_envs(self, mock_get_version):
         """测试所有可能的目标环境"""
         target_envs = [
@@ -202,7 +202,7 @@ class TestEnablePatch(unittest.TestCase):
                 mock_patch.patch.assert_called_once()
                 mock_patch.reset_mock()
 
-    @patch('src.optimize.experimental.patch.get_module_version')
+    @patch('experimental.patch.get_module_version')
     def test_multiple_vllm_patches(self, mock_get_version):
         """测试多个vllm补丁同时应用"""
         # 准备多个 vllm 补丁
@@ -221,7 +221,7 @@ class TestEnablePatch(unittest.TestCase):
         patch2.patch.assert_called_once()
         self.mock_logger.info.assert_called_once()
 
-    @patch('src.optimize.experimental.patch.get_module_version')
+    @patch('experimental.patch.get_module_version')
     def test_value_error_handling(self, mock_get_version):
         """测试处理get_module_version的ValueError"""
         mock_patch = MagicMock()
@@ -244,7 +244,7 @@ class TestEnablePatch(unittest.TestCase):
 
         self.mock_logger.info.assert_not_called()
 
-    @patch('src.optimize.experimental.patch.get_module_version')
+    @patch('experimental.patch.get_module_version')
     def test_patch_class_repr_in_log(self, mock_get_version):
         """测试日志中包含补丁类的表示"""
         # 确保有日志调用
@@ -272,7 +272,7 @@ class TestEnablePatch(unittest.TestCase):
         call_args = self.mock_logger.info.call_args[0][0]
         self.assertIn("<TestPatchClass>", call_args)
 
-    @patch('src.optimize.experimental.patch.get_module_version')
+    @patch('experimental.patch.get_module_version')
     def test_elegant_env_patch(self, mock_get_version):
         """测试优雅环境的补丁应用"""
         mock_patch = MagicMock()

@@ -24,11 +24,11 @@ import yaml
 import pytest
 import requests
 
-import src.optimize.experimental
-from src.optimize.experimental.config.config import get_settings, OptimizerConfigField, KubectlConfig, \
+import experimental
+from experimental.config.config import get_settings, OptimizerConfigField, KubectlConfig, \
         MindieConfig
-from src.optimize.experimental.optimizer.simulator import enable_simulate_old
-from src.optimize.experimental.optimizer.plugins.simulate import Simulator, DisaggregationSimulator
+from experimental.optimizer.simulator import enable_simulate_old
+from experimental.optimizer.plugins.simulate import Simulator, DisaggregationSimulator
 from msguard import GlobalConfig
 
 
@@ -102,7 +102,7 @@ def test_enable_simulate_with_simulator(tmpdir, monkeypatch):
     get_settings().mindie.config_path = config_path
     get_settings().mindie.config_bak_path = Path(tmpdir).joinpath("config_bak.json")
     simulator = Simulator(get_settings().mindie)
-    monkeypatch.setattr(src.optimize.experimental.optimizer.simulator, "simulate_flag", True)
+    monkeypatch.setattr(experimental.optimizer.simulator, "simulate_flag", True)
     with enable_simulate_old(simulator) as flag:
         with open(config_path, 'r') as f:
             data = json.load(f)
@@ -138,7 +138,7 @@ def test_enable_simulate_with_simulator_plugin_params_exists(tmpdir, monkeypatch
     get_settings().mindie.config_path = config_path
     get_settings().mindie.config_bak_path = Path(tmpdir).joinpath("config_bak.json")
     simulator = Simulator(get_settings().mindie)
-    monkeypatch.setattr(src.optimize.experimental.optimizer.simulator, "simulate_flag", True)
+    monkeypatch.setattr(experimental.optimizer.simulator, "simulate_flag", True)
     with enable_simulate_old(simulator) as flag:
         with open(config_path, 'r') as f:
             data = json.load(f)
@@ -257,14 +257,14 @@ class TestDisaggregationSimulator(unittest.TestCase):
         DisaggregationSimulator.set_config(origin_config, "a.d.0.c.e", 4)
         assert origin_config["a"]["d"][0]["c"]["e"] == 4
 
-    @patch('src.optimize.experimental.optimizer.plugins.simulate.logger')
+    @patch('experimental.optimizer.plugins.simulate.logger')
     def test_is_int(self, mock_logger):
         # 测试is_int方法
         self.assertTrue(DisaggregationSimulator.is_int('123'))
         self.assertFalse(DisaggregationSimulator.is_int('abc'))
 
-    @patch('src.optimize.experimental.optimizer.plugins.simulate.subprocess')
-    @patch('src.optimize.experimental.optimizer.plugins.simulate.logger')
+    @patch('experimental.optimizer.plugins.simulate.subprocess')
+    @patch('experimental.optimizer.plugins.simulate.logger')
     def test_prepare_before_start_server(self, mock_logger, mock_subprocess):
         GlobalConfig.custom_return = True
         # 测试prepare_before_start_server方法
@@ -277,7 +277,7 @@ class TestDisaggregationSimulator(unittest.TestCase):
         mock_logger.debug.assert_called()
         GlobalConfig.reset()
 
-    @patch('src.optimize.experimental.optimizer.plugins.simulate.logger')
+    @patch('experimental.optimizer.plugins.simulate.logger')
     def test_stop(self, mock_logger):
         # 测试stop方法
         mindie_config = KubectlConfig()
@@ -361,7 +361,7 @@ class TestDisaggregationSimulator(unittest.TestCase):
             pd_config_data = json.load(f)
             self.assertEqual(pd_config_data["default_p_rate"], 2)
 
-    @patch('src.optimize.experimental.optimizer.plugins.simulate.DisaggregationSimulator.test_curl')
+    @patch('experimental.optimizer.plugins.simulate.DisaggregationSimulator.test_curl')
     @patch('msguard.security.io.open_s')
     def test_health(self, mock_open, mock_test_curl):
         # Arrange
@@ -388,9 +388,9 @@ class TestDisaggregationSimulator(unittest.TestCase):
         mock_test_curl.assert_called_once()
         GlobalConfig.reset()
     
-    @patch('src.optimize.experimental.optimizer.plugins.simulate.DisaggregationSimulator.update_config')
-    @patch('src.optimize.experimental.optimizer.plugins.simulate.DisaggregationSimulator.start_server')
-    @patch('src.optimize.experimental.optimizer.plugins.simulate.logger')
+    @patch('experimental.optimizer.plugins.simulate.DisaggregationSimulator.update_config')
+    @patch('experimental.optimizer.plugins.simulate.DisaggregationSimulator.start_server')
+    @patch('experimental.optimizer.plugins.simulate.logger')
     def test_run(self, mock_logger, mock_start_server, mock_update_config):
         # Arrange
         mindie_config = KubectlConfig()

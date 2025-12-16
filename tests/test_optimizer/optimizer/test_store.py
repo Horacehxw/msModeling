@@ -18,13 +18,13 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 import pytest
 
-from src.optimize.experimental.config.config import (
+from experimental.config.config import (
     PerformanceIndex,
     OptimizerConfigField,
     get_settings
 )
-from src.optimize.experimental.optimizer.plugins.benchmark import VllmBenchMark
-from src.optimize.experimental.optimizer.store import DataStorage
+from experimental.optimizer.plugins.benchmark import VllmBenchMark
+from experimental.optimizer.store import DataStorage
 from msguard import GlobalConfig
 from msguard.security import sanitize_csv_value
 
@@ -64,8 +64,8 @@ class TestDataStorage(unittest.TestCase):
             result: pd.DataFrame = self.data_storage.get_best_result()
         GlobalConfig.reset()
 
-    @patch('src.optimize.experimental.optimizer.store.Path')
-    @patch('src.optimize.experimental.optimizer.store.csv')
+    @patch('experimental.optimizer.store.Path')
+    @patch('experimental.optimizer.store.csv')
     @patch('msguard.security.sanitize_csv_value')
     def test_save_new_file(self, mock_sanitize_csv_value, mock_csv, mock_path):
         # 设置模拟对象的行为
@@ -87,8 +87,8 @@ class TestDataStorage(unittest.TestCase):
         # 调用save方法
         storage.save(performance_index, params, **kwargs)
 
-    @patch('src.optimize.experimental.optimizer.store.Path')
-    @patch('src.optimize.experimental.optimizer.store.csv')
+    @patch('experimental.optimizer.store.Path')
+    @patch('experimental.optimizer.store.csv')
     @patch('msguard.security.sanitize_csv_value')
     def test_save_existing_file(self, mock_sanitize_csv_value, mock_csv, mock_path):
         # 设置模拟对象的行为
@@ -110,21 +110,21 @@ class TestDataStorage(unittest.TestCase):
         # 调用save方法
         storage.save(performance_index, params, **kwargs)
 
-    @patch('src.optimize.experimental.optimizer.store.Path')
+    @patch('experimental.optimizer.store.Path')
     def test_load_history_position_dir_not_exist(self, mock_path):
         mock_path.exists.return_value = False
         with self.assertRaises(FileNotFoundError):
             DataStorage.load_history_position(mock_path)
 
-    @patch('src.optimize.experimental.optimizer.store.Path')
+    @patch('experimental.optimizer.store.Path')
     def test_load_history_position_not_a_dir(self, mock_path):
         mock_path.exists.return_value = True
         mock_path.is_dir.return_value = False
         with self.assertRaises(ValueError):
             DataStorage.load_history_position(mock_path)
 
-    @patch('src.optimize.experimental.optimizer.store.Path')
-    @patch('src.optimize.experimental.optimizer.store.read_csv_s')
+    @patch('experimental.optimizer.store.Path')
+    @patch('experimental.optimizer.store.read_csv_s')
     def test_load_history_position_no_data(self, mock_read_csv_s, mock_path):
         mock_path.exists.return_value = True
         mock_path.is_dir.return_value = True
@@ -132,8 +132,8 @@ class TestDataStorage(unittest.TestCase):
         result = DataStorage.load_history_position(mock_path)
         self.assertIsNone(result)
 
-    @patch('src.optimize.experimental.optimizer.store.Path')
-    @patch('src.optimize.experimental.optimizer.store.read_csv_s')
+    @patch('experimental.optimizer.store.Path')
+    @patch('experimental.optimizer.store.read_csv_s')
     def test_load_history_position_with_data(self, mock_read_csv_s, mock_path):
         mock_path.exists.return_value = True
         mock_path.is_dir.return_value = True

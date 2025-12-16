@@ -61,8 +61,8 @@ class TestStateXgbModel():
         assert model.show_feature_importance is False
 
     @staticmethod
-    @patch('src.optimize.experimental.model.xgb_state_model.xgboost.Booster')
-    @patch('src.optimize.experimental.model.xgb_state_model.xgboost.DMatrix')
+    @patch('experimental.model.xgb_state_model.xgboost.Booster')
+    @patch('experimental.model.xgb_state_model.xgboost.DMatrix')
     def test_predict(mock_dmatrix, mock_booster, tmp_path):
         # 创建模拟的Booster实例
         mock_model = MagicMock()
@@ -99,12 +99,12 @@ class TestStateXgbModel():
         mock_model.predict.assert_called_once_with(mock_dmatrix_instance)
 
     @staticmethod
-    @patch('src.optimize.experimental.model.xgb_state_model.plt.show')
-    @patch('src.optimize.experimental.model.xgb_state_model.plt.close')
-    @patch('src.optimize.experimental.model.xgb_state_model.plt.savefig')
-    @patch('src.optimize.experimental.model.xgb_state_model.plt.subplots')
+    @patch('experimental.model.xgb_state_model.plt.show')
+    @patch('experimental.model.xgb_state_model.plt.close')
+    @patch('experimental.model.xgb_state_model.plt.savefig')
+    @patch('experimental.model.xgb_state_model.plt.subplots')
     @patch('builtins.open', MagicMock())
-    @patch('src.optimize.experimental.model.xgb_state_model.xgboost.plot_importance')
+    @patch('experimental.model.xgb_state_model.xgboost.plot_importance')
     def test_plot_feature_importance(mock_plot, mock_subplots, mock_savefig, mock_close, mock_show, tmp_path):
         # 设置mock模型
         mock_model = MagicMock()
@@ -126,10 +126,10 @@ class TestStateXgbModel():
 
 
     @staticmethod
-    @patch('src.optimize.experimental.model.xgb_state_model.xgboost.train')
-    @patch('src.optimize.experimental.model.xgb_state_model.xgboost.DMatrix')
-    @patch('src.optimize.experimental.model.xgb_state_model.plot_feature_importance')
-    @patch('src.optimize.experimental.model.xgb_state_model.plot_pred_and_test')
+    @patch('experimental.model.xgb_state_model.xgboost.train')
+    @patch('experimental.model.xgb_state_model.xgboost.DMatrix')
+    @patch('experimental.model.xgb_state_model.plot_feature_importance')
+    @patch('experimental.model.xgb_state_model.plot_pred_and_test')
     def test_train_with_visualization(mock_plot_pred, mock_plot_feat, mock_dmatrix, mock_train, mock_dataset,
                                       tmp_path):
         # 设置mock返回
@@ -161,10 +161,10 @@ class TestStateXgbModel():
         mock_model.save_model.assert_called_once()
 
     @staticmethod
-    @patch('src.optimize.experimental.model.xgb_state_model.xgboost.train')
-    @patch('src.optimize.experimental.model.xgb_state_model.xgboost.DMatrix')
-    @patch('src.optimize.experimental.model.xgb_state_model.plot_feature_importance')
-    @patch('src.optimize.experimental.model.xgb_state_model.plot_pred_and_test')
+    @patch('experimental.model.xgb_state_model.xgboost.train')
+    @patch('experimental.model.xgb_state_model.xgboost.DMatrix')
+    @patch('experimental.model.xgb_state_model.plot_feature_importance')
+    @patch('experimental.model.xgb_state_model.plot_pred_and_test')
     def test_train_without_visualization(mock_plot_pred, mock_plot_feat, mock_dmatrix, mock_train, mock_dataset,
                                          tmp_path):
         # 设置mock返回
@@ -196,8 +196,8 @@ class TestStateXgbModel():
         mock_model.save_model.assert_called_once()
 
     @staticmethod
-    @patch('src.optimize.experimental.model.xgb_state_model.xgboost.train')
-    @patch('src.optimize.experimental.model.xgb_state_model.xgboost.DMatrix')
+    @patch('experimental.model.xgb_state_model.xgboost.train')
+    @patch('experimental.model.xgb_state_model.xgboost.DMatrix')
     def test_train_without_save(mock_dmatrix, mock_train, mock_dataset):
         # 设置mock返回
         mock_model = MagicMock(spec=xgboost.Booster)
@@ -219,15 +219,15 @@ class TestStateXgbModel():
         mock_model.save_model.assert_not_called()
 
     @staticmethod
-    @patch('src.optimize.experimental.model.xgb_state_model.plt.show')
-    @patch('src.optimize.experimental.model.xgb_state_model.plt.close')
-    @patch('src.optimize.experimental.model.xgb_state_model.plt.savefig')
-    @patch('src.optimize.experimental.model.xgb_state_model.plt.figure')
-    @patch('src.optimize.experimental.model.xgb_state_model.plt.scatter')
-    @patch('src.optimize.experimental.model.xgb_state_model.plt.title')
-    @patch('src.optimize.experimental.model.xgb_state_model.plt.xlabel')
-    @patch('src.optimize.experimental.model.xgb_state_model.plt.ylabel')
-    @patch('src.optimize.experimental.model.xgb_state_model.plt.legend')
+    @patch('experimental.model.xgb_state_model.plt.show')
+    @patch('experimental.model.xgb_state_model.plt.close')
+    @patch('experimental.model.xgb_state_model.plt.savefig')
+    @patch('experimental.model.xgb_state_model.plt.figure')
+    @patch('experimental.model.xgb_state_model.plt.scatter')
+    @patch('experimental.model.xgb_state_model.plt.title')
+    @patch('experimental.model.xgb_state_model.plt.xlabel')
+    @patch('experimental.model.xgb_state_model.plt.ylabel')
+    @patch('experimental.model.xgb_state_model.plt.legend')
     def test_plot_pred_and_test(mock_legend, mock_ylabel, mock_xlabel, mock_title, mock_scatter, mock_figure,
                                 mock_savefig, mock_close, mock_show, tmp_path):
         # 创建模拟数据

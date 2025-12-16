@@ -61,10 +61,10 @@ class TestPreprocessTool(unittest.TestCase):
         self.assertIn("total_output_length", new_columns)
 
 
-    @patch('src.optimize.experimental.inference.utils.PreprocessTool.get_op_in_origin_row_index')
-    @patch('src.optimize.experimental.inference.utils.PreprocessTool.get_all_op_input_ratio')
-    @patch('src.optimize.experimental.inference.utils.PreprocessTool.get_all_op_execute_delta_ratio')
-    @patch('src.optimize.experimental.inference.utils.PreprocessTool.get_label_hist_value')
+    @patch('experimental.inference.utils.PreprocessTool.get_op_in_origin_row_index')
+    @patch('experimental.inference.utils.PreprocessTool.get_all_op_input_ratio')
+    @patch('experimental.inference.utils.PreprocessTool.get_all_op_execute_delta_ratio')
+    @patch('experimental.inference.utils.PreprocessTool.get_label_hist_value')
     def test_generate_data_with_op_info_use_ratio_empty_input(
         self,
         mock_get_label_hist_value,
@@ -320,7 +320,7 @@ class TestPreprocessDataFrame(unittest.TestCase):
         result = _preprocess_dataframe(self.df, check_columns=['A', 'B'])
         self.assertFalse(result)
 
-    @patch('src.optimize.experimental.inference.utils.logger')
+    @patch('experimental.inference.utils.logger')
     def test_warning_called(self, mock_warning):
         # 测试当列包含无效值时，logger.warning 是否被调用
         self.df.loc[0, 'A'] = "=A2+A3"  # 添加一个无效值
