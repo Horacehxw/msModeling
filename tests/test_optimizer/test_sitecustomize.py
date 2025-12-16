@@ -20,7 +20,7 @@ from src.optimize.experimental.sitecustomize import dispatch, MODEL_EVAL_STATE_S
 
 class TestDispatch(unittest.TestCase):
     
-    @patch('src.optimize.experimental.patch.enable_patch')
+    @patch('experimental.patch.enable_patch')
     def test_dispatch_simulate_true(self, mock_enable_patch):
         # Set environment variable for simulation
         os.environ[MODEL_EVAL_STATE_SIMULATE] = 'True'

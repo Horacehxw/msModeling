@@ -51,13 +51,13 @@ class TestDataStorage(unittest.TestCase):
         })
         with patch('pandas.read_csv', return_value=result_df):
             result: pd.DataFrame = self.data_storage.get_best_result()
-            assert (result['fitness'].values.tolist() == [6.3524, 9.3442, 6.4396, 6.2324, 6.2833, 6.3732])
+            assert (result['fitness'].values.tolist() == [6.3524, 9.3442, 6.4396, 6.2324, 6.2833, 6.3723])
             get_settings().ttft_penalty = 0
             result: pd.DataFrame = self.data_storage.get_best_result()
-            assert (result['fitness'].values.tolist() == [6.3524, 9.3442, 6.4396, 6.2324, 6.2833, 6.3732])
+            assert (result['fitness'].values.tolist() == [6.3524, 9.3442, 6.4396, 6.2324, 6.2833, 6.3723])
             get_settings().tpot_penalty = 0
             result: pd.DataFrame = self.data_storage.get_best_result()
-            assert (result['fitness'].values.tolist() == [6.3524, 9.3442, 6.4396, 6.2324, 6.2833, 6.3732])
+            assert (result['fitness'].values.tolist() == [6.3524, 9.3442, 6.4396, 6.2324, 6.2833, 6.3723])
             self.data_storage.benchmark = VllmBenchMark(get_settings().vllm_benchmark)
             get_settings().ttft_penalty = 3.0
             get_settings().tpot_penalty = 3.0

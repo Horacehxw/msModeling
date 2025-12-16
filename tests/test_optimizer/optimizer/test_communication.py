@@ -64,7 +64,7 @@ class TestCommunicationForFile:
         comm.recv_command = MagicMock(return_value="init 11111:done")
         comm.send_command = MagicMock()
         comm.clear_res = MagicMock()
-        assert comm.clear_command(_cmd) == "done"
+        assert comm.clear_cmd(_cmd) == "done"
         comm.send_command.assert_called_once_with(CustomCommand.cmd_eof)
         comm.clear_res.assert_called_once()
 
@@ -74,7 +74,7 @@ class TestCommunicationForFile:
         comm.recv_command = MagicMock(return_value="init 11111:true")
         comm.send_command = MagicMock()
         comm.clear_res = MagicMock()
-        assert comm.clear_command(_cmd) is True
+        assert comm.clear_cmd(_cmd) is True
         comm.send_command.assert_called_once_with(CustomCommand.cmd_eof)
         comm.clear_res.assert_called_once()
 
@@ -84,7 +84,7 @@ class TestCommunicationForFile:
         comm.recv_command = MagicMock(return_value="init 11111:false")
         comm.send_command = MagicMock()
         comm.clear_res = MagicMock()
-        assert comm.clear_command(_cmd) is False
+        assert comm.clear_cmd(_cmd) is False
         comm.send_command.assert_called_once_with(CustomCommand.cmd_eof)
         comm.clear_res.assert_called_once()
 
@@ -94,7 +94,7 @@ class TestCommunicationForFile:
         comm.recv_command = MagicMock(return_value="init 11111:none")
         comm.send_command = MagicMock()
         comm.clear_res = MagicMock()
-        assert comm.clear_command(_cmd) is None
+        assert comm.clear_cmd(_cmd) is None
         comm.send_command.assert_called_once_with(CustomCommand.cmd_eof)
         comm.clear_res.assert_called_once()
 
@@ -105,14 +105,14 @@ class TestCommunicationForFile:
         comm.send_command = MagicMock()
         comm.clear_res = MagicMock()
         with pytest.raises(ValueError):
-            comm.clear_command(_cmd)
+            comm.clear_cmd(_cmd)
 
     @classmethod
     def test_clear_cmd_other(cls, comm):
         comm.recv_command = MagicMock(return_value="init 111111:other")
         comm.send_command = MagicMock()
         comm.clear_res = MagicMock()
-        assert comm.clear_command("init 111111") == "other"
+        assert comm.clear_cmd("init 111111") == "other"
         comm.send_command.assert_called_once_with(CustomCommand.cmd_eof)
         comm.clear_res.assert_called_once()
 
