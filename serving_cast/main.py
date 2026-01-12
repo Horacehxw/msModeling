@@ -5,13 +5,11 @@ import os
 import stime
 
 from serving_cast.config import Config
-from serving_cast.device import DummyDeviceConfig, MachineConfig
 from serving_cast.instance import Instance
 from serving_cast.load_gen import FixedLengthLoadGen
 from serving_cast.profiler import profiler_interface
 from serving_cast.serving import PdAggregationServing, PdDisaggregationServing
 from serving_cast.utils import (
-    dataclass2dict,
     gen_profiling_config_set_env_variable,
     get_basic_timestamp,
     main_processing,
@@ -91,9 +89,7 @@ def instance_group2pd_type(instance_group):
 def get_instance_group(instance_config_list, common_config):
     instance_group = {"prefill": [], "decode": [], "both": []}
 
-    model_config = dataclass2dict(common_config.model_config)
     for instance_config in instance_config_list:
-        parallel_config = dataclass2dict(instance_config.parallel_config)
         for _ in range(instance_config.num_instances):
             instance = Instance(instance_config)
             if instance_config.pd_role not in instance_group:
@@ -165,7 +161,7 @@ def main():
     load_gen = get_load_gen(config.common_config.load_gen)
     serving = get_serving(instance_group)
 
-    main_task = stime.CallableTask(main_processing, serving, load_gen)
+    _ = stime.CallableTask(main_processing, serving, load_gen)
     stime.start_simulation()
 
     summarize(load_gen.get_finished_requests().values())
