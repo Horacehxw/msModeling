@@ -27,7 +27,7 @@ def _(
 def _(
     x: List[torch.Tensor],
     w: List[torch.Tensor],
-    w_scale: List[torch.Tensor],
+     w_scale: List[torch.Tensor],
     w_offset: List[Optional[torch.Tensor]],
     x_scale: List[torch.Tensor],
     x_offset: List[Optional[torch.Tensor]],
