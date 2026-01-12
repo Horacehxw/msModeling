@@ -9,9 +9,6 @@ try:
 except ImportError:
     profiling_supported = False
 
-if profiling_supported:
-    pass
-
 
 def is_profiling_ready():
     return profiling_supported
