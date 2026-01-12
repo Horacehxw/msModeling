@@ -1,7 +1,7 @@
 # Copyright Huawei Technologies Co., Ltd. 2025-2025. All rights reserved.
 from collections import Counter
 
-from service_sim.profiler.profiler_stime import Level, SimProfiler as Profiler
+from serving_cast.profiler.profiler_stime import Level, SimProfiler as Profiler
 import stime
 
 

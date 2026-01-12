@@ -5,12 +5,12 @@ import time
 
 profiling_supported = True
 try:
-    from service_sim.profiler.profiler_stime import Level, SimProfiler, parse_main_func
+    from serving_cast.profiler.profiler_stime import Level, SimProfiler, parse_main_func
 except ImportError as e:
     profiling_supported = False
 
 if profiling_supported:
-    from service_sim.profiler.profiler_utils import (
+    from serving_cast.profiler.profiler_utils import (
         get_state,
         get_batch_type,
         get_iter_size_info,

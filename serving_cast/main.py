@@ -4,13 +4,13 @@ import os
 
 import stime
 
-from service_sim.config import Config
-from service_sim.device import DummyDeviceConfig, MachineConfig
-from service_sim.instance import Instance
-from service_sim.load_gen import FixedLengthLoadGen
-from service_sim.profiler import profiler_interface
-from service_sim.serving import PdAggregationServing, PdDisaggregationServing
-from service_sim.utils import (
+from serving_cast.config import Config
+from serving_cast.device import DummyDeviceConfig, MachineConfig
+from serving_cast.instance import Instance
+from serving_cast.load_gen import FixedLengthLoadGen
+from serving_cast.profiler import profiler_interface
+from serving_cast.serving import PdAggregationServing, PdDisaggregationServing
+from serving_cast.utils import (
     dataclass2dict,
     gen_profiling_config_set_env_variable,
     get_basic_timestamp,

@@ -2,8 +2,8 @@
 import unittest
 from unittest.mock import Mock, patch
 
-from service_sim.communication import CommunicationManager
-from service_sim.config import Config, CommunicationConfig
+from serving_cast.communication import CommunicationManager
+from serving_cast.config import Config, CommunicationConfig
 from stime import init_simulation, now, elapse, stop_simulation, start_simulation, CallableTask, current_task
 from stime import get_logger
 

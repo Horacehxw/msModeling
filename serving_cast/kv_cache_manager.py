@@ -2,8 +2,8 @@
 from typing import Dict, List, Optional
 
 import stime
-from service_sim.profiler import profiler_interface
-from service_sim.config import Config
+from serving_cast.profiler import profiler_interface
+from serving_cast.config import Config
 
 
 logger = stime.get_logger(__name__)

@@ -2,13 +2,13 @@
 from typing import Dict, List
 
 import stime
-from service_sim.device import Device
-from service_sim.kv_cache_manager import KVCacheManager
-from service_sim.model_runner import ModelRunner
-from service_sim.request import Request, RequestState
-from service_sim.profiler import profiler_interface
-from service_sim.config import Config
-from service_sim.communication import CommunicationManager
+from serving_cast.device import Device
+from serving_cast.kv_cache_manager import KVCacheManager
+from serving_cast.model_runner import ModelRunner
+from serving_cast.request import Request, RequestState
+from serving_cast.profiler import profiler_interface
+from serving_cast.config import Config
+from serving_cast.communication import CommunicationManager
 
 
 logger = stime.get_logger(__name__)

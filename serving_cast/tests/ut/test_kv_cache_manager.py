@@ -2,8 +2,8 @@
 import unittest
 from unittest.mock import Mock, patch
 
-from service_sim.kv_cache_manager import KVCacheManager  # Implementation file above
-from service_sim.config import Config
+from serving_cast.kv_cache_manager import KVCacheManager  # Implementation file above
+from serving_cast.config import Config
 
 
 class TestKVCacheManager(unittest.TestCase):

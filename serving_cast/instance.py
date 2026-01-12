@@ -4,9 +4,9 @@ import itertools
 from typing import List
 
 import stime
-from service_sim.device import MachineConfig, MachineManager
-from service_sim.engine import Engine, EngineLoadBalancer
-from service_sim.request import Request, RequestState
+from serving_cast.device import MachineConfig, MachineManager
+from serving_cast.engine import Engine, EngineLoadBalancer
+from serving_cast.request import Request, RequestState
 
 
 logger = stime.get_logger(__name__)

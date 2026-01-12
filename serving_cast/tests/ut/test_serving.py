@@ -3,15 +3,15 @@ import unittest
 from unittest.mock import Mock, patch
 
 import stime
-from service_sim.config import Config, InstanceConfig, ParallelConfig, CommunicationConfig
-from service_sim.device import DummyDeviceConfig, MachineConfig
+from serving_cast.config import Config, InstanceConfig, ParallelConfig, CommunicationConfig
+from serving_cast.device import DummyDeviceConfig, MachineConfig
 
-from service_sim.instance import Instance
-from service_sim.load_gen import FixedLengthLoadGen
-from service_sim.model_runner import ModelRunner
-from service_sim.request import Request
-from service_sim.serving import PdAggregationServing, PdDisaggregationServing
-from service_sim.utils import main_processing
+from serving_cast.instance import Instance
+from serving_cast.load_gen import FixedLengthLoadGen
+from serving_cast.model_runner import ModelRunner
+from serving_cast.request import Request
+from serving_cast.serving import PdAggregationServing, PdDisaggregationServing
+from serving_cast.utils import main_processing
 
 
 class ServingTestCase(unittest.TestCase):
@@ -41,7 +41,7 @@ class ServingTestCase(unittest.TestCase):
         self.fake_ret.kv_cache_per_token_gb = 0.001
 
         self.patch_model_runner = patch(
-            'service_sim.model_runner.TensorCastModelRunner',
+            'serving_cast.model_runner.TensorCastModelRunner',
         )
         mock_model_runner = self.patch_model_runner.start()
         self.mock_engine = mock_model_runner.return_value
