@@ -1133,7 +1133,36 @@ class TestTextGenerate(unittest.TestCase):
             result = asdict(result)
         self.assertNotIn("aten.addmm.default", result["table_result"])
 
+    def test_ling_basic(self):
+        user_input = UserInputConfig(
+            device=self.device,
+            model_id="inclusionAI/Ling-1T",
+            num_queries=1,
+            query_len=1,
+            context_length=7,
+            do_compile=False,
+            allow_graph_break=False,
+            quantize_linear_action=QuantizeLinearAction.DISABLED,
+            world_size=64,
+        )
+        model_runner = ModelRunner(user_input)
+        result = model_runner.run_inference(generate_inputs_func=generate_inputs)
 
+    def test_ling_tp_size_greater_than_num_kv_heads(self):
+        user_input = UserInputConfig(
+            device=self.device,
+            model_id="inclusionAI/Ling-1T",
+            num_queries=1,
+            query_len=1,
+            context_length=7,
+            do_compile=False,
+            allow_graph_break=False,
+            quantize_linear_action=QuantizeLinearAction.DISABLED,
+            world_size=64,
+            tp_size=16,
+        )
+        model_runner = ModelRunner(user_input)
+        result = model_runner.run_inference(generate_inputs_func=generate_inputs)
 
 if __name__ == "__main__":
     unittest.main()
