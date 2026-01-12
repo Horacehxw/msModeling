@@ -97,7 +97,7 @@ class TestVideoGenerateCfgLogicOnly(unittest.TestCase):
         mock_process_input.return_value = ({"hidden_states": MagicMock()}, None)
 
         # ------------------------------ 2. Import and execute run_inference ------------------------------
-        from tensor_cast.scripts.video_generate import run_inference
+        from ..scripts.video_generate import run_inference
 
         try:
             run_inference(
