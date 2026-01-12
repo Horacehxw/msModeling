@@ -22,6 +22,8 @@ from ..model_config import (
     RemoteSource,
 )
 
+from ..layers.attention_adapters import BailingMoeV2AttentionAdapter
+
 logger = logging.getLogger(__name__)
 
 # TODO: Allow users to extend these default configurations from config.py
@@ -61,6 +63,10 @@ _model_type_to_moe_config: Dict[str, MoEConfig] = {
         module_name="Ernie4_5_MoeSparseMoeBlock",
         gate_returns_raw_logits=True,
     ),
+    "bailing_moe": MoEConfig(
+        module_name="BailingMoeV2SparseMoeBlock",
+        gate_returns_raw_logits=False,
+    ),
 }
 
 
@@ -86,6 +92,14 @@ _model_type_to_mtp_block_module_name: Dict[str, str] = {
 
 def get_mtp_block_module_name(model_type: str = "") -> str:
     return _model_type_to_mtp_block_module_name.get(model_type)
+
+
+_model_id_to_custom_attention_module_mapping: Dict[str, tuple] = {
+    "inclusionAI/Ling-1T": ("Bailing.*Attention", BailingMoeV2AttentionAdapter),
+}
+ 	 
+def model_id_to_custom_attention_module_mapping(model_id: str) -> tuple:
+    return _model_id_to_custom_attention_module_mapping.get(model_id, (None, None))
 
 
 def strip_module_name(name: str) -> str:
