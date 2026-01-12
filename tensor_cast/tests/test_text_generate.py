@@ -1052,7 +1052,7 @@ class TestTextGenerate(unittest.TestCase):
         """Test qwen3_vl prefill operation."""
         user_input = UserInputConfig(
             device=self.device,
-            model_id='Qwen/Qwen3-VL-8B-Instruct',
+            model_id="Qwen/Qwen3-VL-8B-Instruct",
             num_queries=self.num_queries,
             query_len=self.query_len,
             context_length=self.context_length,
@@ -1081,7 +1081,7 @@ class TestTextGenerate(unittest.TestCase):
         """Test qwen3_vl without image input prefill operation."""
         user_input = UserInputConfig(
             device=self.device,
-            model_id='Qwen/Qwen3-VL-8B-Instruct',
+            model_id="Qwen/Qwen3-VL-8B-Instruct",
             num_queries=self.num_queries,
             query_len=self.query_len,
             context_length=self.context_length,
@@ -1104,10 +1104,10 @@ class TestTextGenerate(unittest.TestCase):
         self.assertNotIn("aten.addmm.default", result["table_result"])
 
     def test_qwen3_vl_decode_mode(self):
-        """Test qwen3_vl decode mode """
+        """Test qwen3_vl decode mode"""
         user_input = UserInputConfig(
             device=self.device,
-            model_id='Qwen/Qwen3-VL-8B-Instruct',
+            model_id="Qwen/Qwen3-VL-8B-Instruct",
             num_queries=self.num_queries,
             query_len=self.query_len,
             context_length=self.context_length,
@@ -1146,7 +1146,7 @@ class TestTextGenerate(unittest.TestCase):
             world_size=64,
         )
         model_runner = ModelRunner(user_input)
-        result = model_runner.run_inference(generate_inputs_func=generate_inputs)
+        _ = model_runner.run_inference(generate_inputs_func=generate_inputs)
 
     def test_ling_tp_size_greater_than_num_kv_heads(self):
         user_input = UserInputConfig(
@@ -1162,7 +1162,8 @@ class TestTextGenerate(unittest.TestCase):
             tp_size=16,
         )
         model_runner = ModelRunner(user_input)
-        result = model_runner.run_inference(generate_inputs_func=generate_inputs)
+        _ = model_runner.run_inference(generate_inputs_func=generate_inputs)
+
 
 if __name__ == "__main__":
     unittest.main()

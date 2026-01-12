@@ -6,6 +6,7 @@ from .utils import ModelWrapperBase
 
 is_tuple = False
 
+
 class RegionMarkerWrapper(ModelWrapperBase):
     def __init__(
         self,
@@ -29,7 +30,7 @@ class RegionMarkerWrapper(ModelWrapperBase):
             self.region_id,
         )
         result = self._inner.forward(*args, **kwargs)
-        
+
         # Handle both single tensor and tuple returns
         if isinstance(result, tuple):
             is_tuple = True
@@ -68,7 +69,6 @@ class CopyLayerWrapper(ModelWrapperBase):
         self.region_id = region_id
 
     def forward(self, *args, **kwargs):
-        global is_tuple
         hidden_states = args[0]
         # The following copy operation would be equivalent to:
         # result = self._inner.forward(*args, **kwargs)
@@ -76,29 +76,29 @@ class CopyLayerWrapper(ModelWrapperBase):
             hidden_states,
             self.region_id,
         )
-        
+
         # For CopyLayerWrapper, we need to return the same format as the original layer.
         # Since we're copying a decoder layer, we need to return a tuple.
         # The decoder layer always returns at least (hidden_states,)
         # We'll construct a minimal tuple with just hidden_states and None for other outputs.
-        
+
         # Check kwargs to determine what outputs are expected
-        output_attentions = kwargs.get('output_attentions', False)
-        use_cache = kwargs.get('use_cache', False)
-        output_router_logits = kwargs.get('output_router_logits', False)
-        
+        output_attentions = kwargs.get("output_attentions", False)
+        use_cache = kwargs.get("use_cache", False)
+        output_router_logits = kwargs.get("output_router_logits", False)
+
         if is_tuple:
             outputs = (hidden_states,)
-            
+
             if output_attentions:
                 outputs += (None,)  # self_attn_weights
-            
+
             if use_cache:
                 outputs += (None,)  # present_key_value
-            
+
             if output_router_logits:
                 outputs += (None,)  # router_logits
         else:
             outputs = hidden_states
-        
+
         return outputs

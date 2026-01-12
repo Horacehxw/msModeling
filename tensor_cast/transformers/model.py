@@ -4,9 +4,9 @@ import dataclasses
 import fnmatch
 import logging
 import math
+import re
 import typing
 from typing import Dict, Optional, Union
-import re
 
 import torch
 from transformers import PreTrainedModel
@@ -35,9 +35,9 @@ from .utils import (
     _VISUAL_FAMILY,
     AutoModelConfigLoader,
     init_on_device_without_buffers,
+    model_id_to_custom_attention_module_mapping,
     patch_method_for_qwen3_vl,
     strip_module_name,
-    model_id_to_custom_attention_module_mapping,
 )
 
 if typing.TYPE_CHECKING:
@@ -415,22 +415,23 @@ class TransformerModel(ModelWrapperBase):
                 self._replace_module(name, mla)
 
     def patch_attention_block(self):
-            """
-            Patch attention modules to use tensorcast's attention ops.
-            This supports both standard attention interfaces (separate q,k,v) and
-            non-standard interfaces (hidden_states).
-            """
-            if not hasattr(self, 'attention_by_layers'):
-                return
-            original_attention_name_pattern, custom_attention_adapter_cls = \
-                model_id_to_custom_attention_module_mapping(self.model_id)
-            if original_attention_name_pattern is None:
-                return
-            named_modules = list(self._inner.named_modules())
-            for name, module in named_modules:
-                if re.match(original_attention_name_pattern, type(module).__name__):
-                    adapter = custom_attention_adapter_cls(module, self.attention_by_layers)
-                    self._replace_module(name, adapter)
+        """
+        Patch attention modules to use tensorcast's attention ops.
+        This supports both standard attention interfaces (separate q,k,v) and
+        non-standard interfaces (hidden_states).
+        """
+        if not hasattr(self, "attention_by_layers"):
+            return
+        original_attention_name_pattern, custom_attention_adapter_cls = (
+            model_id_to_custom_attention_module_mapping(self.model_id)
+        )
+        if original_attention_name_pattern is None:
+            return
+        named_modules = list(self._inner.named_modules())
+        for name, module in named_modules:
+            if re.match(original_attention_name_pattern, type(module).__name__):
+                adapter = custom_attention_adapter_cls(module, self.attention_by_layers)
+                self._replace_module(name, adapter)
 
     def get_moe_config(self):
         return self.model_config.moe_config
@@ -521,9 +522,7 @@ class TransformerModel(ModelWrapperBase):
                 "global_tp_group": tp_group,
                 "head_num": config_info.num_attention_heads,
             }
-            tp_plan.update(
-                {f"{language_layers}.*.o_proj": (ROWWISE_LINEAR, params)}
-            )
+            tp_plan.update({f"{language_layers}.*.o_proj": (ROWWISE_LINEAR, params)})
 
             params = {
                 "tp_group": mlp_tp_group,
