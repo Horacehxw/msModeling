@@ -94,13 +94,13 @@ def get_mtp_block_module_name(model_type: str = "") -> str:
     return _model_type_to_mtp_block_module_name.get(model_type)
 
 
-_model_id_to_custom_attention_module_mapping: Dict[str, tuple] = {
-    "inclusionAI/Ling-1T": ("Bailing.*Attention", BailingMoeV2AttentionAdapter),
+_model_type_to_custom_attention_module_mapping: Dict[str, tuple] = {
+    "bailing_moe": ("BailingMoe.*Attention", BailingMoeV2AttentionAdapter),
 }
 
 
-def model_id_to_custom_attention_module_mapping(model_id: str) -> tuple:
-    return _model_id_to_custom_attention_module_mapping.get(model_id, (None, None))
+def model_type_to_custom_attention_module_mapping(model_type: str) -> tuple:
+    return _model_type_to_custom_attention_module_mapping.get(model_type, (None, None))
 
 
 def strip_module_name(name: str) -> str:

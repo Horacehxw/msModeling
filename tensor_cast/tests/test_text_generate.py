@@ -1133,10 +1133,16 @@ class TestTextGenerate(unittest.TestCase):
             result = asdict(result)
         self.assertNotIn("aten.addmm.default", result["table_result"])
 
-    def test_ling_basic(self):
+    @parameterized.expand(
+        [
+            ["inclusionAI/Ling-1T"],
+            ["inclusionAI/Ling-flash-2.0"],
+        ]
+    )
+    def test_ling_basic(self, model_id):
         user_input = UserInputConfig(
             device=self.device,
-            model_id="inclusionAI/Ling-1T",
+            model_id=model_id,
             num_queries=1,
             query_len=1,
             context_length=7,

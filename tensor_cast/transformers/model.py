@@ -35,7 +35,7 @@ from .utils import (
     _VISUAL_FAMILY,
     AutoModelConfigLoader,
     init_on_device_without_buffers,
-    model_id_to_custom_attention_module_mapping,
+    model_type_to_custom_attention_module_mapping,
     patch_method_for_qwen3_vl,
     strip_module_name,
 )
@@ -423,7 +423,7 @@ class TransformerModel(ModelWrapperBase):
         if not hasattr(self, "attention_by_layers"):
             return
         original_attention_name_pattern, custom_attention_adapter_cls = (
-            model_id_to_custom_attention_module_mapping(self.model_id)
+            model_type_to_custom_attention_module_mapping(self.hf_config.model_type)
         )
         if original_attention_name_pattern is None:
             return
