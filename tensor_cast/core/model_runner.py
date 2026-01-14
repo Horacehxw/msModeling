@@ -68,7 +68,6 @@ class ModelRunner:
         generate_inputs_func: Callable = generate_inputs_varlen,
         with_sampler: bool = False,
     ) -> ModelRunnerMetrics:
-
         def _format_time(seconds: float) -> str:
             if seconds > 1.0:
                 return f'{seconds:.3f}token/s'
