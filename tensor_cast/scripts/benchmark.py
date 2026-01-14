@@ -45,6 +45,8 @@ def find_best_throughput(
     mtp_acceptance_rate: Optional[List[float]] = None,
     reserved_memory_size_gb: float = 10,  # assume 10GB reserved memory
     serving_overhead_s: float = 0.002,  # assume 2ms serving cost by default
+    concurrency_min: Optional[int] = None,  # user-specified minimum concurrency for search
+    concurrency_max: Optional[int] = None,  # user-specified maximum concurrency for search
 ) -> Tuple[
     float, int, Dict[str, float], Optional[str]
 ]:  # (latency, concurrency, breakdown, error message)
@@ -121,9 +123,40 @@ def find_best_throughput(
         ):  # TODO(jgong5): catch assertion due to limited support of TP+EP, need to fix
             return 0, math.inf, {}
 
-    # 1. Exponentially search to find an upper bound quickly.
-    min_concurrency = model_config.parallel_config.data_parallel_size
-    concurrency = min_concurrency
+    dp_size = model_config.parallel_config.data_parallel_size
+    search_min = concurrency_min if concurrency_min is not None else dp_size
+    search_min = max(search_min, dp_size)  # clamp to DP size
+
+    if concurrency_max is not None:
+        # Binary search within [search_min, concurrency_max]
+        low = search_min
+        high = concurrency_max
+        best_concurrency = 0
+
+        latency, available_memory_gb, breakdown = run(search_min)
+        error_msg = error(latency, available_memory_gb)
+        if error_msg:
+            return latency, search_min, breakdown, error_msg
+        best_concurrency = search_min
+
+        while low <= high:
+            mid = (low + high) // 2
+            if mid <= best_concurrency:
+                low = mid + 1
+                continue
+            
+            latency, available_memory_gb, _ = run(mid)
+            if not error(latency, available_memory_gb):
+                best_concurrency = mid
+                low = mid + 1
+            else:
+                high = mid - 1
+        
+        final_latency, _, breakdown = run(best_concurrency)
+        return final_latency, best_concurrency, breakdown, ""
+
+    # 1. Exponential search to find upper bound
+    concurrency = search_min
     max_concurrency = 0
     while True:
         latency, available_memory_gb, breakdown = run(concurrency)
@@ -288,6 +321,25 @@ models:
         default=None,
         help="Logging level",
     )
+    parser.add_argument(
+        "--tp-sizes",
+        type=int,
+        nargs="+",
+        default=None,
+        help="TP sizes to search (default: powers of 2 up to num_devices)",
+    )
+    parser.add_argument(
+        "--concurrency-min",
+        type=int,
+        default=None,
+        help="Minimum concurrency (default: DP size, clamped to >= DP size)",
+    )
+    parser.add_argument(
+        "--concurrency-max",
+        type=int,
+        default=None,
+        help="Maximum concurrency (default: no limit, uses exponential search)",
+    )
     args = parser.parse_args()
     if args.config:
         with open(args.config) as f:
@@ -336,7 +388,13 @@ models:
                     if device_profile.comm_grid.grid.nelement() < num_devices:
                         continue
                     user_input.model_id = model_id
-                    tp_size_list = [1 << i for i in range(num_devices.bit_length())]
+                    if args.tp_sizes:
+                        tp_size_list = [tp for tp in args.tp_sizes if tp <= num_devices]
+                        if not tp_size_list:
+                            logger.warning(f"All specified TP sizes exceed num_devices ({num_devices}), skipping")
+                            continue
+                    else:
+                        tp_size_list = [1 << i for i in range(num_devices.bit_length())]
                     for tp_size in tp_size_list:
                         torch.compiler.reset()
                         user_input.tp_size = tp_size
@@ -370,6 +428,8 @@ models:
                                     slo_limit,
                                     is_decode,
                                     mtp_acceptance_rate=user_input.mtp_acceptance_rate,
+                                    concurrency_min=args.concurrency_min,
+                                    concurrency_max=args.concurrency_max,
                                 )
                             )
                             TPS = concurrency / latency if latency != 0 else 0
