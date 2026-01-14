@@ -7,6 +7,7 @@ ModelRuner
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
@@ -67,6 +68,17 @@ class ModelRunner:
         generate_inputs_func: Callable = generate_inputs_varlen,
         with_sampler: bool = False,
     ) -> ModelRunnerMetrics:
+
+        def _format_time(seconds: float) -> str:
+            if seconds > 1.0:
+                return f'{seconds:.3f}token/s'
+            elif seconds > 1e-3:
+                return f"{seconds * 1e3:.3f}token/s"
+            elif seconds > 1e-6:
+                return f"{seconds * 1e6:.3f}token/s"
+            else:
+                return f"{seconds * 1e9:.3f}token/s"
+
         batch_size = (
             self.user_input.num_queries
             + self.model.model_config.parallel_config.data_parallel_size
@@ -104,6 +116,25 @@ class ModelRunner:
             group_by_input_shapes=self.user_input.dump_input_shapes
         )
         print(table_result)
+        time_match = re.search(r"Total time for analytic:\s*([\d.]+)\s*([mun]?s)", table_result)
+        total_time = 0
+        if time_match:
+            time_value = float(time_match.group(1))
+            time_unit = time_match.group(2)
+            #将时间统一转换为秒
+            if time_unit == 's':
+                total_time = time_value
+            elif time_unit == 'ms':
+                total_time = time_value * 1e-3
+            elif time_unit == 'us':
+                total_time = time_value * 1e-6
+            else :
+                total_time = time_value * 1e-9
+            single_card_tps = (self.user_input.num_queries/
+                               total_time /
+                               self.user_input.world_size)
+            tps_str = _format_time(single_card_tps)
+            print(f"Single card TPS:{tps_str}")
         peak_memory_usage_gb = runtime.memory_tracker.peak_mem_usage() / 1024**3
 
         kv_cache_size_gb = (
