@@ -115,7 +115,10 @@ class ModelRunner:
             group_by_input_shapes=self.user_input.dump_input_shapes
         )
         print(table_result)
-        time_match = re.search(r"Total time for analytic:\s*([\d.]+)\s*([mun]?s)", table_result)
+        time_match = re.search(
+            r"Total time for analytic:\s*(\d+(?:\.\d+)?)\s*([mun]?s)\s*",
+            table_result
+        )
         total_time = 0
         if time_match:
             time_value = float(time_match.group(1))
@@ -129,11 +132,14 @@ class ModelRunner:
                 total_time = time_value * 1e-6
             else :
                 total_time = time_value * 1e-9
-            single_card_tps = (self.user_input.num_queries/
-                               total_time /
-                               self.user_input.world_size)
-            tps_str = _format_time(single_card_tps)
-            print(f"Single card TPS:{tps_str}")
+            if total_time > 0:
+                single_card_tps = (self.user_input.num_queries/
+                                   total_time /
+                                   self.user_input.world_size)
+                tps_str = _format_time(single_card_tps)
+                print(f"Single card TPS:{tps_str}")
+            else:
+                raise ValueError(f"Time value must be positive (got: {time_value}{time_unit})")
         peak_memory_usage_gb = runtime.memory_tracker.peak_mem_usage() / 1024**3
 
         kv_cache_size_gb = (
