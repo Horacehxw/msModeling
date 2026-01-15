@@ -161,9 +161,10 @@ class SinkSplitPass(TensorCastGraphModulePass):
             """
             source_op = source_op_group[0]
             assert (
-                _is_split_with_sizes_node(source_op)
-                or source_op.target == torch.ops.aten.split.Tensor
-            ), ...
+                    _is_split_with_sizes_node(source_op)
+                    or source_op.target == torch.ops.aten.split.Tensor
+            ), f"Assertion failed: expected operator is 'split_with_sizes' or 'split'." \
+               f" The operator currently executed is: {source_op.target}. Please check if the correct operator is used."
             split_dim = split_node.args[2] if len(split_node.args) > 2 else 0
             source_op_split_dim = source_op.args[2] if len(source_op.args) > 2 else 0
             return split_dim != source_op_split_dim

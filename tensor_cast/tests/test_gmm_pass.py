@@ -40,6 +40,11 @@ class GmmPassTestCase(unittest.TestCase):
             moe_config=moe_config,
             hf_config=hf_config,
         )
+        if hasattr(hf_config, "vision_config"):
+            dtype = model_config.dtype
+            for sub_config_key in hf_config.sub_configs:
+                sub_config = getattr(hf_config, sub_config_key)
+                sub_config.dtype = dtype
         model = TransformerModel(model_id, model_config)
         model = torch.compile(model, backend=get_backend(), fullgraph=True)
         inputs = torch.empty([1, num_tokens], dtype=torch.long, device="meta")

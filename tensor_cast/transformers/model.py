@@ -558,8 +558,8 @@ class TransformerModel(ModelWrapperBase):
                     f"{language_layers}.*.mlp.down_proj": (ROWWISE_LINEAR, params),
                 }
             )
-            if self.get_visual_layers_path() is not None:
-                visual_layers_path = self.get_visual_layers_path()
+            visual_layers_path = self.get_visual_layers_path()
+            if visual_layers_path is not None:
                 params = {
                     "tp_group": tp_group,
                     "global_tp_group": tp_group,
