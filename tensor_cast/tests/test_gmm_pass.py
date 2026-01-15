@@ -21,8 +21,13 @@ class GmmPassTestCase(unittest.TestCase):
     def setUp(self):
         torch.compiler.reset()
 
-    def test_qwen3_fp(self):
-        model_id = "Qwen/Qwen3-235B-A22B"
+    @parameterized.expand(
+        [
+            "Qwen/Qwen3-235B-A22B",
+            "Qwen/Qwen3-VL-30B-A3B-Instruct",
+        ]
+    )
+    def test_qwen3_fp(self, model_id):
         auto_loader = AutoModelConfigLoader()
         hf_config = auto_loader.load_config(model_id)
         moe_config = get_moe_config(hf_config.model_type)

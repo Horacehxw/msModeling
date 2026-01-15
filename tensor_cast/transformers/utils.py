@@ -16,6 +16,7 @@ from transformers.utils.quantization_config import (
 from ..layers.attention_adapters import BailingMoeV2AttentionAdapter
 
 from ..layers.mla import MultiheadLatentAttentionBase
+from ..layers.moe_layer import TensorQwen3VLMoeTextMLP
 from ..model_config import (
     AttentionQuantConfig,
     ModelConfig,
@@ -42,6 +43,10 @@ _model_type_to_moe_config: Dict[str, MoEConfig] = {
     ),
     "qwen3_moe": MoEConfig(
         module_name="Qwen3MoeSparseMoeBlock",
+        gate_returns_raw_logits=True,
+    ),
+    "qwen3_vl_moe": MoEConfig(
+        module_name="Qwen3VLMoeTextSparseMoeBlock",
         gate_returns_raw_logits=True,
     ),
     "qwen3_next": MoEConfig(
@@ -134,18 +139,29 @@ def get_attention_quant_config(model, layer_idx) -> Optional[AttentionQuantConfi
     return None
 
 
+_model_type_to_custom_expert_module_mapping: Dict[str, tuple] = {
+    "qwen3_vl_moe": ("language_model.layers.*.experts", TensorQwen3VLMoeTextMLP),
+}
+
+
+def model_type_to_custom_expert_module_mapping(model_type: str) -> tuple:
+    return _model_type_to_custom_expert_module_mapping.get(model_type, (None, None))
+
+
 _VISUAL_FAMILY = {
     "qwen3_vl": {
         "visual": attrgetter("visual"),
         "language_model": attrgetter("language_model"),
         "visual.layers": attrgetter("visual.blocks"),
-        "language_model.layers": lambda _: "language_model.layers",
+        "path.visual.layers": lambda _: "visual.blocks",
+        "path.language_model.layers": lambda _: "language_model.layers",
     },
     "internvl": {
         "visual": attrgetter("vision_tower"),
         "language_model": attrgetter("language_model"),
         "visual.layers": attrgetter("vision_tower.encoder.layer"),
-        "language_model.layers": lambda _: "language_model.layers",
+        "path.visual.layers": lambda _: "vision_tower.encoder.layer",
+        "path.language_model.layers": lambda _: "language_model.layers",
     },
 }
 

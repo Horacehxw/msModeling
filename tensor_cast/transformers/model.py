@@ -36,6 +36,7 @@ from .utils import (
     AutoModelConfigLoader,
     init_on_device_without_buffers,
     model_type_to_custom_attention_module_mapping,
+    model_type_to_custom_expert_module_mapping,
     patch_method_for_qwen3_vl,
     strip_module_name,
 )
@@ -174,7 +175,7 @@ class TransformerModel(ModelWrapperBase):
             if self.model_config.hf_config is not None:
                 self.hf_config = self.model_config.hf_config
                 if self.model_config.num_hidden_layers_override:
-                    self.hf_config.num_hidden_layers = (
+                    self.hf_config.get_text_config().num_hidden_layers = (
                         model_config.num_hidden_layers_override
                     )
                 self._inner = auto_loader.load_model(
@@ -344,6 +345,7 @@ class TransformerModel(ModelWrapperBase):
             self.patch_attention_block()
             visual_model = self.get_visual()
             if visual_model is not None:
+                tp_size = self.parallel_group_manager.tp_group.world_size
                 pattern = "blocks.*.attn"
                 # Assign a depth_layer_idx to each attention layer in the vision model
                 # and append them sequentially to attention_by_layers.
@@ -363,6 +365,9 @@ class TransformerModel(ModelWrapperBase):
                             self.model_config.attention_cls()
                         )
                         depth_layer_idx += 1
+                        # This section is mainly used to modify the tp parallel of qkv in the vision part of qwen3-vl,
+                        # Otherwise, dimension mapping may fail when apply_rotary_pos_emb_vision is calculated.
+                        module.num_heads = module.num_heads // tp_size
 
         self.patch_mla()
 
@@ -433,6 +438,21 @@ class TransformerModel(ModelWrapperBase):
                 adapter = custom_attention_adapter_cls(module, self.attention_by_layers)
                 self._replace_module(name, adapter)
 
+    def patch_moe_expert(self):
+        # patch moe experts just loop over the experts and compute the output for each expert
+        original_experts_pattern, custom_experts_adapter_cls = (
+            model_type_to_custom_expert_module_mapping(self.hf_config.model_type)
+        )
+        if original_experts_pattern is None:
+            return
+        for name, module in self._inner.named_modules():
+            if fnmatch.fnmatchcase(strip_module_name(name), original_experts_pattern):
+                expert_num = module.num_experts
+                experts = torch.nn.ModuleList(
+                    [custom_experts_adapter_cls(module) for _ in range(expert_num)]
+                )
+                self._replace_module(name, experts)
+
     def get_moe_config(self):
         return self.model_config.moe_config
 
@@ -440,6 +460,7 @@ class TransformerModel(ModelWrapperBase):
         if not moe_config:
             return
 
+        self.patch_moe_expert()
         self.top_k = None
         self.num_routing_experts = None
         named_modules = list(self._inner.named_modules())
@@ -537,6 +558,44 @@ class TransformerModel(ModelWrapperBase):
                     f"{language_layers}.*.mlp.down_proj": (ROWWISE_LINEAR, params),
                 }
             )
+            if self.get_visual_layers_path() is not None:
+                visual_layers_path = self.get_visual_layers_path()
+                params = {
+                    "tp_group": tp_group,
+                    "global_tp_group": tp_group,
+                }
+                tp_plan.update(
+                    {
+                        f"{visual_layers_path}.*.attn.qkv": (COLWISE_LINEAR, params),
+                        f"{visual_layers_path}.*.attn.proj": (ROWWISE_LINEAR, params),
+                        "visual.merger.linear_fc1": (COLWISE_LINEAR, params),
+                        "visual.merger.linear_fc2": (ROWWISE_LINEAR, params),
+                        "visual.deepstack_merger_list.*.linear_fc1": (
+                            COLWISE_LINEAR,
+                            params,
+                        ),
+                        "visual.deepstack_merger_list.*.linear_fc2": (
+                            ROWWISE_LINEAR,
+                            params,
+                        ),
+                    }
+                )
+                params = {
+                    "tp_group": mlp_tp_group,
+                    "global_tp_group": tp_group,
+                }
+                tp_plan.update(
+                    {
+                        f"{visual_layers_path}.*.mlp.linear_fc1": (
+                            COLWISE_LINEAR,
+                            params,
+                        ),
+                        f"{visual_layers_path}.*.mlp.linear_fc2": (
+                            ROWWISE_LINEAR,
+                            params,
+                        ),
+                    }
+                )
 
             if not self.model_config.parallel_config.has_ep():
                 params = {
@@ -545,9 +604,23 @@ class TransformerModel(ModelWrapperBase):
                 }
                 tp_plan.update(
                     {
-                        "layers.*.experts.*.gate_proj": (COLWISE_LINEAR, params),
-                        "layers.*.experts.*.up_proj": (COLWISE_LINEAR, params),
-                        "layers.*.experts.*.down_proj": (ROWWISE_LINEAR, params),
+                        f"{language_layers}.*.experts.*.gate_proj": (
+                            COLWISE_LINEAR,
+                            params,
+                        ),
+                        f"{language_layers}.*.experts.*.up_proj": (
+                            COLWISE_LINEAR,
+                            params,
+                        ),
+                        f"{language_layers}.*.experts.*.down_proj": (
+                            ROWWISE_LINEAR,
+                            params,
+                        ),
+                        # Adaptation to gate_up
+                        f"{language_layers}.*.experts.*.gate_up_proj": (
+                            COLWISE_LINEAR,
+                            params,
+                        ),
                     }
                 )
 
@@ -736,6 +809,17 @@ class TransformerModel(ModelWrapperBase):
             return None
         return spec["visual.layers"](self.unwrap())
 
+    def get_visual_layers_path(self) -> Optional[str]:
+        """
+        Return the string prefix of visual layers path:
+          - "visual.blocks"
+          - "vision_tower.encoder.layer"
+        """
+        spec = self._get_vl_model_spec()
+        if spec is None:
+            return None
+        return spec["path.visual.layers"](self.unwrap())
+
     def get_language_layers(self) -> str:
         """
         Return the string prefix of transformer layers:
@@ -745,7 +829,7 @@ class TransformerModel(ModelWrapperBase):
         spec = self._get_vl_model_spec()
         if spec is None:
             return "layers"
-        return spec["language_model.layers"](self.unwrap())
+        return spec["path.language_model.layers"](self.unwrap())
 
     @staticmethod
     def get_weight_size_nested(modules):

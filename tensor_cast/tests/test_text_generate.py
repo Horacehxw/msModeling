@@ -1135,6 +1135,50 @@ class TestTextGenerate(unittest.TestCase):
 
     @parameterized.expand(
         [
+            ["Qwen/Qwen3-VL-32B-Instruct", False],
+            ["Qwen/Qwen3-VL-30B-A3B-Instruct", True],
+        ]
+    )
+    def test_qwen3_vl_parallel(self, model_id, ep):
+        """Test qwen3_vl parallel operation."""
+        user_input = UserInputConfig(
+            device=self.device,
+            model_id=model_id,
+            num_queries=self.num_queries,
+            query_len=self.query_len,
+            context_length=self.context_length,
+            image_batch_size=1,
+            image_width=1920,
+            image_height=1080,
+            do_compile=False,
+            allow_graph_break=False,
+            quantize_linear_action=QuantizeLinearAction.DISABLED,
+            world_size=2,
+            tp_size=2,
+            ep=ep,
+        )
+        model_runner = ModelRunner(user_input)
+        self.assertTrue(model_runner.model.is_vl_model, msg="Model should be vl model")
+        input_kwargs = generate_inputs(
+            model_runner.model,
+            model_runner.request_info_default,
+            block_size=user_input.block_size,
+        )
+        self.assertIn("pixel_values", input_kwargs)
+        result = model_runner.run_inference(generate_inputs_func=generate_inputs)
+        self._validate_inference_result(result, "test_qwen3_vl_with_basic_prefill")
+        if isinstance(result, ModelRunnerMetrics):
+            result = asdict(result)
+        self.assertIn("aten.addmm.default", result["table_result"])
+        self.assertIn("tensor_cast.all_reduce.default", result["table_result"])
+        self.assertIn("tensor_cast.all_gather.default", result["table_result"])
+        if user_input.ep:
+            self.assertIn("tensor_cast.all_to_all.default", result["table_result"])
+        else:
+            self.assertNotIn("tensor_cast.all_to_all.default", result["table_result"])
+
+    @parameterized.expand(
+        [
             ["inclusionAI/Ling-1T"],
             ["inclusionAI/Ling-flash-2.0"],
         ]
