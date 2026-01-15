@@ -164,6 +164,8 @@ class AttentionQuantConfig:
     def get_quant_dtype(self) -> torch.dtype:
         if self.quant_type == AttentionQuantType.INT8:
             return torch.int8
+        elif self.quant_type == AttentionQuantType.FP8:
+            return torch.float8_e4m3fn
         else:
             raise ValueError(f"Unsupported attention quant type {self.quant_type}")
 

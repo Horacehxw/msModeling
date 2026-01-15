@@ -52,6 +52,7 @@ def quant_type_to_weight_dtype(quant_type: LinearQuantType) -> torch.dtype:
 
 class AttentionQuantType(Enum):
     INT8 = auto()
+    FP8 = auto()
     # TODO(jgong5): support FP8
 
 
