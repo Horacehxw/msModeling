@@ -133,6 +133,7 @@ def main():
     )
     parser.add_argument(
         "--reserved-memory-gb",
+        type=float,
         default=0,
         help="Size of reserved device memory (in GB) that we cannot use from applications.",
     )

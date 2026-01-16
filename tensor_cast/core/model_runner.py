@@ -163,6 +163,7 @@ class ModelRunner:
         model_activation_size_gb = (
             peak_memory_usage_gb - kv_cache_size_gb - self.model_weight_size_gb
         )
+        print(type(self.user_input.reserved_memory_gb))
         device_memory_available_gb = (
             self.total_device_memory_gb
             - peak_memory_usage_gb

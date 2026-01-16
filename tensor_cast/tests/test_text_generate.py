@@ -1197,7 +1197,7 @@ class TestTextGenerate(unittest.TestCase):
             self.assertIn("Single card TPS:", output)
             self.assertRegex(output, r"Single card TPS:\s*[\d\.]+token/s")
 
-            
+
         finally:
             sys.stdout = old_stdout
 
