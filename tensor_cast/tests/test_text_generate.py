@@ -1,6 +1,8 @@
 import unittest
 from dataclasses import asdict
 from typing import Union
+import io
+import sys
 
 import torch
 from parameterized import parameterized
@@ -1170,6 +1172,34 @@ class TestTextGenerate(unittest.TestCase):
         model_runner = ModelRunner(user_input)
         _ = model_runner.run_inference(generate_inputs_func=generate_inputs)
 
+    def test_single_card_tps_basic(self):
+        user_input = UserInputConfig(
+            device=self.device,
+            model_id=self.model_id,
+            num_queries=1,
+            query_len=1,
+            context_length=7,
+            do_compile=False,
+            allow_graph_break=False,
+            quantize_linear_action=QuantizeLinearAction.DISABLED,
+            world_size=64,
+            tp_size=16
+        )
+        model_runner = ModelRunner(user_input)
+
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+
+        try:
+            result = model_runner.run_inference(generate_inputs_func=generate_inputs)
+            output = sys.stdout.getvalue()
+            self._validate_inference_result(result, "test_tps_output_in_run_inference")
+            self.assertIn("Single card TPS:", output)
+            self.assertRegex(output, r"Single card TPS:\s*[\d\.]+token/s")
+
+            
+        finally:
+            sys.stdout = old_stdout
 
 if __name__ == "__main__":
     unittest.main()
