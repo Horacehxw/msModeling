@@ -145,6 +145,10 @@ def find_best_throughput(
     concurrency_min, concurrency_max = None, None
 
     if concurrency_range is not None:
+        if len(concurrency_range) > 2:
+            raise ValueError(
+                f"--concurrency-range expects [min max] or [max], got {concurrency_range}"
+            )
         valid_values = [v for v in concurrency_range if v > 0]
         if len(valid_values) == 1:
             concurrency_max = valid_values[0]
