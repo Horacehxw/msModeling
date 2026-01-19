@@ -9,7 +9,7 @@ import torch
 from .. import ops  # noqa: F401
 from ..device import DeviceProfile
 from .op_invoke_info import OpInvokeInfo
-from .utils import bytes_of_elements, bytes_of_tensor, is_view_op, run_once
+from .utils import bytes_of_elements, bytes_of_tensor
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,7 @@ def _preload_custom_op():
         custom_op_dir = Path(__file__).resolve().parent / "custom_op"
 
         if not custom_op_dir.exists():
-            logger.debug(f"Custom op directory not found: {custom_op_dir}")
+            logger.debug("Custom op directory not found: %s", custom_op_dir)
             return False
 
         loaded_count = 0
@@ -34,16 +34,16 @@ def _preload_custom_op():
                 if spec and spec.loader:
                     module = importlib.util.module_from_spec(spec)
                     spec.loader.exec_module(module)
-                    logger.debug(f"Preloaded custom module: {module_name}")
+                    logger.debug("Preloaded custom module: %s", module_name)
                     loaded_count += 1
             except Exception as e:
-                logger.error(f"Failed to preload custom module {py_file.name}: {e}")
+                logger.error("Failed to preload custom module %s: %s", py_file.name, e)
 
-        logger.info(f"Preloaded {loaded_count} custom op modules from {custom_op_dir}")
+        logger.info("Preloaded %s custom op modules from %s", loaded_count, custom_op_dir)
         return loaded_count > 0
 
     except Exception as e:
-        logger.error(f"Error in custom modules preloading: {e}")
+        logger.error("Error in custom modules preloading: %s", e)
         return False
 
 
