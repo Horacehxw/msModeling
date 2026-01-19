@@ -68,45 +68,18 @@ class ModelRunner:
         generate_inputs_func: Callable = generate_inputs_varlen,
         with_sampler: bool = False,
     ) -> ModelRunnerMetrics:
-        def calculate_signle_card_tps(self, table_result: str) -> Optional[float]:
-            def _format_time(seconds: float) -> str:
-                if seconds > 1.0:
-                    return f'{seconds:.3f}token/s'
-                elif seconds > 1e-3:
-                    return f"{seconds * 1e3:.3f}token/s"
-                elif seconds > 1e-6:
-                    return f"{seconds * 1e6:.3f}token/s"
-                else:
-                    return f"{seconds * 1e9:.3f}token/s"
-
-            time_match = re.search(
-                r"Total time for analytic:\s*(\d+(?:\.\d+)?)\s*([mun]?s)\s*",
-                table_result
-            )
-            total_time = 0
-            if time_match:
-                time_value = float(time_match.group(1))
-                time_unit = time_match.group(2)
-                # 将时间统一转换为秒
-                if time_unit == 's':
-                    total_time = time_value
-                elif time_unit == 'ms':
-                    total_time = time_value * 1e-3
-                elif time_unit == 'us':
-                    total_time = time_value * 1e-6
-                else:
-                    total_time = time_value * 1e-9
-                if total_time > 0:
-                    single_card_tps = (self.user_input.num_queries /
-                                       total_time /
-                                       self.user_input.world_size)
-                    tps_str = _format_time(single_card_tps)
-                    print(f"Single card TPS: {tps_str}")
-                    return single_card_tps
-
-                else:
-                    raise ValueError(f"Time value must be positive (got: {time_value}{time_unit})")
-
+        def calculate_single_card_tps(self, table_result: str) -> Optional[float]:
+            time_match = re.search(r"Total time for analytic:\s*(\d+(?:\.\d+)?)\s*([mun]?s)", table_result)
+            if not time_match:
+                return None
+            time_value, time_unit = float(time_match.group(1)), time_match.group(2)
+            unit_multiplier = {'s': 1, 'ms': 1e-3, 'us': 1e-6, 'ns': 1e-9}
+            if time_unit not in unit_multiplier or time_value <= 0:
+                raise ValueError(f"Invalid time input: {time_value}{time_unit}")
+            total_time = time_value * unit_multiplier[time_unit]
+            tps = self.user_input.num_queries / total_time / self.user_input.world_size
+            print(f"Single card TPS: {tps:.4g} token/s")
+            return tps
         batch_size = (
             self.user_input.num_queries
             + self.model.model_config.parallel_config.data_parallel_size
@@ -144,7 +117,7 @@ class ModelRunner:
             group_by_input_shapes=self.user_input.dump_input_shapes
         )
         print(table_result)
-        tps_value=calculate_signle_card_tps(self, table_result=table_result)
+        tps_value=calculate_single_card_tps(self, table_result=table_result)
         peak_memory_usage_gb = runtime.memory_tracker.peak_mem_usage() / 1024**3
 
         kv_cache_size_gb = (
@@ -163,7 +136,6 @@ class ModelRunner:
         model_activation_size_gb = (
             peak_memory_usage_gb - kv_cache_size_gb - self.model_weight_size_gb
         )
-        print(type(self.user_input.reserved_memory_gb))
         device_memory_available_gb = (
             self.total_device_memory_gb
             - peak_memory_usage_gb
@@ -202,6 +174,7 @@ class ModelRunner:
             model_activation_size_gb=model_activation_size_gb,
             reserved_memory_gb=self.user_input.reserved_memory_gb,
             device_memory_available_gb=device_memory_available_gb,
+            single_card_tps=tps_value,
             execution_time_s=execution_time_s,
             table_result=table_result,
             breakdowns=runtime.get_breakdowns(),
@@ -224,6 +197,7 @@ class ModelRunnerMetrics:
     model_activation_size_gb: float
     reserved_memory_gb: float
     device_memory_available_gb: float
+    single_card_tps: float
     execution_time_s: float
     table_result: str = ""
     breakdowns: Dict[str, Dict[str, float]] = field(default_factory=dict)

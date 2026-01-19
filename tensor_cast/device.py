@@ -361,9 +361,8 @@ def auto_discover_devices():
     profile_dir = current_dir / "device_profiles"
 
     if not profile_dir.exists():
-        print(f"The fold doesn`t exist: {profile_dir}")
+        print(f"folder doesn't exist: {profile_dir}")
         return
-
 
     import torch
     global_namespace = {
@@ -393,6 +392,7 @@ def auto_discover_devices():
             print(f"import failed: {e}")
 
     device_count_after = len(DeviceProfile.all_device_profiles)
+
 
 auto_discover_devices()
 

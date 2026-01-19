@@ -1186,20 +1186,10 @@ class TestTextGenerate(unittest.TestCase):
             tp_size=16
         )
         model_runner = ModelRunner(user_input)
-
-        old_stdout = sys.stdout
-        sys.stdout = io.StringIO()
-
-        try:
-            result = model_runner.run_inference(generate_inputs_func=generate_inputs)
-            output = sys.stdout.getvalue()
-            self._validate_inference_result(result, "test_tps_output_in_run_inference")
-            self.assertIn("Single card TPS:", output)
-            self.assertRegex(output, r"Single card TPS:\s*[\d\.]+token/s")
-
-
-        finally:
-            sys.stdout = old_stdout
+        result = model_runner.run_inference(generate_inputs_func=generate_inputs)
+        if isinstance(result, ModelRunnerMetrics):
+            result = asdict(result)
+        self.assertGreater(result.get("single_card_tps", 0), 0, "Single card TPS should be greater than zero")
 
 if __name__ == "__main__":
     unittest.main()
