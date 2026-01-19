@@ -361,7 +361,7 @@ def auto_discover_devices():
     profile_dir = current_dir / "device_profiles"
 
     if not profile_dir.exists():
-        print(f"目录不存在: {profile_dir}")
+        print(f"The fold doesn`t exist: {profile_dir}")
         return
 
 
@@ -390,7 +390,7 @@ def auto_discover_devices():
             exec(code, global_namespace)
 
         except Exception as e:
-            print(f"导入失败: {e}")
+            print(f"import failed: {e}")
 
     device_count_after = len(DeviceProfile.all_device_profiles)
 
