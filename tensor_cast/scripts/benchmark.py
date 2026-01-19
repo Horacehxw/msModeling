@@ -145,16 +145,18 @@ def find_best_throughput(
     concurrency_min, concurrency_max = None, None
 
     if concurrency_range is not None:
-        if len(concurrency_range) > 2:
+        if len(concurrency_range) not in (1, 2):
             raise ValueError(
                 f"--concurrency-range expects [min max] or [max], got {concurrency_range}"
             )
-        valid_values = [v for v in concurrency_range if v > 0]
-        if len(valid_values) == 1:
-            concurrency_max = valid_values[0]
-        elif len(valid_values) >= 2:
-            concurrency_min = min(valid_values[0], valid_values[1])
-            concurrency_max = max(valid_values[0], valid_values[1])
+        if any(v <= 0 for v in concurrency_range):
+            raise ValueError(
+                f"--concurrency-range values must be > 0, got {concurrency_range}"
+            )
+        if len(concurrency_range) == 1:
+            concurrency_max = concurrency_range[0]
+        else:
+            concurrency_min, concurrency_max = sorted(concurrency_range)
 
     if concurrency_min is not None:
         search_min = concurrency_min
