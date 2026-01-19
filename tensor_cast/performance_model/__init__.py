@@ -39,7 +39,9 @@ def _preload_custom_op():
             except Exception as e:
                 logger.error("Failed to preload custom module %s: %s", py_file.name, e)
 
-        logger.info("Preloaded %s custom op modules from %s", loaded_count, custom_op_dir)
+        logger.info(
+            "Preloaded %s custom op modules from %s", loaded_count, custom_op_dir
+        )
         return loaded_count > 0
 
     except Exception as e:
