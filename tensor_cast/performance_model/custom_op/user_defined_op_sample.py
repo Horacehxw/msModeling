@@ -24,9 +24,9 @@ def _(op_invoke_info: OpInvokeInfo) -> OpInvokeInfo.PerformanceProperties:
     #
     # In performance modeling function:
     assert len(op_invoke_info.args) == 4
-    key = op_invoke_info.args[0]      # Corresponds to 'key' in operator call
-    value = op_invoke_info.args[1]    # Corresponds to 'value' in operator call
-    kv_cache = op_invoke_info.args[2] # Corresponds to 'kv_cache' in operator call
+    key = op_invoke_info.args[0]
+    value = op_invoke_info.args[1]
+    kv_cache = op_invoke_info.args[2]
     # op_invoke_info.args[3] would be 'attention_meta.slot_mapping'
     ```
 
