@@ -101,6 +101,7 @@ class DeviceProfile:
         self.all_device_profiles[self.name] = self
 
 
+
 TEST_INTERCONNECT = CommGrid(
     grid=torch.arange(256 * 8).reshape(256, 8),
     topologies={
@@ -349,3 +350,49 @@ class ATLAS_800:
         comm_grid=A3_INTERCONNECT,
         static_cost=STATIC_COST,
     )
+
+
+def auto_discover_devices():
+    """for the use of importing device_profiles"""
+    import sys
+    from pathlib import Path
+
+    current_dir = Path(__file__).parent
+    profile_dir = current_dir / "device_profiles"
+
+    if not profile_dir.exists():
+        print(f"目录不存在: {profile_dir}")
+        return
+
+
+    import torch
+    global_namespace = {
+        'torch': torch,
+        'CommGrid': CommGrid,
+        'DeviceProfile': DeviceProfile,
+        'InterconnectTopology': InterconnectTopology,
+        'InterconnectType': InterconnectType,
+        'StaticCost': StaticCost,
+    }
+
+    device_count_before = len(DeviceProfile.all_device_profiles)
+
+    for py_file in profile_dir.glob("*.py"):
+        if py_file.name.startswith("_") or py_file.name == "__init__.py":
+            continue
+
+        module_name = py_file.stem
+
+        try:
+            with open(py_file, 'r', encoding='utf-8') as f:
+                code = f.read()
+
+            exec(code, global_namespace)
+
+        except Exception as e:
+            print(f"导入失败: {e}")
+
+    device_count_after = len(DeviceProfile.all_device_profiles)
+
+auto_discover_devices()
+
