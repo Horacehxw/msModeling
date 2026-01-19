@@ -142,6 +142,28 @@ def find_best_throughput(
         idx = bisect.bisect_left(candidates, True, key=lambda x: not is_feasible(x))
         return candidates[idx - 1] if idx > 0 else low
 
+    def exponential_search_bounds(start, upper_limit=None):
+        """Find bounds for binary search using exponential growth."""
+        low = start
+        high = start
+        if upper_limit is None:
+            while True:
+                high *= 2
+                if is_feasible(high):
+                    low = high
+                else:
+                    return low, high
+
+        upper_limit = max(upper_limit, start)
+        while high < upper_limit:
+            next_high = min(high * 2, upper_limit)
+            if is_feasible(next_high):
+                low = next_high
+                high = next_high
+            else:
+                return low, next_high
+        return low, high
+
     concurrency_min, concurrency_max = None, None
 
     if concurrency_range is not None:
@@ -168,29 +190,11 @@ def find_best_throughput(
         return latency, search_min, breakdown, error_msg
 
     if concurrency_max is not None:
-        search_max = max(concurrency_max, search_min)
-        # Exponential search to find upper bound, then binary search
-        concurrency = search_min
-        max_concurrency = search_min
-        while concurrency < search_max:
-            next_concurrency = min(concurrency * 2, search_max)
-            if is_feasible(next_concurrency):
-                max_concurrency = next_concurrency
-                concurrency = next_concurrency
-            else:
-                break
-        best_concurrency = binary_search_max_feasible(search_min, max_concurrency)
+        _, upper_bound = exponential_search_bounds(search_min, concurrency_max)
+        best_concurrency = binary_search_max_feasible(search_min, upper_bound)
     else:
-        # Exponential search to find upper bound, then binary search
-        concurrency = search_min
-        max_concurrency = search_min
-        while True:
-            concurrency *= 2
-            if is_feasible(concurrency):
-                max_concurrency = concurrency
-            else:
-                break
-        best_concurrency = binary_search_max_feasible(max_concurrency, concurrency)
+        lower_bound, upper_bound = exponential_search_bounds(search_min)
+        best_concurrency = binary_search_max_feasible(lower_bound, upper_bound)
 
     final_latency, _, breakdown, _ = run_and_check(best_concurrency)
     return final_latency, best_concurrency, breakdown, ""
