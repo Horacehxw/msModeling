@@ -22,6 +22,19 @@ from .utils import check_positive_integer
 logger = logging.getLogger(__name__)
 
 
+class ConcurrencyRangeAction(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        if len(values) not in (1, 2):
+            raise argparse.ArgumentTypeError(
+                f"{option_string} expects [min max] or [max], got {values}"
+            )
+        if any(v <= 0 for v in values):
+            raise argparse.ArgumentTypeError(
+                f"{option_string} values must be > 0, got {values}"
+            )
+        setattr(namespace, self.dest, values)
+
+
 def get_benchmark_query_and_seq_length(
     input_length, output_length, is_decode=True, num_mtp_tokens=0, context_length=0
 ):
@@ -167,14 +180,6 @@ def find_best_throughput(
     concurrency_min, concurrency_max = None, None
 
     if concurrency_range is not None:
-        if len(concurrency_range) not in (1, 2):
-            raise ValueError(
-                f"--concurrency-range expects [min max] or [max], got {concurrency_range}"
-            )
-        if any(v <= 0 for v in concurrency_range):
-            raise ValueError(
-                f"--concurrency-range values must be > 0, got {concurrency_range}"
-            )
         if len(concurrency_range) == 1:
             concurrency_max = concurrency_range[0]
         else:
@@ -336,6 +341,7 @@ models:
         "--concurrency-range",
         type=int,
         nargs="+",
+        action=ConcurrencyRangeAction,
         default=None,
         help="Concurrency range: [min max] or [max] (default: 1 for min, no limit for max)",
     )
