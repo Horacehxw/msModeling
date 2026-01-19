@@ -5,7 +5,7 @@ from typing import Union
 import torch
 from parameterized import parameterized
 
-from ..core.input_generator import generate_inputs
+from ..core.input_generator import generate_image_inputs, generate_inputs
 from ..core.model_runner import ModelRunner, ModelRunnerMetrics
 from ..core.quantization.datatypes import QuantizeAttentionAction, QuantizeLinearAction
 from ..core.user_config import UserInputConfig
@@ -1070,6 +1070,20 @@ class TestTextGenerate(unittest.TestCase):
             model_runner.request_info_default,
             block_size=user_input.block_size,
         )
+        image_kwargs = generate_image_inputs(
+            model_runner.model,
+            user_input.image_batch_size,
+            user_input.image_height,
+            user_input.image_width,
+            user_input.num_queries,
+        )
+        num_image_tokens = image_kwargs.get("num_image_tokens")
+        seq_len = input_kwargs.get("attention_meta").seq_lens[0].item()
+        self.assertEqual(
+            seq_len, num_image_tokens + user_input.context_length + user_input.query_len
+        )
+        query_len = input_kwargs.get("attention_meta").query_lens[0].item()
+        self.assertEqual(query_len, num_image_tokens + user_input.query_len)
         self.assertIn("pixel_values", input_kwargs)
         result = model_runner.run_inference(generate_inputs_func=generate_inputs)
         self._validate_inference_result(result, "test_qwen3_vl_with_basic_prefill")
@@ -1126,6 +1140,20 @@ class TestTextGenerate(unittest.TestCase):
             model_runner.request_info_default,
             block_size=user_input.block_size,
         )
+        image_kwargs = generate_image_inputs(
+            model_runner.model,
+            user_input.image_batch_size,
+            user_input.image_height,
+            user_input.image_width,
+            user_input.num_queries,
+        )
+        num_image_tokens = image_kwargs.get("num_image_tokens")
+        seq_len = input_kwargs.get("attention_meta").seq_lens[0].item()
+        self.assertEqual(
+            seq_len, num_image_tokens + user_input.context_length + user_input.query_len
+        )
+        query_len = input_kwargs.get("attention_meta").query_lens[0].item()
+        self.assertEqual(query_len, user_input.query_len)
         self.assertNotIn("pixel_values", input_kwargs)
         result = model_runner.run_inference(generate_inputs_func=generate_inputs)
         self._validate_inference_result(result, "test_qwen3_vl_decode_mode")

@@ -345,7 +345,6 @@ class TransformerModel(ModelWrapperBase):
             self.patch_attention_block()
             visual_model = self.get_visual()
             if visual_model is not None:
-                tp_size = self.parallel_group_manager.tp_group.world_size
                 pattern = "blocks.*.attn"
                 # Assign a depth_layer_idx to each attention layer in the vision model
                 # and append them sequentially to attention_by_layers.
@@ -365,9 +364,6 @@ class TransformerModel(ModelWrapperBase):
                             self.model_config.attention_cls()
                         )
                         depth_layer_idx += 1
-                        # This section is mainly used to modify the tp parallel of qkv in the vision part of qwen3-vl,
-                        # Otherwise, dimension mapping may fail when apply_rotary_pos_emb_vision is calculated.
-                        module.num_heads = module.num_heads // tp_size
 
         self.patch_mla()
 
@@ -481,6 +477,23 @@ class TransformerModel(ModelWrapperBase):
 
                 self._replace_module(name, moe_layer)
 
+    def shard_model_visual_by_tp(self):
+        tp_size = self.parallel_group_manager.tp_group.world_size
+        visual_layers_path = self.get_visual_layers_path()
+        if tp_size <= 1 or visual_layers_path is None:
+            return
+        pattern = f"{visual_layers_path}.*.attn"
+        for name, module in self._inner.named_modules():
+            if fnmatch.fnmatchcase(strip_module_name(name), pattern) and hasattr(
+                module, "qkv"
+            ):
+                # This section is mainly used to modify the tp parallel of qkv in the vision part of qwen3-vl,
+                # Otherwise, dimension mapping may fail when apply_rotary_pos_emb_vision is calculated.
+                assert module.num_heads % tp_size == 0, (
+                    f"module.num_heads ({module.num_heads}) must be divisible by tp_size ({tp_size})"
+                )
+                module.num_heads = module.num_heads // tp_size
+
     def get_shard_plan(self):
         tp_group = self.parallel_group_manager.tp_group
         o_proj_tp_group = self.parallel_group_manager.o_proj_tp_group
@@ -551,8 +564,6 @@ class TransformerModel(ModelWrapperBase):
             }
             tp_plan.update(
                 {
-                    # TODO: first complete tensor parallelism for the language_model;
-                    #  vision parallelism needs to be handled later
                     f"{language_layers}.*.mlp.gate_proj": (COLWISE_LINEAR, params),
                     f"{language_layers}.*.mlp.up_proj": (COLWISE_LINEAR, params),
                     f"{language_layers}.*.mlp.down_proj": (ROWWISE_LINEAR, params),
@@ -568,35 +579,19 @@ class TransformerModel(ModelWrapperBase):
                     {
                         f"{visual_layers_path}.*.attn.qkv": (COLWISE_LINEAR, params),
                         f"{visual_layers_path}.*.attn.proj": (ROWWISE_LINEAR, params),
-                        "visual.merger.linear_fc1": (COLWISE_LINEAR, params),
-                        "visual.merger.linear_fc2": (ROWWISE_LINEAR, params),
-                        "visual.deepstack_merger_list.*.linear_fc1": (
-                            COLWISE_LINEAR,
-                            params,
-                        ),
-                        "visual.deepstack_merger_list.*.linear_fc2": (
-                            ROWWISE_LINEAR,
-                            params,
-                        ),
                     }
                 )
+                visual_merger_linear = self.get_visual_merger_linear()
+                for key, parallel_type in visual_merger_linear.items():
+                    tp_plan[key] = (parallel_type, params)
+
                 params = {
                     "tp_group": mlp_tp_group,
                     "global_tp_group": tp_group,
                 }
-                tp_plan.update(
-                    {
-                        f"{visual_layers_path}.*.mlp.linear_fc1": (
-                            COLWISE_LINEAR,
-                            params,
-                        ),
-                        f"{visual_layers_path}.*.mlp.linear_fc2": (
-                            ROWWISE_LINEAR,
-                            params,
-                        ),
-                    }
-                )
-
+                visual_mlp_linear = self.get_visual_mlp_linear()
+                for key, parallel_type in visual_mlp_linear.items():
+                    tp_plan[key] = (parallel_type, params)
             if not self.model_config.parallel_config.has_ep():
                 params = {
                     "tp_group": all_rank_group,
@@ -659,6 +654,7 @@ class TransformerModel(ModelWrapperBase):
                     module, **tp_config[1]
                 )
                 self._replace_module(name, parallel_module)
+        self.shard_model_visual_by_tp()
 
     def shard_model_by_ep(self):
         moe_config = self.get_moe_config()
@@ -791,23 +787,26 @@ class TransformerModel(ModelWrapperBase):
             return None
         return _VISUAL_FAMILY[family]
 
-    def get_visual(self):
+    def _get_spec_value_from_key(self, key: str):
         spec = self._get_vl_model_spec()
         if spec is None:
             return None
-        return spec["visual"](self.unwrap())
+        return spec.get(key, lambda _: None)(self.unwrap())
+
+    def get_visual(self):
+        return self._get_spec_value_from_key("visual")
 
     def get_vl_language_model(self):
-        spec = self._get_vl_model_spec()
-        if spec is None:
-            return None
-        return spec["language_model"](self.unwrap())
+        return self._get_spec_value_from_key("language_model")
 
     def get_visual_layers(self):
-        spec = self._get_vl_model_spec()
-        if spec is None:
-            return None
-        return spec["visual.layers"](self.unwrap())
+        return self._get_spec_value_from_key("visual.layers")
+
+    def get_visual_merger_linear(self):
+        return self._get_spec_value_from_key("visual_merger_linear")
+
+    def get_visual_mlp_linear(self):
+        return self._get_spec_value_from_key("visual_mlp_linear")
 
     def get_visual_layers_path(self) -> Optional[str]:
         """
@@ -815,10 +814,7 @@ class TransformerModel(ModelWrapperBase):
           - "visual.blocks"
           - "vision_tower.encoder.layer"
         """
-        spec = self._get_vl_model_spec()
-        if spec is None:
-            return None
-        return spec["path.visual.layers"](self.unwrap())
+        return self._get_spec_value_from_key("path.visual.layers")
 
     def get_language_layers(self) -> str:
         """

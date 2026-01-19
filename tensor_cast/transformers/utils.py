@@ -13,6 +13,7 @@ from transformers.utils.quantization_config import (
     QuantizationConfigMixin,
 )
 
+from ..layers import COLWISE_LINEAR, ROWWISE_LINEAR
 from ..layers.attention_adapters import BailingMoeV2AttentionAdapter
 
 from ..layers.mla import MultiheadLatentAttentionBase
@@ -148,26 +149,72 @@ def model_type_to_custom_expert_module_mapping(model_type: str) -> tuple:
     return _model_type_to_custom_expert_module_mapping.get(model_type, (None, None))
 
 
+# General section: template structure as default
+common_visual_config = {
+    "visual": attrgetter("visual"),
+    "language_model": attrgetter("language_model"),
+    "visual.layers": attrgetter("visual.blocks"),
+    "path.visual.layers": lambda _: "visual.blocks",
+    "path.language_model.layers": lambda _: "language_model.layers",
+    "visual_merger_linear": lambda _: {},
+    "visual_mlp_linear": lambda _: {},
+}
+
+
+def resolve_model_config(custom_config=None):
+    if custom_config is None:
+        return common_visual_config
+    visual_config = common_visual_config.copy()
+    visual_config.update(custom_config)
+    return visual_config
+
+
 _VISUAL_FAMILY = {
-    "qwen3_vl": {
-        "visual": attrgetter("visual"),
-        "language_model": attrgetter("language_model"),
-        "visual.layers": attrgetter("visual.blocks"),
-        "path.visual.layers": lambda _: "visual.blocks",
-        "path.language_model.layers": lambda _: "language_model.layers",
-    },
-    "internvl": {
-        "visual": attrgetter("vision_tower"),
-        "language_model": attrgetter("language_model"),
-        "visual.layers": attrgetter("vision_tower.encoder.layer"),
-        "path.visual.layers": lambda _: "vision_tower.encoder.layer",
-        "path.language_model.layers": lambda _: "language_model.layers",
-    },
+    "default": resolve_model_config(),
+    "qwen3_vl": resolve_model_config(
+        {
+            "visual_merger_linear": lambda _: {
+                "visual.merger.linear_fc1": COLWISE_LINEAR,
+                "visual.merger.linear_fc2": ROWWISE_LINEAR,
+                "visual.deepstack_merger_list.*.linear_fc1": COLWISE_LINEAR,
+                "visual.deepstack_merger_list.*.linear_fc2": ROWWISE_LINEAR,
+            },
+            "visual_mlp_linear": lambda _: {
+                "visual.blocks.*.mlp.linear_fc1": COLWISE_LINEAR,
+                "visual.blocks.*.mlp.linear_fc2": ROWWISE_LINEAR,
+            },
+        }
+    ),
+    "glm4v": resolve_model_config(
+        {
+            "visual_merger_linear": lambda _: {
+                "visual.merger.gate_proj": COLWISE_LINEAR,
+                "visual.merger.down_proj": COLWISE_LINEAR,
+                "visual.merger.up_proj": ROWWISE_LINEAR,
+            },
+            "visual_mlp_linear": lambda _: {
+                "visual.blocks.*.mlp.gate_proj": COLWISE_LINEAR,
+                "visual.blocks.*.mlp.up_proj": COLWISE_LINEAR,
+                "visual.blocks.*.mlp.down_proj": ROWWISE_LINEAR,
+            },
+        }
+    ),
+    "internvl": resolve_model_config(
+        {
+            "visual.layers": attrgetter("vision_tower.encoder.layer"),
+            "path.visual.layers": lambda _: "vision_tower.encoder.layer",
+            "visual_mlp_linear": lambda _: {
+                "vision_tower.encoder.layer.*.mlp.fc1": COLWISE_LINEAR,
+                "vision_tower.encoder.layer.*.mlp.fc2": ROWWISE_LINEAR,
+            },
+        }
+    ),
 }
 
 _MODEL_TYPE_TO_FAMILY = {
     "qwen3_vl": "qwen3_vl",
     "qwen3_vl_moe": "qwen3_vl",
+    "glm4v_moe": "glm4v",
     "internvl": "internvl",
 }
 
