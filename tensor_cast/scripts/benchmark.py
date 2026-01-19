@@ -139,42 +139,41 @@ def find_best_throughput(
         if low > high:
             return low
         candidates = range(low, high + 1)
-        # bisect_left finds first index where condition is True (infeasible)
-        # We want to find the last index where is_feasible returns True
         idx = bisect.bisect_left(candidates, True, key=lambda x: not is_feasible(x))
         return candidates[idx - 1] if idx > 0 else low
 
-    # Parse concurrency range with validation
-    dp_size = model_config.parallel_config.data_parallel_size
     concurrency_min, concurrency_max = None, None
 
     if concurrency_range is not None:
-        # Filter out invalid (non-positive) values
         valid_values = [v for v in concurrency_range if v > 0]
         if len(valid_values) == 1:
-            # Single value: treat as max
             concurrency_max = valid_values[0]
         elif len(valid_values) >= 2:
-            # Two values: [min, max], swap if min > max
             concurrency_min = min(valid_values[0], valid_values[1])
             concurrency_max = max(valid_values[0], valid_values[1])
 
-    # Apply defaults and constraints
     if concurrency_min is not None:
         search_min = concurrency_min
     else:
-        # Default: start from 1 (for low-latency scenario analysis)
         search_min = 1
 
-    # Test minimum value first
     latency, _, breakdown, error_msg = run_and_check(search_min)
     if error_msg:
         return latency, search_min, breakdown, error_msg
 
     if concurrency_max is not None:
-        # Ensure max >= min after clamping
         search_max = max(concurrency_max, search_min)
-        best_concurrency = binary_search_max_feasible(search_min, search_max)
+        # Exponential search to find upper bound, then binary search
+        concurrency = search_min
+        max_concurrency = search_min
+        while concurrency < search_max:
+            next_concurrency = min(concurrency * 2, search_max)
+            if is_feasible(next_concurrency):
+                max_concurrency = next_concurrency
+                concurrency = next_concurrency
+            else:
+                break
+        best_concurrency = binary_search_max_feasible(search_min, max_concurrency)
     else:
         # Exponential search to find upper bound, then binary search
         concurrency = search_min
@@ -381,11 +380,9 @@ models:
                     if args.tp_sizes:
                         tp_size_list = [tp for tp in args.tp_sizes if tp <= num_devices]
                         if not tp_size_list:
-                            logger.warning(
-                                "All specified TP sizes exceed num_devices (%d), skipping",
-                                num_devices,
+                            raise ValueError(
+                                f"All specified TP sizes {args.tp_sizes} exceed num_devices ({num_devices})"
                             )
-                            continue
                     else:
                         tp_size_list = [1 << i for i in range(num_devices.bit_length())]
                     for tp_size in tp_size_list:
