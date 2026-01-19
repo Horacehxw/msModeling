@@ -19,33 +19,22 @@ def _preload_custom_op():
         custom_op_dir = Path(__file__).resolve().parent / "custom_op"
 
         if not custom_op_dir.exists():
-            logger.debug("Custom op directory not found: %s", custom_op_dir)
             return False
 
-        loaded_count = 0
         for py_file in custom_op_dir.glob("*.py"):
             if py_file.name.startswith("_"):
                 continue
-            try:
-                module_name = py_file.stem
-                import importlib.util
+            module_name = py_file.stem
+            import importlib.util
 
-                spec = importlib.util.spec_from_file_location(module_name, py_file)
-                if spec and spec.loader:
-                    module = importlib.util.module_from_spec(spec)
-                    spec.loader.exec_module(module)
-                    logger.debug("Preloaded custom module: %s", module_name)
-                    loaded_count += 1
-            except Exception as e:
-                logger.error("Failed to preload custom module %s: %s", py_file.name, e)
-
-        logger.info(
-            "Preloaded %s custom op modules from %s", loaded_count, custom_op_dir
-        )
-        return loaded_count > 0
+            spec = importlib.util.spec_from_file_location(module_name, py_file)
+            if spec and spec.loader:
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+        return True
 
     except Exception as e:
-        logger.error("Error in custom modules preloading: %s", e)
+        print(f"Failed to load custom op modules,{e}")
         return False
 
 
