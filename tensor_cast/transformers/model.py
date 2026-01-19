@@ -434,20 +434,18 @@ class TransformerModel(ModelWrapperBase):
                 adapter = custom_attention_adapter_cls(module, self.attention_by_layers)
                 self._replace_module(name, adapter)
 
-    def patch_moe_expert(self):
+    def patch_moe_expert(self, module):
         # patch moe experts just loop over the experts and compute the output for each expert
-        original_experts_pattern, custom_experts_adapter_cls = (
-            model_type_to_custom_expert_module_mapping(self.hf_config.model_type)
+        custom_experts_adapter_cls = model_type_to_custom_expert_module_mapping(
+            self.hf_config.model_type
         )
-        if original_experts_pattern is None:
+        if custom_experts_adapter_cls is None:
             return
-        for name, module in self._inner.named_modules():
-            if fnmatch.fnmatchcase(strip_module_name(name), original_experts_pattern):
-                expert_num = module.num_experts
-                experts = torch.nn.ModuleList(
-                    [custom_experts_adapter_cls(module) for _ in range(expert_num)]
-                )
-                self._replace_module(name, experts)
+        expert_num = module.num_experts
+        experts = torch.nn.ModuleList(
+            [custom_experts_adapter_cls(module.experts) for _ in range(expert_num)]
+        )
+        module.experts = experts
 
     def get_moe_config(self):
         return self.model_config.moe_config
@@ -456,7 +454,6 @@ class TransformerModel(ModelWrapperBase):
         if not moe_config:
             return
 
-        self.patch_moe_expert()
         self.top_k = None
         self.num_routing_experts = None
         named_modules = list(self._inner.named_modules())
@@ -464,6 +461,7 @@ class TransformerModel(ModelWrapperBase):
             if type(module).__name__ == moe_config.module_name:
                 if not self._all_required_fields_exist(module, moe_config.field_names):
                     continue
+                self.patch_moe_expert(module)
                 moe_layer = MoELayer(
                     moe_config,
                     module,
