@@ -63,7 +63,7 @@ def arg_parse():
         help="Model ID from Hugging Face (e.g., 'meta-llama/Llama-2-7b-hf').",
     )
     parser.add_argument(
-        "--num-devices",
+        "--world-size",
         type=check_positive_integer,
         default=1,
         help="Number of devices",
@@ -82,7 +82,7 @@ def arg_parse():
     model_group.add_argument(
         "--num-mtp-tokens",
         type=int,
-        choices=range(0, 5),
+        choices=range(0, 10),
         default=0,
         help="Number of MTP tokens, 0 means disabled - only support models having MTP like DeepSeek",
     )
@@ -122,10 +122,9 @@ def arg_parse():
     )
     service_group.add_argument(
         "--tpot-limits",
-        type=float,
-        default=[50.0],
-        nargs="+",
-        help="A list of TPOT constraints under which to search for the best throughput.",
+        type=check_positive_float,
+        default=float("inf"),
+        help="TPOT constraints under which to search for the best throughput. inf means no constraint.",
     )
     service_group.add_argument(
         "--backend",
