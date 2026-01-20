@@ -10,7 +10,7 @@ body:
       value: |
         ## 👉 遇到问题先看这里
         ### 🌟 第一次使用工具遇到问题？
-        按[🚀 快速入门](https://gitcode.com/Ascend/msmodeling/blob/develop/tensor_cast/README.md)走一遍能解决90%的工具基本使用问题
+        按[🚀 快速入门](https://gitcode.com/Ascend/msmodeling/blob/develop/tensor_cast/README.md)
 
         ### ❓ 搜索历史issue，查看冷门的同类问题
         在[🔖 Issue](https://gitcode.com/Ascend/msmodeling/issues)中搜索历史类似问题
@@ -28,6 +28,8 @@ body:
       options:
         - "3.10"
         - "3.11"
+        - "3.12"
+        - "3.13"
         - "其他"
     validations:
       required: true
@@ -42,7 +44,7 @@ body:
   - type: input
     id: input_cmd
     attributes:
-      label: MsModeling执行命令
+      label: MsModeling 执行命令
       description: 请附上执行命令文本
       placeholder: 例:python -m tensor_cast.scripts.text_generate deepseek-ai/DeepSeek-V3.1 --num-queries 2 --query-length 3500 --device TEST_DEVICE --compile
     validations:

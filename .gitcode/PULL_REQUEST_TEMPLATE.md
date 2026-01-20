@@ -8,7 +8,6 @@ Thanks for your contribution; we appreciate it a lot. The following instructions
 - [ ] CI/CD（持续集成/持续部署）
 - [ ] Refactor（代码重构）
 - [ ] Perf（性能优化）
-- [ ] Dependency（依赖项更新）
 - [ ] Test-Cases（测试用例更新）
 - [ ] Other（其他）
 
@@ -36,15 +35,8 @@ If this PR introduces a new feature, it is better to list some use cases here an
 
 **Before PR**:
 
-- [ ] Linting tools are used to fix the potential lint issues. / 使用 linting 工具来修复潜在的 lint 问题。
+- [ ] [Linting tools](https://gitcode.com/Ascend/msmodeling/blob/develop/tensor_cast/README.md#coding-style) are used to fix the potential lint issues. / 使用 [lintrunner 工具](https://gitcode.com/Ascend/msmodeling/blob/develop/tensor_cast/README.md#coding-style) 来修复潜在的 lint 问题。
 - [ ] Bug fixes are fully covered by unit tests, the case that causes the bug should be added in the unit tests. / 修复的 Bug 已完全由单元测试覆盖，导致 Bug 的情况应在单元测试中添加。
 - [ ] The modification is covered by complete unit tests. If not, please add more unit tests to ensure the correctness. / 此拉取请求中的修改已完全由单元测试覆盖。如果不是，请添加更多单元测试以确保正确性。
 - [ ] All relevant documentation (API docs, docstrings, example tutorials) has been updated to reflect these changes. / 所有相关文档（API 文档、文档字符串、示例教程）已更新以反映这些更改。
 - [ ] Please ensure code files contain no Chinese comments. / 请保证代码文件中不含中文注释。
-
-
-**Typical Security Coding Issues / 典型安全编码问题**：
-
-- [ ] Are interface exception scenarios adequately addressed? / 是否充分考虑接口异常场景。
-- [ ] Has ReDoS protection been implemented for regex patterns? / 是否对正则表达式做Redos校验。
-- [ ] Are there safeguards against integer overflow and division-by-zero errors? / 是否存在整数溢出、除零等问题。
