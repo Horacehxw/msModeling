@@ -70,7 +70,11 @@ class ModelRunner:
         def calculate_single_card_tps(self, execution_time_s: float) -> Optional[float]:
             if not execution_time_s or execution_time_s <= 0:
                 raise ValueError("execution_time_s must be positive")
-            tps = self.user_input.num_queries / execution_time_s / self.user_input.world_size
+            tps = (
+                    self.user_input.num_queries    
+                  / execution_time_s
+                  / self.user_input.world_size
+            )
             print(f"Single card TPS: {tps:.4g} token/s")
             return tps
         batch_size = (
