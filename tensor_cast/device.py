@@ -101,7 +101,6 @@ class DeviceProfile:
         self.all_device_profiles[self.name] = self
 
 
-
 TEST_INTERCONNECT = CommGrid(
     grid=torch.arange(256 * 8).reshape(256, 8),
     topologies={
