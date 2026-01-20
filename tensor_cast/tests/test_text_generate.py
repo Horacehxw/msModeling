@@ -1,8 +1,6 @@
 import unittest
 from dataclasses import asdict
 from typing import Union
-import io
-import sys
 
 import torch
 from parameterized import parameterized
