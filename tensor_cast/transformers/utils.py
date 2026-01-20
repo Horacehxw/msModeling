@@ -151,45 +151,44 @@ def model_type_to_custom_expert_module_mapping(
     return _model_type_to_custom_expert_module_mapping.get(model_type)
 
 
-# General section: template structure as default
+"""
+This dictionary defines the access paths for model components and their
+structural mapping during weight conversion or parallelization.
+
+Key Descriptions:
+visual:
+    - Meaning: Retrieves the Vision Encoder instance.
+    - Purpose: Points to the root module responsible for image feature extraction.
+
+language_model:
+    - Meaning: Retrieves the Language Model (LLM) instance.
+    - Purpose: Points to the core LLM responsible for text processing and multi-modal fusion.
+
+visual.layers:
+    - Meaning: Points to the list of layers (Transformer Layers) within the vision module.
+    - Distinction: This is an [Object Accessor]. It tells the program how to retrieve the
+      actual Layer objects from the model instance.
+    - Mapping: Internally usually corresponds to `visual.blocks` (e.g., Qwen2-VL or GLM).
+
+path.visual.layers:
+    - Meaning: The [String Path Representation] of vision layers inside the model.
+    - Distinction: This is a [Path Mapping]. It returns a string "visual.blocks" rather than an object.
+    - Purpose: Used for distributed strategies or logging to identify weight namespaces in state_dict.
+
+path.language_model.layers:
+    - Meaning: The [String Path Representation] of language model layers.
+    - Purpose: Same as above, mapping to "language_model.layers".
+
+visual_merger_linear:
+    - Meaning: Configuration for linear layers in the vision feature fusion layer (Merger/Projector).
+    - Purpose: Targets linear mapping layers that merge or transform multiple visual tokens.
+      Returning an empty dict typically indicates using the default parallel strategy.
+
+visual_mlp_linear:
+    - Meaning: Configuration for linear layers within the MLP blocks of the vision module.
+    - Purpose: Points to the Feed-Forward Network (FFN) inside each Vision Transformer layer.
+"""
 common_visual_config = {
-    """
-    This dictionary defines the access paths for model components and their
-    structural mapping during weight conversion or parallelization.
-
-    Key Descriptions:
-    visual:
-        - Meaning: Retrieves the Vision Encoder instance.
-        - Purpose: Points to the root module responsible for image feature extraction.
-
-    language_model:
-        - Meaning: Retrieves the Language Model (LLM) instance.
-        - Purpose: Points to the core LLM responsible for text processing and multi-modal fusion.
-
-    visual.layers:
-        - Meaning: Points to the list of layers (Transformer Layers) within the vision module.
-        - Distinction: This is an [Object Accessor]. It tells the program how to retrieve the
-          actual Layer objects from the model instance.
-        - Mapping: Internally usually corresponds to `visual.blocks` (e.g., Qwen2-VL or GLM).
-
-    path.visual.layers:
-        - Meaning: The [String Path Representation] of vision layers inside the model.
-        - Distinction: This is a [Path Mapping]. It returns a string "visual.blocks" rather than an object.
-        - Purpose: Used for distributed strategies or logging to identify weight namespaces in state_dict.
-
-    path.language_model.layers:
-        - Meaning: The [String Path Representation] of language model layers.
-        - Purpose: Same as above, mapping to "language_model.layers".
-
-    visual_merger_linear:
-        - Meaning: Configuration for linear layers in the vision feature fusion layer (Merger/Projector).
-        - Purpose: Targets linear mapping layers that merge or transform multiple visual tokens.
-          Returning an empty dict typically indicates using the default parallel strategy.
-
-    visual_mlp_linear:
-        - Meaning: Configuration for linear layers within the MLP blocks of the vision module.
-        - Purpose: Points to the Feed-Forward Network (FFN) inside each Vision Transformer layer.
-    """
     "visual": attrgetter("visual"),
     "language_model": attrgetter("language_model"),
     "visual.layers": attrgetter("visual.blocks"),
