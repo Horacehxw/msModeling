@@ -441,7 +441,13 @@ class TransformerModel(ModelWrapperBase):
         )
         if custom_experts_adapter_cls is None:
             return
+        assert hasattr(module, "num_experts"), (
+            f"Module {type(module).__name__} must have 'num_experts' attribute."
+        )
         expert_num = module.num_experts
+        assert isinstance(expert_num, int) and expert_num > 0, (
+            f"Expected 'num_experts' to be a positive integer, but got {expert_num}."
+        )
         experts = torch.nn.ModuleList(
             [custom_experts_adapter_cls(module.experts) for _ in range(expert_num)]
         )
