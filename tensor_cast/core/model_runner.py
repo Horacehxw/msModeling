@@ -68,16 +68,10 @@ class ModelRunner:
         generate_inputs_func: Callable = generate_inputs_varlen,
         with_sampler: bool = False,
     ) -> ModelRunnerMetrics:
-        def calculate_single_card_tps(self, table_result: str) -> Optional[float]:
-            time_match = re.search(r"Total time for analytic:\s*(\d+(?:\.\d+)?)\s*([mun]?s)", table_result)
-            if not time_match:
-                return None
-            time_value, time_unit = float(time_match.group(1)), time_match.group(2)
-            unit_multiplier = {'s': 1, 'ms': 1e-3, 'us': 1e-6, 'ns': 1e-9}
-            if time_unit not in unit_multiplier or time_value <= 0:
-                raise ValueError(f"Invalid time input: {time_value}{time_unit}")
-            total_time = time_value * unit_multiplier[time_unit]
-            tps = self.user_input.num_queries / total_time / self.user_input.world_size
+        def calculate_single_card_tps(self, execution_time_s: float) -> Optional[float]:
+            if not execution_time_s or execution_time_s <= 0:
+                raise ValueError("execution_time_s must be positive")
+            tps = self.user_input.num_queries / execution_time_s / self.user_input.world_size
             print(f"Single card TPS: {tps:.4g} token/s")
             return tps
         batch_size = (
@@ -117,7 +111,7 @@ class ModelRunner:
             group_by_input_shapes=self.user_input.dump_input_shapes
         )
         print(table_result)
-        tps_value=calculate_single_card_tps(self, table_result=table_result)
+        tps_value=calculate_single_card_tps(self, execution_time_s=execution_time_s)
         peak_memory_usage_gb = runtime.memory_tracker.peak_mem_usage() / 1024**3
 
         kv_cache_size_gb = (
