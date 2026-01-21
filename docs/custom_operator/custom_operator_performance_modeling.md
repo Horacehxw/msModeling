@@ -1,5 +1,11 @@
 # Custom Operator Performance Modeling
 
+## Code Organization
+
+**Place custom code in the `tensor_cast/performance_model/custom_op` directory**
+
+Please store your custom performance modeling function implementations in this specified directory and ensure proper import paths are configured.
+
 ## Overview
 
 Two different decorators are used for performance modeling:
