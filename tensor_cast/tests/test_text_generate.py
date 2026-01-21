@@ -1171,11 +1171,14 @@ class TestTextGenerate(unittest.TestCase):
         _ = model_runner.run_inference(generate_inputs_func=generate_inputs)
 
     def test_single_card_tps_basic(self):
+        # test config
+        num_queries = 3
+        query_len = 2500
         user_input = UserInputConfig(
             device=self.device,
             model_id=self.model_id,
-            num_queries=1,
-            query_len=1,
+            num_queries=num_queries,
+            query_len=query_len,
             context_length=7,
             do_compile=False,
             allow_graph_break=False,
@@ -1187,7 +1190,16 @@ class TestTextGenerate(unittest.TestCase):
         result = model_runner.run_inference(generate_inputs_func=generate_inputs)
         if isinstance(result, ModelRunnerMetrics):
             result = asdict(result)
-        self.assertGreater(result.get("single_card_tps", 0), 0, "Single card TPS should be greater than zero")
+        expected_tps = ((num_queries * query_len) /
+                        (result.get("execution_time_s", 1e-9) * user_input.world_size))
+        actual_tps = float(result.get("single_card_tps", 0))
+        tolerance = expected_tps * 0.05
+        if tolerance < 1e-10:  # avoid too small tolerance
+            tolerance = max(abs(expected_tps * 0.01), 1e-6)
+        self.assertAlmostEqual(
+            actual_tps, expected_tps, delta=tolerance,
+            msg=f"TPS calculation is wrong: expected={expected_tps:.4g}, actual={actual_tps:.4g}, tolerance={tolerance:.2g}"
+        )
 
 if __name__ == "__main__":
     unittest.main()

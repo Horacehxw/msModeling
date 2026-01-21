@@ -71,11 +71,9 @@ class ModelRunner:
             if not execution_time_s or execution_time_s <= 0:
                 raise ValueError("execution_time_s must be positive")
             tps = (
-                    self.user_input.num_queries    
-                  / execution_time_s
-                  / self.user_input.world_size
+                    (self.user_input.num_queries * self.user_input.query_len)
+                  / (execution_time_s * self.user_input.world_size)
             )
-            print(f"Single card TPS: {tps:.4g} token/s")
             return tps
         batch_size = (
             self.user_input.num_queries
@@ -115,6 +113,7 @@ class ModelRunner:
         )
         print(table_result)
         tps_value=calculate_single_card_tps(self, execution_time_s=execution_time_s)
+        print(f"Single card TPS （query-length) : {tps_value:.4g} token/s")
         peak_memory_usage_gb = runtime.memory_tracker.peak_mem_usage() / 1024**3
 
         kv_cache_size_gb = (
