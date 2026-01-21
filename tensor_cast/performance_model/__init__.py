@@ -16,6 +16,7 @@ def _preload_custom_op():
         custom_op_dir = Path(__file__).resolve().parent / "custom_op"
 
         if not custom_op_dir.exists():
+            logger.warning("custom operator folder %s not found", custom_op_dir)
             return False
 
         for py_file in custom_op_dir.glob("*.py"):
@@ -31,7 +32,7 @@ def _preload_custom_op():
         return True
 
     except Exception as e:
-        print(f"Failed to load custom op modules,{e}")
+        logger.warning("Failed to load custom op modules %s", e)
         return False
 
 

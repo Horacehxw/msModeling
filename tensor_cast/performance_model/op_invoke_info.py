@@ -76,8 +76,11 @@ class OpInvokeInfo:
     @classmethod
     def register_op_properties(cls, op, override=False):
         def decorator(functor):
-            if not override and op in OpInvokeInfo._op_properties_functors:
-                return OpInvokeInfo._op_properties_functors[op]
+            if op in OpInvokeInfo._op_properties_functors:
+                if override:
+                    logger.warning("Overwriting existing properties functor for op: %s", op)
+                else:
+                    raise ValueError(f"Op {op} already registered")
             OpInvokeInfo._op_properties_functors[op] = functor
             return functor
 
