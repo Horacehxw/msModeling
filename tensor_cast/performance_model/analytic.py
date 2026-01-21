@@ -6,14 +6,16 @@ try:
 except ImportError:
     # Fallback for Python 3.10
     from strenum import StrEnum
-from typing import Callable, Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Tuple
 
 import torch
 from overrides import override
 
 from ..device import DeviceProfile
 
-from ..performance_model import OpInvokeInfo, PerformanceModel
+from .model import PerformanceModel
+from .op_estimator_registry import get_op_estimator, register_op_estimator
+from .op_invoke_info import OpInvokeInfo
 
 from .utils import is_view_op
 
@@ -26,34 +28,6 @@ class StatsKey(StrEnum):
     GP_OPS = "gp_ops_time_s"
     MEMORY_ACCESS = "memory_access_time_s"
     COMMUNICATION = "comm_time_s"
-
-
-_op_estimator_table = {}
-
-
-def register_op_estimator(op, device_names: Optional[Union[str, List[str]]]):
-    if not isinstance(device_names, (list, tuple)):
-        device_names = [device_names]
-
-    def decorator(estimator):
-        for device_name in device_names:
-            if device_name not in _op_estimator_table:
-                _op_estimator_table[device_name] = {}
-            assert op not in _op_estimator_table[device_name]
-            _op_estimator_table[device_name][op] = estimator
-        return estimator
-
-    return decorator
-
-
-def _get_op_estimator(
-    op, device_name
-) -> Callable[[OpInvokeInfo, DeviceProfile], PerformanceModel.Result]:
-    if device_name not in _op_estimator_table:
-        device_name = None
-    if op not in _op_estimator_table[device_name]:
-        op = None
-    return _op_estimator_table[device_name][op]
 
 
 class OpBoundClassifier(PerformanceModel.OpClassifier):
@@ -106,7 +80,7 @@ class AnalyticPerformanceModel(PerformanceModel):
 
     @override
     def process_op(self, op_invoke_info: OpInvokeInfo) -> PerformanceModel.Result:
-        op_estimator = _get_op_estimator(op_invoke_info.func, self.device_profile.name)
+        op_estimator = get_op_estimator(op_invoke_info.func, self.device_profile.name)
         result = op_estimator(op_invoke_info, self.device_profile)
         return result
 

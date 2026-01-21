@@ -74,9 +74,9 @@ class OpInvokeInfo:
         return OpInvokeInfo._op_properties_functors[op]
 
     @classmethod
-    def register_op_properties(cls, op):
+    def register_op_properties(cls, op, override=False):
         def decorator(functor):
-            if op in OpInvokeInfo._op_properties_functors:
+            if not override and op in OpInvokeInfo._op_properties_functors:
                 return OpInvokeInfo._op_properties_functors[op]
             OpInvokeInfo._op_properties_functors[op] = functor
             return functor
