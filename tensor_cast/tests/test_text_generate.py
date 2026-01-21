@@ -1184,22 +1184,29 @@ class TestTextGenerate(unittest.TestCase):
             allow_graph_break=False,
             quantize_linear_action=QuantizeLinearAction.DISABLED,
             world_size=64,
-            tp_size=16
+            tp_size=16,
         )
         model_runner = ModelRunner(user_input)
         result = model_runner.run_inference(generate_inputs_func=generate_inputs)
         if isinstance(result, ModelRunnerMetrics):
             result = asdict(result)
-        expected_tps = ((num_queries * query_len) /
-                        (result.get("execution_time_s", 1e-9) * user_input.world_size))
+        expected_tps = (num_queries * query_len) / (
+            result.get("execution_time_s", 1e-9) * user_input.world_size
+        )
         actual_tps = float(result.get("single_card_tps", 0))
         tolerance = expected_tps * 0.05
         if tolerance < 1e-10:  # avoid too small tolerance
             tolerance = max(abs(expected_tps * 0.01), 1e-6)
         self.assertAlmostEqual(
-            actual_tps, expected_tps, delta=tolerance,
-            msg=f"TPS calculation is wrong: expected={expected_tps:.4g}, actual={actual_tps:.4g}, tolerance={tolerance:.2g}"
+            actual_tps,
+            expected_tps,
+            delta=tolerance,
+            msg=(
+                f"TPS calculation is wrong: expected={expected_tps:.4g}, "
+                f"actual={actual_tps:.4g}, tolerance={tolerance:.2g}"
+            ),
         )
+
 
 if __name__ == "__main__":
     unittest.main()
