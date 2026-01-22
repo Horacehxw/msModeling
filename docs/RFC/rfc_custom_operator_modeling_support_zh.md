@@ -31,20 +31,39 @@
 #### 2.1.3 算子覆盖支持
 算子覆盖机制已实现。当用户使用相同算子签名注册时，用户自定义的性能建模会自动覆盖默认实现。
 
-### 2.1.4 启动时加载注册流程
+#### 2.1.4 性能估算优先级机制
+
+对于同一算子进行性能预估时，系统按照以下优先级顺序选择性能建模实现：
+
+```mermaid
+graph TD
+    A[执行算子性能预估] --> B{是否存在用户自定义@register_op_estimator?}
+    B -->|是| C[使用用户自定义@register_op_estimator]
+    B -->|否| D{是否存在默认@register_op_estimator?}
+    D -->|是| E[使用默认@register_op_estimator]
+    D -->|否| F{是否存在用户自定义OpInvokeInfo.register_op_properties?}
+    F -->|是| G[使用用户自定义OpInvokeInfo.register_op_properties]
+    F -->|否| H[使用系统默认OpInvokeInfo.register_op_properties]
+    H --> I[完成性能预估]
+    G --> I
+    E --> I
+    C --> I
+```
+
+### 2.1.5 启动时加载注册流程
 
 系统启动时会加载和注册算子性能建模实现：
 
 ```mermaid
 graph TD
-    A[系统启动] --> B[加载__init__.py中的默认算子]
+    A[系统启动] --> B[加载__init__.py中的默认算子建模]
     B --> C[扫描 custom_op 目录]
     C --> D{存在用户定义的.py文件?}
     D -->|否| E[加载完成]
     D -->|是| F[逐个遍历文件]
     F --> G[加载用户自定义模块]
-    G --> H[加载@register_op_estimator装饰的算子]
-    H --> I[加载@OpInvokeInfo.register_op_properties装饰的算子]
+    G --> H[注册@register_op_estimator装饰的算子建模]
+    H --> I[注册@OpInvokeInfo.register_op_properties装饰的算子建模]
     I --> E[加载完成]
 ```
 

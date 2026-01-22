@@ -31,20 +31,39 @@ At system startup, scan all `.py` files under the `tensor_cast/performance_model
 #### 2.1.3 Operator Override Support
 The operator override mechanism has been implemented. When users register with the same operator signature, user-defined performance modeling will automatically override the default implementation.
 
-### 2.1.4 Startup Loading Registration Process
+#### 2.1.4 Performance Estimation Priority Mechanism
+
+When estimating performance for the same operator, the system selects performance modeling implementations in the following priority order:
+
+```mermaid
+graph TD
+    A[Execute Operator Performance Estimation] --> B{Does user-defined @register_op_estimator exist?}
+    B -->|Yes| C[Use user-defined @register_op_estimator]
+    B -->|No| D{Does default @register_op_estimator exist?}
+    D -->|Yes| E[Use default @register_op_estimator]
+    D -->|No| F{Does user-defined OpInvokeInfo.register_op_properties exist?}
+    F -->|Yes| G[Use user-defined OpInvokeInfo.register_op_properties]
+    F -->|No| H[Use system default OpInvokeInfo.register_op_properties]
+    H --> I[Complete performance estimation]
+    G --> I
+    E --> I
+    C --> I
+```
+
+### 2.1.5 Startup Loading Registration Process
 
 System startup loads and registers operator performance modeling implementations:
 
 ```mermaid
 graph TD
-    A[System Startup] --> B[Load default operators from __init__.py]
+    A[System Startup] --> B[Load default operator modeling from __init__.py]
     B --> C[Scan custom_op directory]
     C --> D{Any user-defined .py files?}
     D -->|No| E[Loading complete]
     D -->|Yes| F[Process files sequentially]
     F --> G[Load user-defined modules]
-    G --> H[Load @register_op_estimator decorated ops]
-    H --> I[Load @OpInvokeInfo.register_op_properties decorated ops]
+    G --> H[Register @register_op_estimator decorated op modeling]
+    H --> I[Register @OpInvokeInfo.register_op_properties decorated op modeling]
     I --> E[Loading complete]
 ```
 

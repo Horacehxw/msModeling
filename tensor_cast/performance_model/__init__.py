@@ -35,8 +35,8 @@ def _load_custom_op():
                 spec.loader.exec_module(module)
         return True
 
-    except Exception as e:
-        logger.warning("Failed to load custom op modules %s", e)
+    except Exception:
+        logger.warning("Failed to load custom op modules ", exc_info=True)
         return False
 
 
