@@ -1,5 +1,5 @@
-import logging
 import argparse
+import logging
 
 
 LOG_LEVELS = {
@@ -7,7 +7,7 @@ LOG_LEVELS = {
     "info": logging.INFO,
     "warning": logging.WARNING,
     "error": logging.ERROR,
-    "critical": logging.CRITICAL
+    "critical": logging.CRITICAL,
 }
 
 
@@ -20,4 +20,3 @@ def check_positive_integer(value):
         raise argparse.ArgumentTypeError("%r is not a positive integer", value)
 
     return value
-
