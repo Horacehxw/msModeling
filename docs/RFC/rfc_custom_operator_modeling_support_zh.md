@@ -19,7 +19,11 @@
 ### 2.1 推荐方案
 
 #### 2.1.1 核心设计
-基于 `OpInvokeInfo.register_op_properties` 注册机制，提供算子性能建模功能。
+提供基于两级注册机制的算子性能建模功能：
+- **直接估计**：使用 `@register_op_estimator` 直接估计算子执行时间，适用于任何算子类型
+- **详细分析**：使用 `@OpInvokeInfo.register_op_properties` 提供算子详细计算和内存访问属性
+
+该设计支持用户为新算子提供性能模型，或覆盖已有算子的性能建模，以提高性能分析和优化的准确性。
 
 #### 2.1.2 用户自定义算子加载
 系统启动时扫描 `tensor_cast/performance_model/custom_op/` 目录下的所有 `.py` 文件，自动加载所有注册的算子性能建模函数。
@@ -29,32 +33,22 @@
 
 ### 2.1.4 启动时加载注册流程
 
-系统启动时会按以下顺序加载和注册算子性能建模实现：
+系统启动时会加载和注册算子性能建模实现：
 
 ```mermaid
 graph TD
-    A[系统启动] --> B[扫描 custom_op 目录]
-    B --> C{存在用户定义的.py文件?}
-    C -->|否| D[跳过用户自定义加载]
-    C -->|是| E[逐个遍历文件]
-    E --> F[加载用户自定义模块]
-    F --> G[注册用户自定义算子]
-    G --> H[执行 \_\_init__.py 中的默认算子]
-    H --> I{算子是否已注册?}
-    I -->|已注册| J[忽略重复注册]
-    I -->|未注册| K[添加新注册]
-    K --> L[完成所有注册]
-    D --> H
+    A[系统启动] --> B[加载__init__.py中的默认算子]
+    B --> C[扫描 custom_op 目录]
+    C --> D{存在用户定义的.py文件?}
+    D -->|否| E[加载完成]
+    D -->|是| F[逐个遍历文件]
+    F --> G[加载用户自定义模块]
+    G --> H[加载@register_op_estimator装饰的算子]
+    H --> I[加载@OpInvokeInfo.register_op_properties装饰的算子]
+    I --> E[加载完成]
 ```
 
-**流程说明**：
 
-1. **触发时机**：系统启动时立即执行 `_preload_custom_op()`
-2. **目录扫描**：遍历 `tensor_cast/performance_model/custom_op/` 目录
-3. **模块加载**：使用 Python 标准库动态导入每个 Python 文件
-4. **自动注册**：当模块被加载时，其中的 `@OpInvokeInfo.register_op_properties()` 装饰器会自动执行
-5. **注册机制**：将函数指针存储在 `OpInvokeInfo._op_properties_functors[op]` 字典中
-6. **覆盖机制**：相同算子签名会后注册的覆盖先注册的
 
 ### 2.2 替代方案
 
@@ -88,3 +82,156 @@ graph TD
 ### 3.2 下一步计划
 - **模板和示例优化**：开发通用的算子性能建模模板和完善示例代码，提供更多实用的建模案例
 - **用户体验改进**：简化用户自定义建模的实现复杂度，降低使用门槛
+
+---
+
+## 4. 实施指南
+
+### 4.1 代码组织
+
+**将自定义代码放在 `tensor_cast/performance_model/custom_op` 目录中**
+
+该目录专门用于存放用户自定义的性能建模函数和相关性能分析代码。在此位置组织代码有以下几个优点：
+
+1. **代码纯净性高**：将核心实现与用户自定义代码分离
+2. **便于管理**：为自定义实现提供专用空间
+3. **代码分层清晰**：建立明确的关注点分离
+
+### 4.2 两级算子性能建模注册设计
+
+框架采用两级方法进行算子性能建模，提供不同级别的灵活性和精确度：
+
+#### **直接估计（使用 `@register_op_estimator`）**
+
+为**任意**算子类型提供直接执行时间估计。
+
+**用途**：直接提供算子执行时间估算
+
+```python
+from tensor_cast.performance_model.op_estimator_registry import register_op_estimator
+from tensor_cast.performance_model.model import PerformanceModel
+
+@register_op_estimator(torch.ops.your_op.Operator, None, True)
+def _estimate_your_op(op_invoke_info, device_profile) -> object:
+    """直接估计任何算子类型的执行时间"""
+    input_tensors = op_invoke_info.args
+    total_elements = sum(tensor.numel() for tensor in input_tensors)
+    base_time = 0.001
+    compute_time = total_elements * 1e-9
+    
+    return PerformanceModel.Result(base_time + compute_time)
+```
+
+#### **详细分析（使用 `@OpInvokeInfo.register_op_properties`）**
+
+当直接估计不可用时，提供详细的计算复杂性和内存访问分析。
+
+**目的**：捕获详细的计算和内存模式
+**用途**：当register_op_estimator未定义时的后备机制
+**优先级**：次高优先级，为默认估算器提供计算基础
+**关系**：当直接估计不存在时，为最终的建模提供计算基础
+
+```python
+from tensor_cast.performance_model.op_invoke_info import OpInvokeInfo
+import torch
+
+@OpInvokeInfo.register_op_properties(torch.ops.your_op.Operator)
+def _(op_invoke_info: OpInvokeInfo) -> OpInvokeInfo.PerformanceProperties:
+    """为缺少直接估计的算子提供详细分析"""
+    properties = op_invoke_info.get_memory_access_properties()
+    
+    # 按数据类型添加计算量
+    compute_ops = properties.compute_ops.setdefault(
+        op_invoke_info.args[0].dtype, OpInvokeInfo.ComputeOps())
+    compute_ops.mma_ops = calculated_ops
+    
+    return properties
+```
+
+
+
+#### **工作机制**
+
+对于同一个算子，`@register_op_estimator` 的优先级始终高于 `@OpInvokeInfo.register_op_properties`。当存在 `@register_op_estimator` 注册时，系统会直接使用该估算器。当没有注册时，系统会使用默认估算器，该估算器会查找是否有 `@OpInvokeInfo.register_op_properties` 注册，然后使用这些属性进行最终的性能建模。
+
+#### **使用指南**
+
+- **简单场景**：使用 `@register_op_estimator` 直接提供时间估计
+- **复杂场景**：使用 `@OpInvokeInfo.register_op_properties` 提供详细计算属性
+- **特定场景**：根据实际需求选择适合的方法
+- **计算算子**：可以根据复杂性选择适当的方法
+- **混合场景**：可以同时使用两种装饰器，用于不同用途
+
+#### **`@register_op_estimator`的参数**：
+1. **Operator**：要估计的任意PyTorch算子
+2. **Device Profile**：特定设备的配置（可以是 `None`）
+3. **Override**：是否允许覆盖现有估计器
+
+### 4.3 性能建模模板
+
+```python
+from tensor_cast.performance_model.op_invoke_info import OpInvokeInfo
+import torch
+
+@OpInvokeInfo.register_op_properties(torch.ops.your_op.Operator)
+def _(op_invoke_info: OpInvokeInfo) -> OpInvokeInfo.PerformanceProperties:
+    properties = op_invoke_info.get_memory_access_properties()
+    
+    # 按数据类型添加计算量
+    compute_ops = properties.compute_ops.setdefault(
+        op_invoke_info.args[0].dtype, OpInvokeInfo.ComputeOps())
+    compute_ops.mma_ops = calculated_ops
+    
+    return properties
+```
+
+#### 4.4 `@register_op_estimator` 模板
+
+使用此模板来直接估计任何算子类型的执行时间：
+
+```python
+from tensor_cast.performance_model.op_estimator_registry import register_op_estimator
+from tensor_cast.performance_model.model import PerformanceModel
+
+@register_op_estimator(torch.ops.tensor_cast.all_to_all.default, None, True)
+def _estimate_all_to_all(op_invoke_info, device_profile) -> object:
+    input_tensor = op_invoke_info.args[0]
+    message_size = input_tensor.numel() * input_tensor.element_size()
+    
+    # 简单的时间估计
+    return PerformanceModel.Result(0.001 + message_size / (10.0 * 1e9))
+```
+
+### 4.5 参数映射
+
+- `op_invoke_info.args[0]`：第一个参数（例如，key张量）
+- `op_invoke_info.args[1]`：第二个参数（例如，value张量）
+- `op_invoke_info.args[2]`：第三个参数（例如，kv_cache张量）
+- `op_invoke_info.args[3]`：第四个参数（例如，slot_mapping）
+
+### 4.6 常见模式
+
+#### 4.6.1 内存访问属性
+```python
+# 基础内存属性
+properties = op_invoke_info.get_memory_access_properties()
+
+# 更新内存读写
+properties.memory_read_bytes += input_tensor.numel() * input_tensor.element_size()
+properties.memory_write_bytes += output_tensor.numel() * output_tensor.element_size()
+```
+
+#### 4.6.2 计算操作
+```python
+# 按数据类型添加计算量
+compute_ops = properties.compute_ops.setdefault(tensor.dtype, OpInvokeInfo.ComputeOps())
+compute_ops.mma_ops = calculated_ops  # 重计算（矩阵运算）
+compute_ops.gp_ops = scalar_ops       # 元素级计算
+```
+
+### 4.7 适合直接估计的算子类型
+
+以下类型的算子适合使用 `@register_op_estimator`：
+
+- **简单算子**：计算模式简单，适合直接时间估算
+- **受限环境**：无法进行详细分析的轻量级部署环境

@@ -2,7 +2,7 @@ import logging
 from typing import Callable, List, Optional, Union
 
 from ..device import DeviceProfile
-from .model import PerformanceModel
+from .base import PerformanceModel
 from .op_invoke_info import OpInvokeInfo
 
 

@@ -7,7 +7,7 @@ from torch.utils._cxx_pytree import tree_map
 from ..config import performance_model as perf_config
 
 from ..device import DeviceProfile
-from .model import PerformanceModel
+from .base import PerformanceModel
 
 from .op_invoke_info import OpInvokeInfo
 

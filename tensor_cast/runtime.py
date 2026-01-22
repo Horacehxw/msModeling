@@ -13,7 +13,7 @@ from torch.utils._python_dispatch import TorchDispatchMode
 
 from .device import DeviceProfile
 from .patch_torch import patch_torch
-from .performance_model.model import CachingPerformanceModel, PerformanceModel
+from .performance_model.base import CachingPerformanceModel, PerformanceModel
 from .performance_model.op_invoke_info import OpInvokeInfo
 from .performance_model.memory_tracker import MemoryTracker
 

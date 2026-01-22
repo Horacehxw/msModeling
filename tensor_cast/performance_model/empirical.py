@@ -1,7 +1,7 @@
 from overrides import override
 
 from ..device import DeviceProfile
-from .model import PerformanceModel
+from .base import PerformanceModel
 from .op_benchmark import OpBenchmark
 from .op_invoke_info import OpInvokeInfo
 
