@@ -7,8 +7,8 @@ from ..core.user_config import UserInputConfig
 from ..device import TEST_DEVICE
 from ..model_config import ModelConfig, ParallelConfig, QuantConfig
 from ..performance_model.analytic import AnalyticPerformanceModel
-from ..performance_model.memory_tracker import MemoryTracker
 from ..performance_model.base import PerformanceModel
+from ..performance_model.memory_tracker import MemoryTracker
 from ..performance_model.op_estimator_registry import register_op_estimator
 
 from ..performance_model.op_invoke_info import OpInvokeInfo
