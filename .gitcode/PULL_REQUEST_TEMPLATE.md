@@ -13,8 +13,8 @@ Thanks for your contribution; we appreciate it a lot. The following instructions
 
 ## 🔍 Motivation / 变更动机
 
-Please describe the motivation of this PR and the goal you want to achieve through this PR.
-请描述您的拉取请求的动机和您希望通过此拉取请求实现的目标。
+**Please describe the motivation of this PR and the goal you want to achieve through this PR.**
+**请描述您的拉取请求的动机和您希望通过此拉取请求实现的目标。**
 
 
 
@@ -22,8 +22,8 @@ Please describe the motivation of this PR and the goal you want to achieve throu
 
 ## 📝 Modification / 修改内容
 
-Please briefly describe what modification is made in this PR.
-请简要描述此拉取请求中进行的修改。
+**Please briefly describe what modification is made in this PR.**
+**请简要描述此拉取请求中进行的修改。**
 
 
 
@@ -31,8 +31,8 @@ Please briefly describe what modification is made in this PR.
 
 ## 📐 Associated Test Results / 关联测试结果
 
-Please provide the related test results, such as test reports, etc.
-请提供相关测试结果，例如测试报告等。
+**Please provide the related test results, such as test reports, etc.**
+**请提供相关测试结果，例如测试报告等。**
 
 
 
@@ -40,8 +40,8 @@ Please provide the related test results, such as test reports, etc.
 
 ## 🌟 Use cases (Optional) / 使用案例（可选）
 
-If this PR introduces a new feature, it is better to list some use cases here and update the documentation.
-如果此拉取请求引入了新功能，最好在此处列出一些用例并更新文档。
+**If this PR introduces a new feature, it is better to list some use cases here and update the documentation.**
+**如果此拉取请求引入了新功能，最好在此处列出一些用例并更新文档。**
 
 
 
