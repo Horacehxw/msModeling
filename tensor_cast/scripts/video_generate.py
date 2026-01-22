@@ -23,7 +23,7 @@ from ..performance_model.memory_tracker import MemoryTracker
 from ..quantize_utils import QuantGranularity
 from ..runtime import Runtime
 from ..utils import str_to_dtype
-from .utils import check_positive_integer
+from .utils import check_positive_integer, LOG_LEVELS
 
 
 def generate_diffusers_inputs(
@@ -301,8 +301,9 @@ def main():
     )
     parser.add_argument(
         "--log-level",
-        type=str,
-        default=None,
+        choices=LOG_LEVELS,
+        default="info",
+        help="Set the logging level",
     )
     parser.add_argument(
         "--enable-profiler",

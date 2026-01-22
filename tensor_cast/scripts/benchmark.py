@@ -18,7 +18,8 @@ from ..performance_model.analytic import AnalyticPerformanceModel
 from ..performance_model.memory_tracker import MemoryTracker
 from ..runtime import Runtime
 from ..transformers.model import TransformerModel
-from .utils import check_positive_integer
+from .utils import check_positive_integer, LOG_LEVELS
+
 
 logger = logging.getLogger(__name__)
 
@@ -327,9 +328,9 @@ models:
     )
     parser.add_argument(
         "--log-level",
-        type=str,
-        default=None,
-        help="Logging level",
+        choices=LOG_LEVELS,
+        default="info",
+        help="Set the logging level",
     )
     parser.add_argument(
         "--tp-sizes",
