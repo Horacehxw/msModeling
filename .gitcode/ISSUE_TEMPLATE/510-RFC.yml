@@ -10,16 +10,18 @@ body:
       **Before submitting a proposal, please first search the warehouse to see if there are any identical proposals. If so, please discuss them in the same proposal.**
 
       **提交提案之前，请先检索仓库内是否已有相同的提案，如已有请在同一提案中进行讨论。**
-- type: markdown
+- type: textarea
+  id: metadata-table
   attributes:
+    label: Metadata (元数据)
     value: |
-      ## Metadata (元数据)
       | Item / 项目 | Content / 内容 |
       | :--- | :--- |
       | **Status / 状态** | Draft (草案) / Accepted (已批准) |
       | **Author(s) / 作者** | [Name(s) of Contributor(s) / 相关人名字] |
       | **Creation Date / 创建日期** | YYYY-MM-DD |
       | **Related Links / 相关链接** | [Issue/PR/Commit URL(s)] |
+    render: markdown
 - type: textarea
   attributes:
     label: Problem Statement | 概述
@@ -32,8 +34,10 @@ body:
 - type: textarea
   attributes:
     label: Proposed solution | 提议方案
-    description: >
-      Combine text and diagrams if needed. Clarify the following key details of the solution: which modules need to be added/modified, the definition of interfaces (input and output parameters), the interaction logic with existing modules, and the key algorithms if applicable.
+    description: |
+      Combine text and diagrams if needed. Clarify the following key details of the solution: 
+      which modules need to be added/modified, the definition of interfaces (input and output parameters), 
+      the interaction logic with existing modules, and the key algorithms if applicable.
       可以图文结合，请重点澄清以下方案细节：需要在哪里添加什么模块，接口是什么（输入输出），和已有模块的关系是什么（交互），以及核心算法（如有）。
   validations:
     required: true
