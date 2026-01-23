@@ -156,12 +156,6 @@ class MultiheadLatentAttentionTensorCast(MultiheadLatentAttentionBase):
         # TODO: do inplace rotary embedding and save this torch.cat? Perhaps we can do this in graph rewrites?
         q_states = torch.cat((q_pass, q_rot), dim=-1)
 
-        # TODO: support quantization
-        if attention_meta is not None:
-            torch.ops.tensor_cast.concat_and_cache_mla(
-                kv_c_normed, k_rot, kv_cache, attention_meta.slot_mapping
-            )
-
         query_start_loc = attention_meta.query_start_loc if attention_meta else None
         seq_lens = attention_meta.seq_lens if attention_meta else None
         query_lens = attention_meta.query_lens if attention_meta else None
@@ -186,6 +180,13 @@ class MultiheadLatentAttentionTensorCast(MultiheadLatentAttentionBase):
                 quant_config.kv_offset,
                 out_dtype,
             )
+
+            # TODO: support quantization
+            if attention_meta is not None:
+                torch.ops.tensor_cast.concat_and_cache_mla(
+                    kv_c_normed, k_rot, kv_cache, attention_meta.slot_mapping
+                )
+
             # we wrap the attention operation in a custom op since it behaves differently
             # between prefill and decode shapes
             attn_output = torch.ops.tensor_cast.multihead_latent_attention_quant(
@@ -222,6 +223,12 @@ class MultiheadLatentAttentionTensorCast(MultiheadLatentAttentionBase):
                 out_dtype=hidden_states.dtype,
             )
         else:
+            # TODO: support quantization
+            if attention_meta is not None:
+                torch.ops.tensor_cast.concat_and_cache_mla(
+                    kv_c_normed, k_rot, kv_cache, attention_meta.slot_mapping
+                )
+
             # we wrap the attention operation in a custom op since it behaves differently
             # between prefill and decode shapes
             attn_output = torch.ops.tensor_cast.multihead_latent_attention(
