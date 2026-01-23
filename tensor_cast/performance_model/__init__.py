@@ -684,13 +684,13 @@ def _multihead_latent_attention_properties_helper(
 
     total_fma_ops = 0
     total_gp_ops = 0
-    exclude_input_ids = {3, 8, 9, 10}  # kv_cache, W_UK_T, W_UV, kv_b_proj
+    exclude_input_ids = {1, 2, 4, 5, 6, 7, 8, 9, 10}
 
     # 3. Calculate FLOPs for the Prefill Phase
-    num_prefill_tokens = torch.sum(num_tokens_per_seq[is_prefill]).item()
+    num_prefill_tokens = torch.sum(seq_lens[is_prefill]).item()
     if num_prefill_tokens > 0:
         assert kv_b_proj is not None
-        exclude_input_ids = exclude_input_ids - {10}
+        exclude_input_ids = exclude_input_ids - {10}  # kv_b_proj
         prefill_seq_lens = seq_lens[is_prefill]
         prefill_num_tokens_per_seq = num_tokens_per_seq[is_prefill]
 
@@ -716,15 +716,11 @@ def _multihead_latent_attention_properties_helper(
         total_fma_ops += prefill_op1_ops + prefill_op2_ops + prefill_op4_ops
         total_gp_ops += prefill_op3_ops
 
-        properties = op_invoke_info.get_memory_access_properties(
-            exclude_input_ids=exclude_input_ids
-        )  # exclude kv_cache
-
     # 4. Calculate FLOPs for the Decode Phase
     num_decode_tokens = torch.sum(num_tokens_per_seq[is_decode]).item()
     if num_decode_tokens > 0:
         assert W_UK_T is not None and W_UV is not None
-        exclude_input_ids = exclude_input_ids - {8, 9}
+        exclude_input_ids = exclude_input_ids - {8, 9}  # W_UK_T, W_UV
         decode_seq_lens = seq_lens[is_decode]
         decode_num_tokens_per_seq = num_tokens_per_seq[is_decode]
 
@@ -760,17 +756,9 @@ def _multihead_latent_attention_properties_helper(
         )
         total_gp_ops += decode_op3_ops
 
-        properties = op_invoke_info.get_memory_access_properties(
-            exclude_input_ids=exclude_input_ids
-        )  # exclude kv_cache
-
-        # Estimate memory read from the KV Cache.
-        # Each token in a sequence reads all previous key/value states for that sequence.
-        # The size of a cached entry is (kv_lora_rank + qk_rope_head_dim).
-        cache_entry_size = bytes_of_elements(kv_cache.size(-1), kv_cache.dtype)
-
-        # `decode_context_sum` from the previous example can be reused here.
-        properties.memory_read_bytes += decode_context_sum * cache_entry_size
+    properties = op_invoke_info.get_memory_access_properties(
+        exclude_input_ids=exclude_input_ids
+    )
 
     compute_ops = properties.compute_ops.setdefault(q.dtype, OpInvokeInfo.ComputeOps())
     compute_ops.mma_ops = total_fma_ops
