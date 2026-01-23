@@ -181,7 +181,6 @@ class MultiheadLatentAttentionTensorCast(MultiheadLatentAttentionBase):
                 out_dtype,
             )
 
-            # TODO: support quantization
             if attention_meta is not None:
                 torch.ops.tensor_cast.concat_and_cache_mla(
                     kv_c_normed, k_rot, kv_cache, attention_meta.slot_mapping
@@ -223,7 +222,6 @@ class MultiheadLatentAttentionTensorCast(MultiheadLatentAttentionBase):
                 out_dtype=hidden_states.dtype,
             )
         else:
-            # TODO: support quantization
             if attention_meta is not None:
                 torch.ops.tensor_cast.concat_and_cache_mla(
                     kv_c_normed, k_rot, kv_cache, attention_meta.slot_mapping
