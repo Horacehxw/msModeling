@@ -126,6 +126,7 @@ class MultiheadLatentAttentionTensorCast(MultiheadLatentAttentionBase):
         query_shape = (num_tokens, -1, self.qk_head_dim)
 
         if self.q_lora_rank is None:
+
             q_states = self.q_proj(hidden_states)
         else:
             q_states = self.q_b_proj(self.q_a_layernorm(self.q_a_proj(hidden_states)))
@@ -272,3 +273,6 @@ class MultiheadLatentAttentionTensorCast(MultiheadLatentAttentionBase):
             self.kv_b_proj_offset,
             out_dtype,
         )
+
+# class MlaPreprocessOperationTensor_cast(MultiheadLatentAttentionBase):
+#     def __init__(self):

@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional,Tuple
 
 import torch
 
@@ -128,3 +128,39 @@ def _(
     return torch.empty(
         q.shape[0], q.shape[1], v_head_dim, dtype=out_dtype, device="meta"
     )
+
+@register_tensor_cast_op("mla_preprocess-operation")
+def _(
+    input: torch.Tensor,
+    gamma0: torch.Tensor,
+    beta0: torch.Tensor,
+    quant_scale0: torch.Tensor,
+    quant_offset0: torch.Tensor,
+    wdqkv: torch.Tensor,
+    de_scale0: torch.Tensor,
+    bias0: torch.Tensor,
+    gamma1: torch.Tensor,
+    beta1: torch.Tensor,
+    quant_scale1: torch.Tensor,
+    quant_offset1: torch.Tensor,
+    wuq: torch.Tensor,
+    bias1: torch.Tensor,
+    gamma2: torch.Tensor,
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+    wuk: torch.Tensor,
+    ctkv: torch.Tensor,
+    k_rope: torch.Tensor,
+    slot_mapping: torch.Tensor,
+    ctkv_scale: torch.Tensor,
+    q_nope_scale: torch.Tensor,
+    cache_mode: str = "KVCACHE",
+    quant_mode: str = "PER_TENSOR_QUANT_ASYMM",
+    out_dtype: Optional[torch.dtype] = None,
+) -> Tuple [torch.Tensor, ...]:
+    token_num = input.shape[0]
+    head_num = wuk.shape[0] if wuk is not None else 64
+
+    q_out = torch.empty((token_num, head_num, 576), dtype=out_dtype, device="meta")
+    kv_cache_out = torch.empty_like(ctkv, device="meta")
+    return q_out, kv_cache_out
