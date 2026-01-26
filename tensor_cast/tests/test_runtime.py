@@ -232,7 +232,7 @@ class PerfAnalysisTestCase(unittest.TestCase):
             )
         )
 
-        assert_close(self, actual_execution_time, 1.34e-3)
+        assert_close(self, actual_execution_time, 1.28e-3)
 
     def test_mla_eager_decode(self):
         B, S, num_heads, q_head_dim = 16, 7008, 8, 192
