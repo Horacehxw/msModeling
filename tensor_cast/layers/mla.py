@@ -190,8 +190,6 @@ class MultiheadLatentAttentionTensorCast(MultiheadLatentAttentionBase):
             # between prefill and decode shapes
             attn_output = torch.ops.tensor_cast.multihead_latent_attention_quant(
                 q_states,
-                kv_c_normed,
-                k_rot,
                 kv_cache,
                 attention_meta.block_table_tensor
                 if attention_meta is not None
@@ -231,8 +229,6 @@ class MultiheadLatentAttentionTensorCast(MultiheadLatentAttentionBase):
             # between prefill and decode shapes
             attn_output = torch.ops.tensor_cast.multihead_latent_attention(
                 q_states,
-                kv_c_normed,
-                k_rot,
                 kv_cache,
                 attention_meta.block_table_tensor
                 if attention_meta is not None
