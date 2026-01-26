@@ -72,7 +72,7 @@ _model_type_to_moe_config: Dict[str, MoEConfig] = {
 
 
 def get_moe_config(model_type: str = "") -> Optional[MoEConfig]:
-    return copy.deepcopy(_model_type_to_moe_config.get(model_type))
+    return _model_type_to_moe_config.get(model_type)
 
 
 _model_type_to_mla_module_name: Dict[str, str] = {
