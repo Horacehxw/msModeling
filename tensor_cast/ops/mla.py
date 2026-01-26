@@ -26,8 +26,6 @@ def _(
 @register_tensor_cast_op("multihead_latent_attention")
 def _(
     q: torch.Tensor,
-    kv_c_normed: torch.Tensor,
-    k_rot: torch.Tensor,
     kv_cache: torch.Tensor,
     block_table: torch.Tensor,
     query_start_loc: torch.Tensor,
@@ -77,8 +75,6 @@ def _(
 @register_tensor_cast_op("multihead_latent_attention_quant")
 def _(
     q: torch.Tensor,
-    kv_c_normed: torch.Tensor,
-    k_rot: torch.Tensor,
     kv_cache: torch.Tensor,
     block_table: torch.Tensor,
     query_start_loc: torch.Tensor,
