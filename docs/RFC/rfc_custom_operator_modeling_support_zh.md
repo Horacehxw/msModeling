@@ -37,13 +37,13 @@
 
 ```mermaid
 graph TD
-    A[执行算子性能预估] --> B{是否存在用户自定义</br>@register_op_estimator?}
-    B -->|是| C[使用用户自定义</br>@register_op_estimator]
-    B -->|否| D{是否存在默认</br>@register_op_estimator?}
-    D -->|是| E[使用默认</br>@register_op_estimator]
-    D -->|否| F{是否存在用户自定义</br>OpInvokeInfo.register_op_properties?}
-    F -->|是| G[使用用户自定义</br>OpInvokeInfo.register_op_properties]
-    F -->|否| H[使用系统默认</br>OpInvokeInfo.register_op_properties]
+    A[执行算子性能预估] --> B{是否存在用户自定义</br> @register_op_estimator?}
+    B -->|是| C[使用用户自定义</br> @register_op_estimator]
+    B -->|否| D{是否存在默认</br> @register_op_estimator?}
+    D -->|是| E[使用默认</br> @register_op_estimator]
+    D -->|否| F{是否存在用户自定义</br> OpInvokeInfo.register_op_properties?}
+    F -->|是| G[使用用户自定义</br> OpInvokeInfo.register_op_properties]
+    F -->|否| H[使用系统默认</br> OpInvokeInfo.register_op_properties]
     H --> I[完成性能预估]
     G --> I
     E --> I
@@ -56,14 +56,14 @@ graph TD
 
 ```mermaid
 graph TD
-    A[系统启动] --> B[加载默认算子建模<br>在 __init__.py 中]
-    B --> C[扫描目录<br>custom_op]
-    C --> D{目录中存在<br>用户.py文件？}
+    A[系统启动] --> B[加载默认算子建模]
+    B --> C[扫描目录</br> custom_op]
+    C --> D{存在自定义算子？}
     D -->|否| E[加载完成]
-    D -->|是| F[逐个<br>遍历文件]
-    F --> G[加载<br>用户模块]
-    G --> H[注册算子建模<br>@register_op_estimator]
-    H --> I[注册算子建模<br>@OpInvokeInfo<br>.register_op_properties]
+    D -->|是| F[逐个遍历文件]
+    F --> G[加载用户模块]
+    G --> H[注册算子建模</br> @register_op_estimator]
+    H --> I[注册算子建模</br> @OpInvokeInfo<br>.register_op_properties]
     I --> E[加载完成]
 ```
 
