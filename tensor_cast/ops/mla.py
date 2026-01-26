@@ -1,4 +1,4 @@
-from typing import Optional,Tuple
+from typing import Optional, Tuple
 
 import torch
 
@@ -129,7 +129,8 @@ def _(
         q.shape[0], q.shape[1], v_head_dim, dtype=out_dtype, device="meta"
     )
 
-@register_tensor_cast_op("mla_preprocess-operation")
+
+@register_tensor_cast_op("mla_preprocess_operation")
 def _(
     input: torch.Tensor,
     gamma0: torch.Tensor,
@@ -157,10 +158,11 @@ def _(
     cache_mode: str = "KVCACHE",
     quant_mode: str = "PER_TENSOR_QUANT_ASYMM",
     out_dtype: Optional[torch.dtype] = None,
-) -> Tuple [torch.Tensor, ...]:
+) -> Tuple[torch.Tensor, torch.Tensor]:
     token_num = input.shape[0]
     head_num = wuk.shape[0] if wuk is not None else 64
 
     q_out = torch.empty((token_num, head_num, 576), dtype=out_dtype, device="meta")
     kv_cache_out = torch.empty_like(ctkv, device="meta")
+
     return q_out, kv_cache_out

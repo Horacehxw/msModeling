@@ -1,12 +1,12 @@
 from abc import ABC, abstractmethod
-from typing import Any, Optional
+from typing import Any, Optional, Tuple
 
 import torch
 
 from .. import ops  # noqa: F401
 from ..model_config import MlaConfig, MultiheadLatentAttentionQuantConfig
 from ..parallel_group import ParallelGroup
-from ..utils import exact_division
+from ..utils import exact_division, register_tensor_cast_op
 from .attention import AttentionMetadataBase
 
 from .quant_linear import TensorCastQuantLinear
@@ -126,7 +126,6 @@ class MultiheadLatentAttentionTensorCast(MultiheadLatentAttentionBase):
         query_shape = (num_tokens, -1, self.qk_head_dim)
 
         if self.q_lora_rank is None:
-
             q_states = self.q_proj(hidden_states)
         else:
             q_states = self.q_b_proj(self.q_a_layernorm(self.q_a_proj(hidden_states)))
@@ -274,5 +273,39 @@ class MultiheadLatentAttentionTensorCast(MultiheadLatentAttentionBase):
             out_dtype,
         )
 
-# class MlaPreprocessOperationTensor_cast(MultiheadLatentAttentionBase):
-#     def __init__(self):
+
+@register_tensor_cast_op("mla_preprocess_operation")
+def _(
+    input: torch.Tensor,
+    gamma0: torch.Tensor,
+    beta0: torch.Tensor,
+    quant_scale0: torch.Tensor,
+    quant_offset0: torch.Tensor,
+    wdqkv: torch.Tensor,
+    de_scale0: torch.Tensor,
+    bias0: torch.Tensor,
+    gamma1: torch.Tensor,
+    beta1: torch.Tensor,
+    quant_scale1: torch.Tensor,
+    quant_offset1: torch.Tensor,
+    wuq: torch.Tensor,
+    bias1: torch.Tensor,
+    gamma2: torch.Tensor,
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+    wuk: torch.Tensor,
+    ctkv: torch.Tensor,
+    k_rope: torch.Tensor,
+    slot_mapping: torch.Tensor,
+    ctkv_scale: torch.Tensor,
+    q_nope_scale: torch.Tensor,
+    cache_mode: str = "KVCACHE",
+    quant_mode: str = "PER_TENSOR_QUANT_ASYMM",
+    out_dtype: Optional[torch.dtype] = None,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    token_num = input.shape[0]
+    head_num = wuk.shape[0] if wuk is not None else 64
+
+    q_out = torch.empty((token_num, head_num, 576), dtype=out_dtype, device="meta")
+    kv_cache_out = torch.empty_like(ctkv, device="meta")
+    return q_out, kv_cache_out

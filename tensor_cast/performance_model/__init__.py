@@ -3,9 +3,13 @@ import hashlib
 import itertools
 import logging
 from abc import ABC, abstractmethod
+from operator import ifloordiv  # noqa: F401
 from typing import Any, Dict, List, Optional, Protocol, Tuple
 
 import torch
+from prompt_toolkit.contrib.telnet import TelnetServer  # noqa: F401
+from sympy.sets.fancysets import Naturals0  # noqa: F401
+from transformers.training_args import OptimizerNames  # noqa: F401
 
 from .. import ops  # noqa: F401
 from ..device import DeviceProfile
@@ -924,6 +928,378 @@ def _(
     )
     compute_ops.gp_ops += total_quant_dequant_ops
 
+    return properties
+
+
+def _calculate_rmsnorm_ops(
+    input_tensor: torch.Tensor,
+    gamma: Optional[torch.Tensor] = None,
+    beta: Optional[torch.Tensor] = None,
+    epsilon: float = 1e-6,
+) -> OpInvokeInfo.PerformanceProperties:
+    properties = OpInvokeInfo.PerformanceProperties()
+    num_elements = input_tensor.numel()
+    # base operation
+
+    base_ops_per_element = 3
+    extra_ops = 0
+    if gamma is not None:
+        extra_ops += 1
+    if beta is not None:
+        extra_ops += 1
+
+    total_ops = num_elements * (base_ops_per_element + extra_ops)
+
+    # add to GP operation
+    compute_ops = properties.compute_ops.setdefault(
+        torch.float32, OpInvokeInfo.ComputeOps()
+    )
+    compute_ops.gp_ops = total_ops
+
+    # memory access
+    properties.memory_read_bytes += bytes_of_tensor(input_tensor)
+    if gamma is not None:
+        properties.memory_read_bytes += bytes_of_tensor(gamma)
+    if beta is not None:
+        properties.memory_read_bytes += bytes_of_tensor(beta)
+
+    properties.memory_write_bytes += bytes_of_tensor(input_tensor)
+
+    return properties
+
+
+def _calculate_matmul_component(
+    input_tensor: torch.Tensor,
+    weight: torch.Tensor,
+    bias: Optional[torch.Tensor] = None,
+    quant_scale: Optional[torch.Tensor] = None,
+    quant_offset: Optional[torch.Tensor] = None,
+    dequant_scale: Optional[torch.Tensor] = None,
+    output_dtype: Optional[torch.dtype] = None,
+) -> OpInvokeInfo.PerformanceProperties:
+    properties = OpInvokeInfo.PerformanceProperties()
+
+    M = input_tensor.shape[0]
+    K = input_tensor.shape[1]
+    N = weight.shape[1]
+
+    # matrix multiplication
+    matmul_ops = M * N * K * 2
+    mma_dtype = input_tensor.dtype if output_dtype is None else output_dtype
+    if mma_dtype not in [torch.float16, torch.bfloat16, torch.float32, torch.float64]:
+        mma_dtype = torch.float32
+
+    compute_ops = properties.compute_ops.setdefault(
+        mma_dtype, OpInvokeInfo.ComputeOps()
+    )
+    compute_ops.mma_ops += matmul_ops
+
+    # bias addition
+    bias_ops = 0
+    if bias is not None:
+        bias_ops = M * N
+        gp_ops = properties.compute_ops.setdefault(
+            torch.float32, OpInvokeInfo.ComputeOps()
+        )
+        gp_ops.gp_ops += bias_ops
+
+    # quant
+    quant_ops = 0
+    if dequant_scale is not None:
+        dequant_ops = M * N * 1
+        quant_ops += dequant_ops
+
+    if quant_scale is not None:
+        ops_per_element = 2 if quant_offset is not None else 1
+        quant_ops += M * N * ops_per_element
+
+    if quant_ops > 0:
+        gp_ops = properties.compute_ops.setdefault(
+            torch.float32, OpInvokeInfo.ComputeOps()
+        )
+        gp_ops.gp_ops += quant_ops
+
+    # memory access
+    properties.memory_read_bytes += bytes_of_tensor(input_tensor) + bytes_of_tensor(
+        weight
+    )
+    if bias is not None:
+        properties.memory_read_bytes += bytes_of_tensor(bias)
+    if quant_scale is not None:
+        properties.memory_read_bytes += bytes_of_tensor(quant_scale)
+    if quant_offset is not None:
+        properties.memory_read_bytes += bytes_of_tensor(quant_offset)
+    if dequant_scale is not None:
+        properties.memory_read_bytes += bytes_of_tensor(dequant_scale)
+
+    output_size_bytes = (
+        M
+        * N
+        * (
+            input_tensor.element_size()
+            if output_dtype is None
+            else torch.tensor(0, dtype=output_dtype).element_size()
+        )
+    )
+    properties.memory_write_bytes += output_size_bytes
+
+    return properties
+
+
+def _calculate_rope_component(
+    q_tensor: Optional[torch.Tensor],
+    k_tensor: Optional[torch.Tensor],
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+    q_rope_dim: Optional[int] = None,
+    k_rope_dim: Optional[int] = None,
+) -> OpInvokeInfo.PerformanceProperties:
+    properties = OpInvokeInfo.PerformanceProperties()
+    if q_rope_dim is None:
+        q_rope_dim = (
+            q_tensor.shape[-1] // 2
+            if q_tensor.shape[-1] % 2 == 0
+            else (q_tensor.shape[-1] - 1) // 2
+        )
+    if k_rope_dim is None and k_tensor is not None:
+        k_rope_dim = (
+            k_tensor.shape[-1] // 2
+            if k_tensor.shape[-1] % 2 == 0
+            else (k_tensor.shape[-1] - 1) // 2
+        )
+    total_rope_ops = 0
+    # Q's RoPE
+    if q_tensor is not None:
+        q_elements = q_tensor.shape[0] * q_rope_dim
+        q_rope_ops = q_elements * 6
+        total_rope_ops += q_rope_ops
+    # K's RoPE
+    if k_tensor is not None and k_rope_dim is not None:
+        k_elements = k_tensor.shape[0] * k_rope_dim
+        k_rope_ops = k_elements * 6
+        total_rope_ops += k_rope_ops
+
+    if total_rope_ops > 0:
+        compute_ops = properties.compute_ops.setdefault(
+            torch.float32, OpInvokeInfo.ComputeOps()
+        )
+        compute_ops.gp_ops = total_rope_ops
+
+    if q_tensor is not None:
+        properties.memory_read_bytes += (
+            q_tensor.shape[0] * q_rope_dim * q_tensor.element_size()
+        )
+    if k_tensor is not None:
+        properties.memory_read_bytes += (
+            k_tensor.shape[0] * k_rope_dim * k_tensor.element_size()
+        )
+    properties.memory_read_bytes += bytes_of_tensor(cos) + bytes_of_tensor(sin)
+    return properties
+
+
+def _calculate_cache_update_component(
+    kv_data: torch.Tensor,
+    slot_mapping: torch.Tensor,
+    _cache_tensor: torch.Tensor,
+    cache_scale: Optional[torch.Tensor],
+    _quant_mode: str = "PER_TENSOR_QUANT_ASYMM",
+) -> OpInvokeInfo.PerformanceProperties:
+    properties = OpInvokeInfo.PerformanceProperties()
+    num_tokens = kv_data.shape[0]
+    cache_entry_size = kv_data.shape[1]
+
+    quant_ops = 0
+    if cache_scale is not None:
+        ops_per_element = 2
+        quant_ops = num_tokens * cache_entry_size * ops_per_element
+        compute_ops = properties.compute_ops.setdefault(
+            torch.float32, OpInvokeInfo.ComputeOps()
+        )
+        compute_ops.gp_ops += quant_ops
+
+    cache_write_ops = num_tokens * 5
+    compute_ops = properties.compute_ops.setdefault(
+        torch.int32, OpInvokeInfo.ComputeOps()
+    )
+    compute_ops.gp_ops += cache_write_ops
+    properties.memory_read_bytes += bytes_of_tensor(kv_data) + bytes_of_tensor(
+        slot_mapping
+    )
+    if cache_scale is not None:
+        properties.memory_read_bytes += bytes_of_tensor(cache_scale)
+    properties.memory_write_bytes += bytes_of_tensor(kv_data)
+
+    return properties
+
+
+@OpInvokeInfo.register_op_properties(
+    torch.ops.tensor_cast.mla_preprocess_operation.default
+)
+def _(op_invoke_info: OpInvokeInfo) -> OpInvokeInfo.PerformanceProperties:
+    input = op_invoke_info.args[0]
+    gamma0 = op_invoke_info.args[1]
+    beta0 = op_invoke_info.args[2]
+    quant_scale0 = op_invoke_info.args[3]
+    quant_offset0 = op_invoke_info.args[4]
+    wdqkv = op_invoke_info.args[5]
+    de_scale0 = op_invoke_info.args[6]
+    bias0 = op_invoke_info.args[7]
+    gamma1 = op_invoke_info.args[8]
+    beta1 = op_invoke_info.args[9]
+    quant_scale1 = op_invoke_info.args[10]
+    quant_offset1 = op_invoke_info.args[11]
+    wuq = op_invoke_info.args[12]
+    bias1 = op_invoke_info.args[13]
+    gamma2 = op_invoke_info.args[14]
+    cos = op_invoke_info.args[15]
+    sin = op_invoke_info.args[16]
+    wuk = op_invoke_info.args[17]
+    ctkv = op_invoke_info.args[18]
+    k_rope = op_invoke_info.args[19]
+    slot_mapping = op_invoke_info.args[20]
+    ctkv_scale = op_invoke_info.args[21]
+    q_nope_scale = op_invoke_info.args[22]
+    cache_mode = op_invoke_info.kwargs.get("cache_mode", "KVCACHE")
+    quant_mode = op_invoke_info.kwargs.get("quant_mode", "PER_TENSOR_QUANT_ASYMM")
+    out_dtype = op_invoke_info.kwargs.get("out_dtype")
+
+    properties = OpInvokeInfo.PerformanceProperties()
+
+    if gamma0 is not None:
+        rmsnorm1_props = _calculate_rmsnorm_ops(
+            input_tensor=input, gamma=gamma0, beta=beta0, epsilon=1e-6
+        )
+        properties.combine(rmsnorm1_props)
+
+    matmul1_props = _calculate_matmul_component(
+        input_tensor=input,
+        weight=wdqkv,
+        bias=bias0,
+        quant_scale=quant_scale0,
+        quant_offset=quant_offset0,
+        dequant_scale=de_scale0,
+        output_dtype=out_dtype,
+    )
+    properties.combine(matmul1_props)
+
+    if gamma1 is not None:
+        q_dim = input.shape[1] // 2
+        q_tensor = torch.empty(
+            (input.shape[0], q_dim), dtype=input.dtype, device="meta"
+        )
+        rmsnorm_q_props = _calculate_rmsnorm_ops(
+            input_tensor=q_tensor, gamma=gamma1, beta=beta1, epsilon=1e-6
+        )
+        properties.combine(rmsnorm_q_props)
+
+    if gamma2 is not None:
+        kv_dim = input.shape[1] // 2
+        kv_tensor = torch.empty(
+            (input.shape[0], kv_dim), dtype=input.dtype, device="meta"
+        )
+        rmsnorm_kv_props = _calculate_rmsnorm_ops(
+            input_tensor=kv_tensor, gamma=gamma2, beta=None, epsilon=1e-6
+        )
+        properties.combine(rmsnorm_kv_props)
+
+    # Q's dimensionality-up Matmul
+    if wuq is not None and gamma1 is not None:
+        reduced_dim = wdqkv.shape[1] if wdqkv is not None else 256
+        q_input_dim = reduced_dim // 3
+        q_intermediate = torch.empty(
+            (input.shape[0], q_input_dim), dtype=input.dtype, device="meta"
+        )
+        matmul_q_props = _calculate_matmul_component(
+            input_tensor=q_intermediate,
+            weight=wuq,
+            bias=bias1,
+            quant_scale=quant_scale1,
+            quant_offset=quant_offset1,
+            dequant_scale=None,
+            output_dtype=out_dtype,
+        )
+        properties.combine(matmul_q_props)
+        q_output_dim = wuq.shape[1]
+    # KV's RoPE Application
+    if cos is not None and sin is not None:
+        k_rope_dim = k_rope.shape[1] if k_rope is not None else 64
+        k_for_rope = torch.empty(
+            (input.shape[0], k_rope_dim), dtype=input.dtype, device="meta"
+        )
+        rope_props = _calculate_rope_component(
+            q_tensor=None,
+            k_tensor=k_for_rope,
+            cos=cos,
+            sin=sin,
+            q_rope_dim=0,
+            k_rope_dim=k_rope_dim,
+        )
+        properties.combine(rope_props)
+
+    # KV Cache Update
+    if cache_mode == "KVCACHE" and ctkv is not None and slot_mapping is not None:
+        k_dim = wuk.shape[1] if wuk is not None else 256
+        v_dim = 256
+        kv_data_size = k_dim + v_dim
+        kv_data = torch.empty(
+            (input.shape[0], kv_data_size), dtype=ctkv.dtype, device="meta"
+        )
+        cache_props = _calculate_cache_update_component(
+            kv_data=kv_data,
+            slot_mapping=slot_mapping,
+            _cache_tensor=ctkv,
+            cache_scale=ctkv_scale,
+            _quant_mode=quant_mode,
+        )
+        properties.combine(cache_props)
+
+    # K's dimensional-up Matmul/Q Rope parallelism
+    if wuk is not None:
+        reduced_dim = wdqkv.shape[1]
+        kv_dim = reduced_dim - (reduced_dim // 3)
+        k_input_dim = kv_dim // 2
+        k_intermediate = torch.empty(
+            (input.shape[0], k_input_dim), dtype=input.dtype, device="meta"
+        )
+        matmul_k_props = _calculate_matmul_component(
+            input_tensor=k_intermediate,
+            weight=wuk,
+            bias=None,
+            quant_scale=None,
+            quant_offset=None,
+            dequant_scale=None,
+            output_dtype=out_dtype,
+        )
+        properties.combine(matmul_k_props)
+
+    if q_nope_scale is not None:
+        q_output_dim = wuq.shape[1]
+        q_rope_dim = q_output_dim // 2
+        q_nope_dim = q_output_dim - q_rope_dim
+        q_nope_size = input.shape[0] * q_nope_dim
+        quant_ops = q_nope_size * 1
+        compute_ops = properties.compute_ops.setdefault(
+            torch.float32, OpInvokeInfo.ComputeOps()
+        )
+        compute_ops.gp_ops += quant_ops
+        properties.memory_read_bytes += bytes_of_tensor(q_nope_scale)
+    if cos is not None and sin is not None and wuq is not None:
+        q_output_dim = wuq.shape[1]
+        q_rope_dim = q_output_dim // 2
+
+        q_for_rope = torch.empty(
+            (input.shape[0], q_rope_dim), dtype=input.dtype, device="meta"
+        )
+
+        rope_q_props = _calculate_rope_component(
+            q_tensor=q_for_rope,
+            k_tensor=None,
+            cos=cos,
+            sin=sin,
+            q_rope_dim=q_rope_dim,
+            k_rope_dim=0,
+        )
+        properties.combine(rope_q_props)
     return properties
 
 
