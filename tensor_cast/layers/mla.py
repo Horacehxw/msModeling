@@ -303,6 +303,36 @@ def _(
     quant_mode: str = "PER_TENSOR_QUANT_ASYMM",
     out_dtype: Optional[torch.dtype] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
+    '''
+        The mlapo operator is a large operator
+        that integrates 13 operators and is used for preprocessing in MLA.
+
+        Args:
+            input: input the hidden state
+            gamma0: The scaling parameter of the first RMSNorm
+            beta0: The bias parameter of the first RMSNorm
+            quant_scale0:The scaling factor for the first quantization operation
+            quant_offset0:The offset of the first quantization operation
+            wdqkv:Weight matrix: projects the input into the combined space of Q/K/V
+            de_scale0:The scaling factor for the first dequantization operation
+            bias0:Bias corresponding to wdqkv
+            gamma1: The scaling parameter of the second RMSNorm
+            beta1: The bias parameter of the second RMSNorm
+            quant_scale1:The scaling factor for the second quantization operation
+            quant_offset1:The offset of the second quantization operation
+            wuq:Weight matrix: projects intermediate results into the Q space
+            bias1:Bias corresponding to wuq
+            gamma2:The scaling parameter of the third RMSNorm
+            cos:Cosine positional encoding of RoPE
+            sin:Sine positional encoding of RoPE
+            wuk:Weight matrix: Projects intermediate results into K-space (header separation)
+            ctkv:Quantization scaling factor during cache update
+            k_rope:K's RoPE component cache
+            slot_mapping:Slot Mapping Table
+            ctkv_scale:Quantization scaling factor during cache update
+            q_nope_scale:Q 非 RoPE 部分的量化缩放因子
+
+        '''
     token_num = input.shape[0]
     head_num = wuk.shape[0] if wuk is not None else 64
 
