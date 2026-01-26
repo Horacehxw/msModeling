@@ -42,11 +42,15 @@ def _(
     and decode sequences and should be handled separately with different algorithms.
 
     We judge the prefill or decode phase according to the query length per `query_start_loc`.
-    If the query length is
 
     For prefill (non-strict math/code):
         k_nope, v = (kv_c_normed @ kv_b_proj).view(-1, num_heads, qk_nope_head_dim + v_head_dim).split(dim=-1)
         softmax(q @ (k_nope, k_rot)) @ v
+
+        kv_c_normed: (num_tokens, kv_lora_rank)
+            The normalized and compressed key-value states.
+        k_rot: (num_tokens, qk_rope_head_dim)
+            The slice of key after applying rotation embedding.
 
     For decode (non-strict math/code):
         softmax(q @ W_UK_T @ k_cache) @ v_cache @ W_UV
@@ -54,10 +58,6 @@ def _(
     Args:
         q: (num_tokens, num_heads, qk_nope_head_dim+qk_rope_head_dim)
             The query states after compression and decompression.
-        kv_c_normed: (num_tokens, kv_lora_rank)
-            The normalized and compressed key-value states.
-        k_rot: (num_tokens, qk_rope_head_dim)
-            The slice of key after applying rotation embedding.
         kv_cache: (total_num_blocks, block_size, kv_lora_rank + qk_rope_head_dim)
             The cached key-value states with current KV states already updated.
         block_table/query_start_loc/seq_lens: see `AttentionMetadataBase`
