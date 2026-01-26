@@ -682,7 +682,7 @@ def _multihead_latent_attention_properties_helper(
 
     total_fma_ops = 0
     total_gp_ops = 0
-    exclude_input_ids = {2, 3, 4, 5, 6, 7, 8}
+    exclude_input_ids = {1, 6, 7, 8}  # kv_cache, W_UK_T, W_UV, kv_b_proj
 
     # 3. Calculate FLOPs for the Prefill Phase
     num_prefill_tokens = torch.sum(seq_lens[is_prefill]).item()
@@ -756,7 +756,13 @@ def _multihead_latent_attention_properties_helper(
 
     properties = op_invoke_info.get_memory_access_properties(
         exclude_input_ids=exclude_input_ids
-    )
+    )  # exclude kv_cache
+
+    # Estimate memory read from the KV Cache.
+    # The size of a cached entry is (kv_lora_rank + qk_rope_head_dim).
+    cache_entry_size = bytes_of_elements(kv_cache.size(-1), kv_cache.dtype)
+
+    properties.memory_read_bytes += torch.sum(seq_lens * cache_entry_size)
 
     compute_ops = properties.compute_ops.setdefault(q.dtype, OpInvokeInfo.ComputeOps())
     compute_ops.mma_ops = total_fma_ops
