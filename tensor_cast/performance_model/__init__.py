@@ -685,7 +685,7 @@ def _multihead_latent_attention_properties_helper(
     exclude_input_ids = {1, 6, 7, 8}  # kv_cache, W_UK_T, W_UV, kv_b_proj
 
     # 3. Calculate FLOPs for the Prefill Phase
-    num_prefill_tokens = torch.sum(seq_lens[is_prefill]).item()
+    num_prefill_tokens = torch.sum(num_tokens_per_seq[is_prefill]).item()
     if num_prefill_tokens > 0:
         assert kv_b_proj is not None
         exclude_input_ids = exclude_input_ids - {8}  # kv_b_proj
@@ -809,7 +809,7 @@ def _calculate_mla_quant_ops(
     total_quant_dequant_ops = 0
 
     # Calculate quant/dequant ops for prefill phase
-    num_prefill_tokens = torch.sum(seq_lens[is_prefill]).item()
+    num_prefill_tokens = torch.sum(num_tokens_per_seq[is_prefill]).item()
     if num_prefill_tokens > 0:
         prefill_seq_lens = seq_lens[is_prefill]
         prefill_num_tokens_per_seq = num_tokens_per_seq[is_prefill]
@@ -855,7 +855,7 @@ def _calculate_mla_quant_ops(
     # Optional final output quantization (both prefill and decode)
     # This is only applied if out_dtype is same as q_dtype
     if out_dtype is None or out_dtype == q_dtype:
-        total_tokens = torch.sum(seq_lens).item()
+        total_tokens = torch.sum(num_tokens_per_seq).item()
         # Number of elements: total_tokens * num_heads * v_head_dim
         quant_output_ops = total_tokens * num_heads * v_head_dim * 2
         total_quant_dequant_ops += quant_output_ops
