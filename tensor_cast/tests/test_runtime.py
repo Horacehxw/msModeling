@@ -140,10 +140,6 @@ class PerfAnalysisTestCase(unittest.TestCase):
         q = torch.randn(total_tokens, num_heads, q_head_dim, device="meta", dtype=dtype)
         max_num_blocks_per_seq = (S + block_size - 1) // block_size
         num_blocks = B * max_num_blocks_per_seq
-        kv_c_normed = torch.randn(
-            total_tokens, kv_lora_rank, device="meta", dtype=dtype
-        )
-        k_rot = torch.randn(total_tokens, qk_rope_head_dim, device="meta", dtype=dtype)
         kv_cache = torch.randn(
             num_blocks,
             block_size,
@@ -170,8 +166,6 @@ class PerfAnalysisTestCase(unittest.TestCase):
             self._execute_multihead_latent_attention_and_get_base_data(
                 (
                     q,
-                    kv_c_normed,
-                    k_rot,
                     kv_cache,
                     None,
                     None,
@@ -199,10 +193,6 @@ class PerfAnalysisTestCase(unittest.TestCase):
         q = torch.randn(total_tokens, num_heads, q_head_dim, device="meta", dtype=dtype)
         max_num_blocks_per_seq = (S + block_size - 1) // block_size
         num_blocks = B * max_num_blocks_per_seq
-        kv_c_normed = torch.randn(
-            total_tokens, kv_lora_rank, device="meta", dtype=dtype
-        )
-        k_rot = torch.randn(total_tokens, qk_rope_head_dim, device="meta", dtype=dtype)
         kv_cache = torch.randn(
             num_blocks,
             block_size,
@@ -229,8 +219,6 @@ class PerfAnalysisTestCase(unittest.TestCase):
             self._execute_multihead_latent_attention_and_get_base_data(
                 (
                     q,
-                    kv_c_normed,
-                    k_rot,
                     kv_cache,
                     None,
                     None,
@@ -258,10 +246,6 @@ class PerfAnalysisTestCase(unittest.TestCase):
         q = torch.randn(total_tokens, num_heads, q_head_dim, device="meta", dtype=dtype)
         max_num_blocks_per_seq = (S + block_size - 1) // block_size
         num_blocks = B * max_num_blocks_per_seq
-        kv_c_normed = torch.randn(
-            total_tokens, kv_lora_rank, device="meta", dtype=dtype
-        )
-        k_rot = torch.randn(total_tokens, qk_rope_head_dim, device="meta", dtype=dtype)
         kv_cache = torch.randn(
             num_blocks,
             block_size,
@@ -288,8 +272,6 @@ class PerfAnalysisTestCase(unittest.TestCase):
             self._execute_multihead_latent_attention_and_get_base_data(
                 (
                     q,
-                    kv_c_normed,
-                    k_rot,
                     kv_cache,
                     None,
                     None,
