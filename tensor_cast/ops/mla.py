@@ -42,7 +42,8 @@ def _(
     and decode sequences and should be handled separately with different algorithms.
 
     We judge the prefill or decode phase according to the query length per `query_start_loc`.
-
+    If the query length is
+    
     For prefill (non-strict math/code):
         k_nope, v = (kv_c_normed @ kv_b_proj).view(-1, num_heads, qk_nope_head_dim + v_head_dim).split(dim=-1)
         softmax(q @ (k_nope, k_rot)) @ v
