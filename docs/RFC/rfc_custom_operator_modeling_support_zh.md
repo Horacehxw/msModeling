@@ -37,13 +37,13 @@
 
 ```mermaid
 graph TD
-    A[执行算子性能预估] --> B{是否存在用户自定义@register_op_estimator?}
-    B -->|是| C[使用用户自定义@register_op_estimator]
-    B -->|否| D{是否存在默认@register_op_estimator?}
-    D -->|是| E[使用默认@register_op_estimator]
-    D -->|否| F{是否存在用户自定义OpInvokeInfo.register_op_properties?}
-    F -->|是| G[使用用户自定义OpInvokeInfo.register_op_properties]
-    F -->|否| H[使用系统默认OpInvokeInfo.register_op_properties]
+    A[执行算子性能预估] --> B{是否存在用户自定义</br> @register_op_estimator?}
+    B -->|是| C[使用用户自定义</br> @register_op_estimator]
+    B -->|否| D{是否存在默认</br> @register_op_estimator?}
+    D -->|是| E[使用默认</br> @register_op_estimator]
+    D -->|否| F{是否存在用户自定义</br> OpInvokeInfo.register_op_properties?}
+    F -->|是| G[使用用户自定义</br> OpInvokeInfo.register_op_properties]
+    F -->|否| H[使用系统默认</br> OpInvokeInfo.register_op_properties]
     H --> I[完成性能预估]
     G --> I
     E --> I
