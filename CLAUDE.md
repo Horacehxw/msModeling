@@ -12,6 +12,20 @@ Two main components:
 - **TensorCast**: Operator-level performance simulation using PyTorch's `TorchDispatchMode`
 - **ServingCast**: Service-level discrete event simulation using salabim
 
+## Python Environment
+
+**IMPORTANT**: Always use the project's virtual environment located at `.venv/`:
+
+```bash
+# Activate the virtual environment
+source .venv/bin/activate
+
+# Or run commands directly with the venv Python
+.venv/bin/python -m tensor_cast.scripts.text_generate ...
+```
+
+When running any Python command in this project, use `.venv/bin/python` instead of the system Python.
+
 ## Build & Development Commands
 
 ### Setup
