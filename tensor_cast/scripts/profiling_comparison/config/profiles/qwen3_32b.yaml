@@ -1,0 +1,35 @@
+# Qwen3-32B Model Profile for Profiling Comparison
+# Model: Qwen/Qwen3-32B (dense model, NOT MoE)
+# Hardware: 16x ATLAS A3 Dies
+
+name: qwen3-32b
+description: "Qwen3-32B dense model on 16x ATLAS A3 Dies with TP=16"
+
+tensorcast:
+  model_id: Qwen/Qwen3-32B
+  device: ATLAS_800_A3_752T_128G_DIE
+  world_size: 16
+  tp_size: 16
+  dp_size: 1
+  ep: false
+  quantize_linear_action: DISABLED  # BF16 precision
+  word_embedding_tp: false
+  lmhead_tp_size: 1
+  enable_external_shared_experts: false
+
+# Prefill phase defaults
+# Based on typical prefill workload: input_length=4096
+prefill_defaults:
+  num_queries: 136
+  query_length: 4096
+  context_length: 0
+
+# Decode phase defaults
+# Based on typical decode workload: batch=136, context=4096, output=1
+decode_defaults:
+  num_queries: 136
+  query_length: 1
+  context_length: 4096
+
+# Optional: Custom mapping file for Qwen3-specific operations
+# mapping_file: qwen3.yaml

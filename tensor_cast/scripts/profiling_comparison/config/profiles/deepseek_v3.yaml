@@ -1,0 +1,35 @@
+# DeepSeek-V3 Model Profile for Profiling Comparison
+# Model: deepseek-ai/DeepSeek-V3.1 (MoE model with MLA)
+# Hardware: 32x ATLAS A3 Dies
+
+name: deepseek-v3
+description: "DeepSeek-V3 MoE model on 32x ATLAS A3 Dies with DP=32 + EP"
+
+tensorcast:
+  model_id: deepseek-ai/DeepSeek-V3.1
+  device: ATLAS_800_A3_752T_128G_DIE
+  world_size: 32
+  tp_size: 1
+  dp_size: 32
+  ep: true  # Expert parallelism for MoE
+  quantize_linear_action: W8A8_DYNAMIC
+  word_embedding_tp: true
+  lmhead_tp_size: 8
+  enable_external_shared_experts: true
+
+# Prefill phase defaults
+# Based on typical prefill workload
+prefill_defaults:
+  num_queries: 24
+  query_length: 4877
+  context_length: 0
+
+# Decode phase defaults
+# Based on typical decode workload
+decode_defaults:
+  num_queries: 24
+  query_length: 1
+  context_length: 4877
+
+# No custom mapping file - uses default mappings
+# mapping_file: null
