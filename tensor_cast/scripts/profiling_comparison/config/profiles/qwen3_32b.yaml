@@ -5,6 +5,10 @@
 name: qwen3-32b
 description: "Qwen3-32B dense model on 16x ATLAS A3 Dies with TP=16"
 
+# Number of decoder layers (for correct step detection)
+# Qwen3-32B has 64 transformer layers
+num_layers: 64
+
 tensorcast:
   model_id: Qwen/Qwen3-32B
   device: ATLAS_800_A3_752T_128G_DIE
@@ -14,7 +18,7 @@ tensorcast:
   ep: false
   quantize_linear_action: DISABLED  # BF16 precision
   word_embedding_tp: false
-  lmhead_tp_size: 1
+  lmhead_tp_size: 16  # Match tp_size for dense model
   enable_external_shared_experts: false
 
 # Prefill phase defaults
@@ -31,5 +35,5 @@ decode_defaults:
   query_length: 1
   context_length: 4096
 
-# Optional: Custom mapping file for Qwen3-specific operations
-# mapping_file: qwen3.yaml
+# Custom mapping file for Qwen3-specific operations (merged with default)
+mapping_file: qwen3

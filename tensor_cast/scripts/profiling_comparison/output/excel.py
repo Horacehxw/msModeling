@@ -6,7 +6,7 @@ comparison data, and summary statistics.
 """
 
 from pathlib import Path
-from typing import Dict, List
+from typing import List
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -160,33 +160,37 @@ class ExcelFormatter(BaseFormatter):
         self._add_borders(ws)
 
     def _create_comparison_sheet(self, wb: Workbook, result: ComparisonResult) -> None:
-        """Create comparison sheet."""
-        ws = wb.create_sheet(title="Comparison")
+        """Create comparison sheet.
+
+        When metadata indicates sequence matching mode, rows are ordered by
+        execution position rather than by VLLM duration.
+        """
+        ws = wb.create_sheet(title="Sequence Comparison")
 
         headers = [
+            "Position",
             "VLLM Op",
             "TC Op(s)",
             "VLLM Duration (us)",
             "TC Duration (us)",
             "Difference (us)",
             "Difference %",
-            "Match Status",
+            "Status",
         ]
-        col_widths = [28, 45, 18, 16, 16, 14, 14]
+        col_widths = [10, 28, 45, 18, 16, 16, 14, 16]
 
         self._write_headers(ws, headers, col_widths, COLORS["header_purple"])
         ws.row_dimensions[1].height = 30
         ws.freeze_panes = "A2"
 
-        # Sort by VLLM duration
-        sorted_matches = sorted(
-            result.matches, key=lambda x: x.vllm_duration_us, reverse=True
-        )
+        # Keep execution order (don't sort by duration)
+        sorted_matches = list(result.matches)
 
         for idx, match in enumerate(sorted_matches, 2):
             tc_ops_str = ", ".join(match.tc_ops) if match.tc_ops else "[Not Matched]"
 
             row_data = [
+                idx - 1,  # Position (1-indexed)
                 match.vllm_op,
                 tc_ops_str,
                 match.vllm_duration_us,
@@ -196,29 +200,32 @@ class ExcelFormatter(BaseFormatter):
                 match.match_status,
             ]
 
-            self._write_comparison_row(ws, idx, row_data, match)
+            self._write_sequence_row(ws, idx, row_data, match)
 
         # Total row
         total_row = len(sorted_matches) + 2
         vllm_total = sum(
-            m.vllm_duration_us for m in sorted_matches if m.vllm_op != "[Not Matched]"
+            m.vllm_duration_us
+            for m in sorted_matches
+            if m.vllm_op not in ("[Not Matched]", "[Unmatched TC]")
         )
         tc_total = sum(m.tc_duration_us for m in sorted_matches if m.tc_ops)
 
-        ws.cell(row=total_row, column=1, value="TOTAL").font = Font(bold=True)
-        ws.cell(row=total_row, column=3, value=vllm_total).number_format = "#,##0.00"
-        ws.cell(row=total_row, column=4, value=tc_total).number_format = "#,##0.00"
+        ws.cell(row=total_row, column=1, value="").font = Font(bold=True)
+        ws.cell(row=total_row, column=2, value="TOTAL").font = Font(bold=True)
+        ws.cell(row=total_row, column=4, value=vllm_total).number_format = "#,##0.00"
+        ws.cell(row=total_row, column=5, value=tc_total).number_format = "#,##0.00"
 
         total_diff = tc_total - vllm_total
-        ws.cell(row=total_row, column=5, value=total_diff).number_format = "#,##0.00"
+        ws.cell(row=total_row, column=6, value=total_diff).number_format = "#,##0.00"
 
         if vllm_total > 0:
             total_diff_pct = (total_diff / vllm_total) * 100
             ws.cell(
-                row=total_row, column=6, value=total_diff_pct / 100
+                row=total_row, column=7, value=total_diff_pct / 100
             ).number_format = "+0.0%;-0.0%;0%"
 
-        for col in range(1, 8):
+        for col in range(1, 9):
             ws.cell(row=total_row, column=col).fill = PatternFill(
                 start_color="CE93D8", fill_type="solid"
             )
@@ -239,7 +246,9 @@ class ExcelFormatter(BaseFormatter):
         row = 3
 
         # Configuration section
-        ws.cell(row=row, column=1, value="CONFIGURATION").font = Font(bold=True, size=12)
+        ws.cell(row=row, column=1, value="CONFIGURATION").font = Font(
+            bold=True, size=12
+        )
         row += 1
 
         config = result.config
@@ -263,7 +272,9 @@ class ExcelFormatter(BaseFormatter):
 
         # VLLM Statistics
         row += 1
-        ws.cell(row=row, column=1, value="VLLM PROFILING").font = Font(bold=True, size=12)
+        ws.cell(row=row, column=1, value="VLLM PROFILING").font = Font(
+            bold=True, size=12
+        )
         row += 1
 
         summary = result.summary
@@ -330,7 +341,10 @@ class ExcelFormatter(BaseFormatter):
         matched = [
             m
             for m in result.matches
-            if m.match_status not in ("missing_in_tc", "missing_in_vllm")
+            if m.match_status not in (
+                "missing_in_tc", "missing_in_vllm",
+                "unmatched_vllm", "unmatched_tc",
+            )
         ]
         within_20 = len([m for m in matched if abs(m.difference_pct) <= 20])
         within_50 = len([m for m in matched if 20 < abs(m.difference_pct) <= 50])
@@ -424,8 +438,66 @@ class ExcelFormatter(BaseFormatter):
                 else:
                     cell.font = Font(color="FF0000")
 
+    def _write_sequence_row(
+        self, ws, row: int, data: List, match: OperationMatch
+    ) -> None:
+        """Write sequence comparison row with status-based coloring.
+
+        data columns: Position, VLLM Op, TC Op(s), VLLM Dur, TC Dur, Diff, Diff%, Status
+        """
+        for col, val in enumerate(data, 1):
+            cell = ws.cell(row=row, column=col, value=val)
+
+            if row % 2 == 0:
+                cell.fill = PatternFill(
+                    start_color=COLORS["row_alt_purple"], fill_type="solid"
+                )
+
+            # Format numbers
+            if col in (4, 5, 6):
+                cell.number_format = "#,##0.00"
+            elif col == 7:
+                # Color code difference percentage
+                if val == float("inf"):
+                    cell.value = "N/A"
+                    cell.font = Font(color="888888")
+                else:
+                    cell.number_format = "+0.0%;-0.0%;0%"
+                    cell.value = val / 100.0 if val else 0
+
+                    if abs(val) <= 20:
+                        cell.font = Font(color="008000")
+                        cell.fill = PatternFill(
+                            start_color=COLORS["good_green"], fill_type="solid"
+                        )
+                    elif abs(val) <= 50:
+                        cell.font = Font(color="FF6600")
+                        cell.fill = PatternFill(
+                            start_color=COLORS["warn_yellow"], fill_type="solid"
+                        )
+                    else:
+                        cell.font = Font(color="FF0000", bold=True)
+                        cell.fill = PatternFill(
+                            start_color=COLORS["bad_red"], fill_type="solid"
+                        )
+
+            # Status coloring (column 8)
+            if col == 8:
+                if val == "matched":
+                    cell.font = Font(color="008000")
+                elif val in ("mismatch", "partial"):
+                    cell.font = Font(color="FF6600")
+                else:
+                    cell.font = Font(color="FF0000")
+
     def _write_total_row(
-        self, ws, row: int, prefix_data: List, total_time: float, color: str, num_cols: int
+        self,
+        ws,
+        row: int,
+        prefix_data: List,
+        total_time: float,
+        color: str,
+        num_cols: int,
     ) -> None:
         """Write total row with styling."""
         ws.cell(row=row, column=1, value=prefix_data[0]).font = Font(bold=True)

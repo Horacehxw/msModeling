@@ -13,7 +13,7 @@ from typing import Dict, List, Optional
 class PhaseType(str, Enum):
     """Phase type for PD aggregation/disaggregation."""
 
-    AUTO = "auto"       # Auto-detect from profiling data
+    AUTO = "auto"  # Auto-detect from profiling data
     PREFILL = "prefill"
     DECODE = "decode"
 
@@ -70,39 +70,50 @@ class TensorCastConfig:
             "enable_external_shared_experts": self.enable_external_shared_experts,
         }
 
+    def to_cli_args(self, chrome_trace_path: Optional[Path] = None) -> List[str]:
+        """Build CLI arguments for text_generate.py subprocess.
 
-@dataclass
-class VLLMConfig:
-    """Configuration for VLLM profiling data.
+        Args:
+            chrome_trace_path: Optional path for --chrome-trace output
 
-    Attributes:
-        profiling_dir: Path to ASCEND_PROFILER_OUTPUT directory
-        num_output_tokens: Number of output tokens generated
-        step_index: Decode step index to extract (for single-step mode)
-        phase: Phase type (auto, prefill, decode)
-    """
+        Returns:
+            List of command-line argument strings
+        """
+        args = [
+            self.model_id,
+            "--device", self.device,
+            "--world-size", str(self.world_size),
+            "--tp-size", str(self.tp_size),
+            "--dp-size", str(self.dp_size),
+            "--num-queries", str(self.num_queries),
+            "--query-length", str(self.query_length),
+            "--context-length", str(self.context_length),
+        ]
+        if self.ep:
+            args.append("--ep")
+        if self.quantize_linear_action != "DISABLED":
+            args.extend(["--quantize-linear-action", self.quantize_linear_action])
+        if self.word_embedding_tp:
+            args.extend(["--word-embedding-tp", str(self.word_embedding_tp)])
+        if self.lmhead_tp_size > 1:
+            args.extend(["--lmhead-tp-size", str(self.lmhead_tp_size)])
+        if self.enable_external_shared_experts:
+            args.append("--enable-external-shared-experts")
+        if chrome_trace_path is not None:
+            args.extend(["--chrome-trace", str(chrome_trace_path)])
+        return args
 
-    profiling_dir: Optional[Path] = None
-    num_output_tokens: int = 1
-    step_index: int = 100  # Default to step 100 to avoid warmup
-    phase: PhaseType = PhaseType.AUTO
+    def to_command_string(self, chrome_trace_path: Optional[Path] = None) -> str:
+        """Build a human-readable command string for text_generate.py.
 
+        Args:
+            chrome_trace_path: Optional path for --chrome-trace output
 
-@dataclass
-class OutputConfig:
-    """Configuration for output generation.
-
-    Attributes:
-        output_path: Path for output file
-        format: Output format ("excel", "json", "console")
-        include_unmatched: Include unmatched operations in output
-        include_shapes: Include input/output shapes in output
-    """
-
-    output_path: Optional[Path] = None
-    format: str = "excel"
-    include_unmatched: bool = True
-    include_shapes: bool = True
+        Returns:
+            Full command string including python -m prefix
+        """
+        args = self.to_cli_args(chrome_trace_path)
+        return "python -m tensor_cast.scripts.text_generate " + " ".join(args)
 
 
 @dataclass
@@ -131,6 +142,7 @@ class ModelProfile:
         prefill_defaults: Default values for prefill phase
         decode_defaults: Default values for decode phase
         mapping_file: Optional custom mapping file name
+        num_layers: Number of decoder layers (for step detection)
     """
 
     name: str
@@ -139,98 +151,4 @@ class ModelProfile:
     decode_defaults: ProfileDefaults = field(default_factory=ProfileDefaults)
     description: str = ""
     mapping_file: Optional[str] = None
-
-
-@dataclass
-class ComparisonConfig:
-    """Complete configuration for a profiling comparison run.
-
-    Attributes:
-        tensorcast: TensorCast simulation configuration
-        vllm: VLLM profiling configuration
-        output: Output configuration
-        mode: Comparison mode ("single-step", "full")
-        mapping_file: Optional custom mapping file
-    """
-
-    tensorcast: TensorCastConfig
-    vllm: VLLMConfig
-    output: OutputConfig
-    mode: str = "single-step"
-    mapping_file: Optional[str] = None
-
-    @classmethod
-    def from_profile(
-        cls,
-        profile: ModelProfile,
-        vllm_dir: Path,
-        output_path: Optional[Path] = None,
-        phase: PhaseType = PhaseType.AUTO,
-        step_index: int = 100,
-        output_format: str = "excel",
-        mode: str = "single-step",
-    ) -> "ComparisonConfig":
-        """Create ComparisonConfig from a ModelProfile.
-
-        Args:
-            profile: Model profile to use
-            vllm_dir: Path to VLLM profiling directory
-            output_path: Output file path (optional)
-            phase: Phase type override
-            step_index: Decode step index
-            output_format: Output format
-            mode: Comparison mode
-
-        Returns:
-            ComparisonConfig instance
-        """
-        # Start with base tensorcast config from profile
-        tc_config = TensorCastConfig(
-            model_id=profile.tensorcast.model_id,
-            device=profile.tensorcast.device,
-            world_size=profile.tensorcast.world_size,
-            tp_size=profile.tensorcast.tp_size,
-            dp_size=profile.tensorcast.dp_size,
-            ep=profile.tensorcast.ep,
-            quantize_linear_action=profile.tensorcast.quantize_linear_action,
-            word_embedding_tp=profile.tensorcast.word_embedding_tp,
-            lmhead_tp_size=profile.tensorcast.lmhead_tp_size,
-            enable_external_shared_experts=profile.tensorcast.enable_external_shared_experts,
-        )
-
-        # Apply phase-specific defaults
-        if phase == PhaseType.DECODE or (phase == PhaseType.AUTO):
-            # Default to decode for single-step mode
-            defaults = profile.decode_defaults
-            tc_config.num_queries = defaults.num_queries
-            tc_config.query_length = defaults.query_length
-            tc_config.context_length = defaults.context_length
-        else:
-            defaults = profile.prefill_defaults
-            tc_config.num_queries = defaults.num_queries
-            tc_config.query_length = defaults.query_length
-            tc_config.context_length = defaults.context_length
-
-        # Create VLLM config
-        vllm_config = VLLMConfig(
-            profiling_dir=vllm_dir,
-            step_index=step_index,
-            phase=phase,
-        )
-
-        # Create output config
-        if output_path is None:
-            output_path = Path(f"{profile.name}_comparison.{output_format}")
-
-        output_config = OutputConfig(
-            output_path=output_path,
-            format=output_format,
-        )
-
-        return cls(
-            tensorcast=tc_config,
-            vllm=vllm_config,
-            output=output_config,
-            mode=mode,
-            mapping_file=profile.mapping_file,
-        )
+    num_layers: Optional[int] = None

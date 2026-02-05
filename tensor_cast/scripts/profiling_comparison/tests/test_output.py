@@ -1,11 +1,9 @@
 """Tests for output formatter modules."""
 
-import pytest
-from pathlib import Path
 import tempfile
+from pathlib import Path
 
 from tensor_cast.scripts.profiling_comparison.output import (
-    BaseFormatter,
     ComparisonResult,
     ExcelFormatter,
     FormatterProtocol,
@@ -81,9 +79,7 @@ class TestComparisonResult:
             OperationMatch("Op2", ["tc2"], 500, 600, 5, 5, 100, 20.0, "partial"),
             OperationMatch("Op3", [], 200, 0, 2, 0, -200, -100, "missing_in_tc"),
         ]
-        summary = ComparisonSummary(
-            1700, 1550, -150, -8.8, 2, 1, 0, 88.2, 12.5
-        )
+        summary = ComparisonSummary(1700, 1550, -150, -8.8, 2, 1, 0, 88.2, 12.5)
         return ComparisonResult(
             config={"model_id": "test"},
             vllm_operations=[{"op_type": "Op1"}],
@@ -119,12 +115,22 @@ class TestExcelFormatter:
     def _create_sample_result(self):
         """Create a sample ComparisonResult for testing."""
         matches = [
-            OperationMatch("MatMulV2", ["aten.mm"], 1000, 950, 10, 10, -50, -5.0, "exact"),
-            OperationMatch("AddRmsNorm", ["aten.add", "tensor_cast.rmsnorm"], 500, 600, 5, 5, 100, 20.0, "partial"),
+            OperationMatch(
+                "MatMulV2", ["aten.mm"], 1000, 950, 10, 10, -50, -5.0, "exact"
+            ),
+            OperationMatch(
+                "AddRmsNorm",
+                ["aten.add", "tensor_cast.rmsnorm"],
+                500,
+                600,
+                5,
+                5,
+                100,
+                20.0,
+                "partial",
+            ),
         ]
-        summary = ComparisonSummary(
-            1500, 1550, 50, 3.3, 2, 0, 0, 100.0, 12.5
-        )
+        summary = ComparisonSummary(1500, 1550, 50, 3.3, 2, 0, 0, 100.0, 12.5)
         return ComparisonResult(
             config={
                 "model_id": "Qwen/Qwen3-32B",
@@ -218,7 +224,7 @@ class TestExcelFormatter:
 
         assert "VLLM Operations" in sheet_names
         assert "TensorCast Operations" in sheet_names
-        assert "Comparison" in sheet_names
+        assert "Sequence Comparison" in sheet_names
         assert "Summary" in sheet_names
 
     def test_implements_protocol(self):

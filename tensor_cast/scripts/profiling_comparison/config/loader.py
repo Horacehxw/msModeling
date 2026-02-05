@@ -8,11 +8,7 @@ from typing import Dict, List, Optional
 
 import yaml
 
-from .schema import (
-    ModelProfile,
-    ProfileDefaults,
-    TensorCastConfig,
-)
+from .schema import ModelProfile, ProfileDefaults, TensorCastConfig
 
 # Directory containing profile YAML files
 PROFILES_DIR = Path(__file__).parent / "profiles"
@@ -46,8 +42,7 @@ def get_profile_path(profile_name: str) -> Path:
         return profile_path
 
     raise FileNotFoundError(
-        f"Profile '{profile_name}' not found. "
-        f"Looked in: {PROFILES_DIR}"
+        f"Profile '{profile_name}' not found. Looked in: {PROFILES_DIR}"
     )
 
 
@@ -89,7 +84,9 @@ def _parse_tensorcast_config(data: Dict) -> TensorCastConfig:
         quantize_linear_action=data.get("quantize_linear_action", "DISABLED"),
         word_embedding_tp=data.get("word_embedding_tp", False),
         lmhead_tp_size=data.get("lmhead_tp_size", 1),
-        enable_external_shared_experts=data.get("enable_external_shared_experts", False),
+        enable_external_shared_experts=data.get(
+            "enable_external_shared_experts", False
+        ),
     )
 
 
@@ -127,7 +124,7 @@ def load_profile(profile_name: str) -> ModelProfile:
     """
     profile_path = get_profile_path(profile_name)
 
-    with open(profile_path, "r") as f:
+    with open(profile_path) as f:
         data = yaml.safe_load(f)
 
     if data is None:
@@ -152,6 +149,7 @@ def load_profile(profile_name: str) -> ModelProfile:
         prefill_defaults=_parse_defaults(data.get("prefill_defaults")),
         decode_defaults=_parse_defaults(data.get("decode_defaults")),
         mapping_file=data.get("mapping_file"),
+        num_layers=data.get("num_layers"),
     )
 
 
@@ -171,18 +169,18 @@ def load_profile_from_path(yaml_path: Path) -> ModelProfile:
     if not yaml_path.exists():
         raise FileNotFoundError(f"Profile file not found: {yaml_path}")
 
-    with open(yaml_path, "r") as f:
+    with open(yaml_path) as f:
         data = yaml.safe_load(f)
 
     if data is None:
         raise ValueError(f"Empty profile file: {yaml_path}")
 
     if "tensorcast" not in data:
-        raise ValueError(f"Profile missing required 'tensorcast' section")
+        raise ValueError("Profile missing required 'tensorcast' section")
 
     tc_data = data["tensorcast"]
     if "model_id" not in tc_data:
-        raise ValueError(f"Profile missing required 'tensorcast.model_id'")
+        raise ValueError("Profile missing required 'tensorcast.model_id'")
 
     return ModelProfile(
         name=data.get("name", yaml_path.stem),
@@ -191,4 +189,5 @@ def load_profile_from_path(yaml_path: Path) -> ModelProfile:
         prefill_defaults=_parse_defaults(data.get("prefill_defaults")),
         decode_defaults=_parse_defaults(data.get("decode_defaults")),
         mapping_file=data.get("mapping_file"),
+        num_layers=data.get("num_layers"),
     )

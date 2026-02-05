@@ -2,31 +2,22 @@
 
 This module provides parsers for extracting operation data from:
 - VLLM profiling output (kernel_details.csv)
-- TensorCast simulation results
-
-Key components:
-- KernelDetailsParser: Parses VLLM kernel_details.csv files
-- TensorCastAdapter: Runs TensorCast simulation and extracts profiling data
-- PhaseDetector: Auto-detects prefill/decode phases from profiling data
+- TensorCast simulation results (chrome trace JSON)
+- Phase detection (auto-detect prefill/decode)
 """
 
+from tensor_cast.scripts.profiling_comparison.parsers.chrome_trace_parser import (
+    normalize_trace_name,
+    parse_chrome_trace,
+    TraceEvent,
+)
 from tensor_cast.scripts.profiling_comparison.parsers.kernel_details_parser import (
-    KernelDetailsParser,
-    KernelOp,
-    SingleStepData,
     extract_single_step,
     find_step_boundaries,
+    KernelDetailsParser,
+    KernelOp,
     parse_kernel_details,
-)
-from tensor_cast.scripts.profiling_comparison.parsers.base import (
-    BaseParser,
-    OperationData,
-    Parser,
-    ProfilingResult,
-)
-from tensor_cast.scripts.profiling_comparison.parsers.tensorcast_adapter import (
-    TensorCastAdapter,
-    TensorCastSimulationResult,
+    SingleStepData,
 )
 from tensor_cast.scripts.profiling_comparison.parsers.phase_detector import (
     PhaseDetector,
@@ -42,14 +33,10 @@ __all__ = [
     "parse_kernel_details",
     "find_step_boundaries",
     "extract_single_step",
-    # Base parser protocol
-    "BaseParser",
-    "OperationData",
-    "Parser",
-    "ProfilingResult",
-    # TensorCast adapter
-    "TensorCastAdapter",
-    "TensorCastSimulationResult",
+    # Chrome trace parser
+    "TraceEvent",
+    "parse_chrome_trace",
+    "normalize_trace_name",
     # Phase detector
     "PhaseDetector",
     "PhaseInfo",

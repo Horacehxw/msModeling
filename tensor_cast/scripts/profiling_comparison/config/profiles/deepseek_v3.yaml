@@ -5,6 +5,10 @@
 name: deepseek-v3
 description: "DeepSeek-V3 MoE model on 32x ATLAS A3 Dies with DP=32 + EP"
 
+# Number of decoder layers (for correct step detection)
+# DeepSeek-V3 has 61 transformer layers
+num_layers: 61
+
 tensorcast:
   model_id: deepseek-ai/DeepSeek-V3.1
   device: ATLAS_800_A3_752T_128G_DIE
@@ -13,7 +17,7 @@ tensorcast:
   dp_size: 32
   ep: true  # Expert parallelism for MoE
   quantize_linear_action: W8A8_DYNAMIC
-  word_embedding_tp: true
+  word_embedding_tp: 8
   lmhead_tp_size: 8
   enable_external_shared_experts: true
 

@@ -7,7 +7,7 @@ data structures used across all formatters.
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Protocol, runtime_checkable
+from typing import Dict, List, Protocol, runtime_checkable
 
 
 @dataclass
@@ -119,7 +119,6 @@ class BaseFormatter(ABC):
             result: Comparison result to format
             output_path: Path to save output
         """
-        pass
 
     @staticmethod
     def _to_float(value) -> float:

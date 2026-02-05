@@ -3,8 +3,14 @@
 This module provides functionality to parse VLLM/Ascend profiling data and extract
 operations from a single decode step for fair comparison with TensorCast simulation.
 
-The key insight is that each decode step contains exactly one FusedInferAttentionScore
-kernel, which serves as an anchor to identify step boundaries.
+A "decode step" is defined as ONE COMPLETE forward pass through ALL layers of the model.
+For a model with N layers, each forward pass contains exactly N FusedInferAttentionScore
+operations (one per layer). We group attention operations by layer count to define
+step boundaries.
+
+Example: For DeepSeek-V3 (61 layers):
+- Every 61 consecutive FusedInferAttentionScore operations = 1 complete forward pass
+- Step 0: attention ops 0-60, Step 1: attention ops 61-121, etc.
 """
 
 import csv
@@ -192,38 +198,70 @@ class KernelDetailsParser:
         self._operations = sorted(operations, key=lambda x: x.start_time_us)
         return self._operations
 
-    def find_step_boundaries(self) -> List[float]:
-        """Find decode step boundaries using FusedInferAttentionScore as anchor.
+    def find_step_boundaries(self, num_layers: Optional[int] = None) -> List[float]:
+        """Find complete forward pass boundaries.
 
-        Each decode step contains exactly one FusedInferAttentionScore kernel.
-        The start time of each such kernel marks the beginning of a decode step.
+        A complete forward pass contains exactly `num_layers` attention operations.
+        We group attention operations by layer count to define step boundaries.
+
+        Args:
+            num_layers: Number of decoder layers in the model. If None, falls back
+                       to treating each attention op as a step boundary (legacy behavior).
 
         Returns:
             List of start times (in us) marking step boundaries
         """
-        if self._step_boundaries is not None:
+        # Note: We don't cache boundaries when num_layers is provided since it may vary
+        if num_layers is None and self._step_boundaries is not None:
             return self._step_boundaries
 
         operations = self.parse_all_operations()
 
-        boundaries = []
-        for op in operations:
-            if op.is_attention_anchor:
-                boundaries.append(op.start_time_us)
+        # Collect all attention anchors sorted by time
+        attention_ops = [op for op in operations if op.is_attention_anchor]
 
-        self._step_boundaries = sorted(boundaries)
-        return self._step_boundaries
+        if num_layers is None or num_layers <= 0:
+            # Legacy behavior: each attention op is a step boundary
+            boundaries = [op.start_time_us for op in attention_ops]
+        else:
+            # New behavior: group by num_layers
+            # Every num_layers consecutive attention ops = 1 complete forward pass
+            boundaries = []
+            for i in range(0, len(attention_ops), num_layers):
+                if i + num_layers <= len(attention_ops):
+                    # Only include complete forward passes
+                    boundaries.append(attention_ops[i].start_time_us)
 
-    def get_num_decode_steps(self) -> int:
-        """Get the total number of decode steps detected."""
-        return len(self.find_step_boundaries())
+        boundaries = sorted(boundaries)
 
-    def extract_single_step(self, step_index: int = 100) -> SingleStepData:
-        """Extract all operations within one decode step.
+        # Only cache if using legacy behavior
+        if num_layers is None:
+            self._step_boundaries = boundaries
+
+        return boundaries
+
+    def get_num_decode_steps(self, num_layers: Optional[int] = None) -> int:
+        """Get the total number of decode steps detected.
 
         Args:
-            step_index: Which decode step to extract (0-indexed).
-                        Default is 100 to avoid warmup effects at the beginning.
+            num_layers: Number of decoder layers in the model.
+
+        Returns:
+            Number of complete forward passes detected.
+        """
+        return len(self.find_step_boundaries(num_layers))
+
+    def extract_single_step(
+        self, step_index: int = 0, num_layers: Optional[int] = None
+    ) -> SingleStepData:
+        """Extract all operations within one complete forward pass.
+
+        Args:
+            step_index: Which forward pass to extract (0-indexed).
+                        Default is 0 (first complete forward pass).
+            num_layers: Number of decoder layers in the model. If provided,
+                       a "step" is defined as num_layers consecutive attention
+                       operations (one complete forward pass).
 
         Returns:
             SingleStepData containing all operations in the specified step
@@ -231,7 +269,7 @@ class KernelDetailsParser:
         Raises:
             ValueError: If step_index is out of range
         """
-        boundaries = self.find_step_boundaries()
+        boundaries = self.find_step_boundaries(num_layers)
         num_steps = len(boundaries)
 
         if num_steps == 0:
@@ -272,18 +310,27 @@ class KernelDetailsParser:
             total_duration_us=0.0,  # Will be calculated in __post_init__
         )
 
-    def get_step_statistics(self) -> Dict[str, float]:
-        """Get statistics about decode steps.
+    def get_step_statistics(self, num_layers: Optional[int] = None) -> Dict[str, float]:
+        """Get statistics about complete forward passes.
+
+        Args:
+            num_layers: Number of decoder layers in the model.
 
         Returns:
             Dictionary with step statistics
         """
-        boundaries = self.find_step_boundaries()
+        boundaries = self.find_step_boundaries(num_layers)
         num_steps = len(boundaries)
+
+        # Also count total attention ops for debugging
+        operations = self.parse_all_operations()
+        total_attention_ops = sum(1 for op in operations if op.is_attention_anchor)
 
         if num_steps < 2:
             return {
                 "num_steps": num_steps,
+                "total_attention_ops": total_attention_ops,
+                "num_layers": num_layers or 0,
                 "avg_step_duration_us": 0.0,
                 "min_step_duration_us": 0.0,
                 "max_step_duration_us": 0.0,
@@ -297,14 +344,25 @@ class KernelDetailsParser:
 
         return {
             "num_steps": num_steps,
+            "total_attention_ops": total_attention_ops,
+            "num_layers": num_layers or 0,
             "avg_step_duration_us": sum(step_durations) / len(step_durations),
             "min_step_duration_us": min(step_durations),
             "max_step_duration_us": max(step_durations),
         }
 
-    def get_operations_per_step_estimate(self) -> float:
-        """Estimate average number of operations per decode step."""
-        num_steps = self.get_num_decode_steps()
+    def get_operations_per_step_estimate(
+        self, num_layers: Optional[int] = None
+    ) -> float:
+        """Estimate average number of operations per complete forward pass.
+
+        Args:
+            num_layers: Number of decoder layers in the model.
+
+        Returns:
+            Average number of operations per forward pass.
+        """
+        num_steps = self.get_num_decode_steps(num_layers)
         if num_steps == 0:
             return 0.0
 
@@ -325,27 +383,42 @@ def parse_kernel_details(csv_path: Path) -> List[KernelOp]:
     return parser.parse_all_operations()
 
 
-def find_step_boundaries(ops: List[KernelOp]) -> List[float]:
-    """Find decode step boundaries using FusedInferAttentionScore as anchor.
+def find_step_boundaries(
+    ops: List[KernelOp], num_layers: Optional[int] = None
+) -> List[float]:
+    """Find complete forward pass boundaries.
 
     Args:
         ops: List of kernel operations
+        num_layers: Number of decoder layers in the model.
 
     Returns:
         List of start times marking step boundaries
     """
-    return sorted([op.start_time_us for op in ops if op.is_attention_anchor])
+    attention_ops = sorted(
+        [op for op in ops if op.is_attention_anchor],
+        key=lambda x: x.start_time_us,
+    )
+
+    if num_layers is None or num_layers <= 0:
+        return [op.start_time_us for op in attention_ops]
+
+    boundaries = []
+    for i in range(0, len(attention_ops), num_layers):
+        if i + num_layers <= len(attention_ops):
+            boundaries.append(attention_ops[i].start_time_us)
+    return boundaries
 
 
 def extract_single_step(
-    ops: List[KernelOp], boundaries: List[float], step_index: int = 100
+    ops: List[KernelOp], boundaries: List[float], step_index: int = 0
 ) -> List[KernelOp]:
-    """Extract all operations within one decode step.
+    """Extract all operations within one complete forward pass.
 
     Args:
         ops: List of all kernel operations
         boundaries: List of step boundary times
-        step_index: Which step to extract (default 100 to avoid warmup)
+        step_index: Which step to extract (default 0 for first complete step)
 
     Returns:
         List of operations in the specified step

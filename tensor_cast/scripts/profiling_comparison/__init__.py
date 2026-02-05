@@ -1,52 +1,34 @@
 """Profiling Comparison Tool.
 
-This package provides utilities for comparing VLLM profiling results with
-TensorCast simulation to validate performance predictions.
+This package provides a 3-stage pipeline for comparing VLLM profiling results
+with TensorCast simulation to validate performance predictions.
+
+Stages:
+    1. analyze  - Parse VLLM profiling, detect phase, print TC command
+    2. simulate - Run TensorCast simulation (subprocess), produce chrome trace
+    3. compare  - Sequence-match VLLM ops vs TC trace, produce Excel report
 
 Main entry point:
+    python -m tensor_cast.scripts.profiling_comparison.cli analyze --help
+    python -m tensor_cast.scripts.profiling_comparison.cli simulate --help
     python -m tensor_cast.scripts.profiling_comparison.cli compare --help
-
-Example usage:
-    python -m tensor_cast.scripts.profiling_comparison.cli compare \\
-        --profile qwen3_32b \\
-        --vllm-dir /path/to/ASCEND_PROFILER_OUTPUT \\
-        --output comparison.xlsx
+    python -m tensor_cast.scripts.profiling_comparison.cli run-all --help
 """
 
+from tensor_cast.scripts.profiling_comparison.alignment import (
+    DecompositionConfig,
+    load_decomposition_config,
+    match_by_sequence,
+    merge_decomposition_configs,
+    SequenceMatch,
+)
 from tensor_cast.scripts.profiling_comparison.config import (
-    ComparisonConfig,
+    list_profiles,
+    load_profile,
     ModelProfile,
-    OutputConfig,
     PhaseType,
     ProfileDefaults,
     TensorCastConfig,
-    VLLMConfig,
-    list_profiles,
-    load_profile,
-)
-from tensor_cast.scripts.profiling_comparison.alignment import (
-    FusionAwareMapper,
-    FusionMapping,
-    FUSION_MAPPINGS,
-    MappingConfig,
-    OpMapper,
-    VLLM_TO_TENSORCAST_MAPPING,
-    list_mappings,
-    load_mappings,
-)
-from tensor_cast.scripts.profiling_comparison.parsers import (
-    BaseParser,
-    KernelDetailsParser,
-    KernelOp,
-    OperationData,
-    Parser,
-    PhaseDetector,
-    PhaseInfo,
-    ProfilingResult,
-    SingleStepData,
-    StepBoundary,
-    TensorCastAdapter,
-    TensorCastSimulationResult,
 )
 from tensor_cast.scripts.profiling_comparison.output import (
     ComparisonResult,
@@ -54,40 +36,42 @@ from tensor_cast.scripts.profiling_comparison.output import (
     ExcelFormatter,
     OperationMatch,
 )
+from tensor_cast.scripts.profiling_comparison.parsers import (
+    KernelDetailsParser,
+    KernelOp,
+    normalize_trace_name,
+    parse_chrome_trace,
+    PhaseDetector,
+    PhaseInfo,
+    SingleStepData,
+    StepBoundary,
+    TraceEvent,
+)
 
 __all__ = [
     # Config
-    "ComparisonConfig",
     "ModelProfile",
-    "OutputConfig",
     "PhaseType",
     "ProfileDefaults",
     "TensorCastConfig",
-    "VLLMConfig",
     "list_profiles",
     "load_profile",
-    # Alignment
-    "FusionAwareMapper",
-    "FusionMapping",
-    "FUSION_MAPPINGS",
-    "MappingConfig",
-    "OpMapper",
-    "VLLM_TO_TENSORCAST_MAPPING",
-    "list_mappings",
-    "load_mappings",
+    # Alignment - sequence matcher
+    "DecompositionConfig",
+    "SequenceMatch",
+    "load_decomposition_config",
+    "match_by_sequence",
+    "merge_decomposition_configs",
     # Parsers
-    "BaseParser",
     "KernelDetailsParser",
     "KernelOp",
-    "OperationData",
-    "Parser",
     "PhaseDetector",
     "PhaseInfo",
-    "ProfilingResult",
     "SingleStepData",
     "StepBoundary",
-    "TensorCastAdapter",
-    "TensorCastSimulationResult",
+    "TraceEvent",
+    "parse_chrome_trace",
+    "normalize_trace_name",
     # Output
     "ComparisonResult",
     "ComparisonSummary",

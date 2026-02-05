@@ -1,92 +1,19 @@
-# Qwen3-specific Operator Mappings
+# Qwen3-specific Decomposition Overrides
 #
-# This file extends the default mappings with Qwen3-specific operation
-# mappings. Qwen3-32B is a dense model (NOT MoE), so it doesn't use
-# expert parallelism operations.
-#
-# Key differences from DeepSeek-V3:
-# - No MoE operations (GroupedMatmul, MoeDistribute*, etc.)
-# - Standard attention (not MLA)
-# - Different normalization patterns
+# Extends default.yaml with Qwen3-specific kernel decompositions.
+# Merged at load time: default + qwen3.
 
-version: "1.0"
+version: "2.0"
 
-# ============================================================================
-# VLLM Fusions for Qwen3
-# ============================================================================
-
-vllm_fusions:
-  # Qwen3 uses AddRmsNorm like DeepSeek
-  - name: "AddRmsNorm"
-    vllm_ops: ["AddRmsNorm", "InplaceAddRmsNorm"]
-    tc_ops: ["aten.add", "tensor_cast.rmsnorm"]
-    aggregation: sum
-    description: "Fused residual add and RMS normalization"
-
-  # Qwen3-specific: split_qkv_rmsnorm_rope combined kernel
-  - name: "SplitQKVRmsNormRope"
-    vllm_ops: ["split_qkv_rmsnorm_rope_kernel"]
-    tc_ops: ["aten.split", "tensor_cast.rmsnorm", "aten.clone", "aten.neg", "aten.mul"]
-    aggregation: sum
-    description: "Fused QKV split, RMS norm, and RoPE embedding"
-
-  # Standard SwiGLU activation
-  - name: "SwiGlu"
-    vllm_ops: ["SwiGlu"]
-    tc_ops: ["aten.silu", "aten.mul"]
-    aggregation: sum
-    description: "SwiGLU activation (silu * gate)"
-
-# ============================================================================
-# TC Fusions for Qwen3
-# ============================================================================
-
-tc_fusions:
-  # Qwen3 uses standard multi-head attention (not MLA)
-  - name: "attention_block_qwen3"
-    vllm_ops: ["split_qkv_rmsnorm_rope_kernel", "FusedInferAttentionScore", "ReshapeAndCacheNdKernel"]
-    tc_ops: ["tensor_cast.attention"]
-    aggregation: sum
-    description: "Full attention block including QKV prep, attention, and caching"
-
-# ============================================================================
-# Direct Mappings specific to Qwen3
-# ============================================================================
-
-direct_mappings:
-  # Qwen3 uses standard MatMul for linear projections (no quantization in BF16 mode)
-  MatMulV2:
-    - aten.mm
-    - aten.matmul
-
-  # SwiGLU activation
-  SwiGlu:
-    - aten.silu
-
-  # Qwen3-specific kernels
+decompositions:
+  # Qwen3-specific fused kernel: QKV split + Q/K RmsNorm + RoPE
+  # In TensorCast, this decomposes to three linear projections (Q, K, V),
+  # a split, and RoPE rotation operations.
   split_qkv_rmsnorm_rope_kernel:
-    - aten.split
-    - tensor_cast.rmsnorm
+    tc_ops: ["aten.mm", "aten.mm", "aten.mm", "aten.split", "aten.neg", "aten.clone"]
 
-# ============================================================================
-# Ignored Operations for Qwen3
-# ============================================================================
-
-ignored_vllm_ops:
-  # Communication ops (timing varies)
-  - "hcom_*"
-  - "HcomAllGather"
-  - "HcomAllReduce"
-
-  # Memory operations
-  - "aclnn*Copy*"
-  - "TensorMove"
-
-ignored_tc_ops:
-  # Memory allocation
-  - "aten.empty"
-  - "aten.zeros"
-
-  # View operations
-  - "aten.view"
-  - "aten.contiguous"
+  # Qwen3 uses standard attention, not MLA
+  FusedInferAttentionScore:
+    tc_ops: ["tensor_cast.attention"]
+  ReshapeAndCacheNdKernel:
+    tc_ops: ["tensor_cast.reshape_and_cache"]

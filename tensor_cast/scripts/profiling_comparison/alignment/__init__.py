@@ -1,37 +1,19 @@
 """Alignment and mapping utilities for profiling comparison."""
 
-from tensor_cast.scripts.profiling_comparison.alignment.op_mapper import (
-    FUSION_MAPPINGS,
-    FusionAwareMapper,
-    FusionMapping,
-    OpMapper,
-    VLLM_TO_TENSORCAST_MAPPING,
-)
-from tensor_cast.scripts.profiling_comparison.alignment.mapping_loader import (
-    DirectMapping,
-    FusionMapping as YamlFusionMapping,
-    MappingConfig,
-    get_mapping_path,
-    list_mappings,
-    load_mappings,
-    load_mappings_from_path,
-    merge_mappings,
+from tensor_cast.scripts.profiling_comparison.alignment.sequence_matcher import (
+    DecompositionConfig,
+    load_decomposition_config,
+    load_decomposition_config_from_path,
+    match_by_sequence,
+    merge_decomposition_configs,
+    SequenceMatch,
 )
 
 __all__ = [
-    # Legacy op_mapper exports
-    "FusionAwareMapper",
-    "FusionMapping",
-    "FUSION_MAPPINGS",
-    "OpMapper",
-    "VLLM_TO_TENSORCAST_MAPPING",
-    # New YAML-based mapping loader
-    "DirectMapping",
-    "YamlFusionMapping",
-    "MappingConfig",
-    "get_mapping_path",
-    "list_mappings",
-    "load_mappings",
-    "load_mappings_from_path",
-    "merge_mappings",
+    "DecompositionConfig",
+    "SequenceMatch",
+    "load_decomposition_config",
+    "load_decomposition_config_from_path",
+    "match_by_sequence",
+    "merge_decomposition_configs",
 ]

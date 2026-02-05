@@ -1,273 +1,116 @@
-# Default Operator Mappings for VLLM <-> TensorCast Comparison
+# Default Decomposition Mappings for Order-Based Comparison (v2)
 #
-# This file defines how operations are mapped between VLLM profiling and
-# TensorCast simulation. It supports:
-# - vllm_fusions: One VLLM fused op maps to multiple TensorCast ops
-# - tc_fusions: Multiple VLLM ops map to one TensorCast fused op
-# - direct_mappings: Simple 1:1 or 1:N mappings
-# - ignored ops: Operations to exclude from comparison
+# This file defines how VLLM fused kernels decompose into ordered sequences
+# of TensorCast operations. Used by the sequence matcher algorithm.
+#
+# Each decomposition entry maps a VLLM op_type to the exact ordered list of
+# TC ops it should consume when walking the trace in execution order.
 
-version: "1.0"
+version: "2.0"
 
-# ============================================================================
-# VLLM Fusions: Single VLLM fused kernel -> Multiple TensorCast ops
-# ============================================================================
-# When VLLM fuses multiple operations into one kernel, we need to sum the
-# corresponding TensorCast op times to compare fairly.
+decompositions:
+  # === Normalization fusions ===
+  AddRmsNorm:
+    tc_ops: ["aten.add", "aten.pow", "aten.mean", "aten.rsqrt"]
+  InplaceAddRmsNorm:
+    tc_ops: ["aten.add", "aten.pow", "aten.mean", "aten.rsqrt"]
+  RmsNorm:
+    tc_ops: ["aten.pow", "aten.mean", "aten.rsqrt"]
 
-vllm_fusions:
-  # Fused dequant + swiglu + quant activation
-  - name: "DequantSwigluQuant"
-    vllm_ops: ["DequantSwigluQuant"]
-    tc_ops: ["tensor_cast.dequantize", "aten.silu", "aten.mul", "tensor_cast.quantize"]
-    aggregation: sum
-    description: "Fused dequantization, SwiGLU activation, and quantization"
-
-  # Fused add + RMS normalization (residual connection + norm)
-  - name: "AddRmsNorm"
-    vllm_ops: ["AddRmsNorm", "InplaceAddRmsNorm"]
-    tc_ops: ["aten.add", "tensor_cast.rmsnorm"]
-    aggregation: sum
-    description: "Fused residual add and RMS normalization"
-
-  # Standalone RMS normalization
-  - name: "RmsNorm"
-    vllm_ops: ["RmsNorm"]
-    tc_ops: ["tensor_cast.rmsnorm"]
-    aggregation: sum
-    description: "RMS normalization"
-
-  # Quantization operations
-  - name: "AscendQuant"
-    vllm_ops: ["AscendQuantV2", "DynamicQuant"]
-    tc_ops: ["tensor_cast.quantize", "tensor_cast.dynamic_quantize_symmetric"]
-    aggregation: sum
-    description: "Dynamic quantization"
-
-  - name: "AscendDequant"
-    vllm_ops: ["AscendDequantV2"]
-    tc_ops: ["tensor_cast.dequantize"]
-    aggregation: sum
-    description: "Dequantization"
-
-  # MoE token routing with all-to-all
-  - name: "MoeDistributeDispatch"
-    vllm_ops: ["MoeDistributeDispatchV2"]
-    tc_ops: ["tensor_cast.permute_tokens", "tensor_cast.all_to_all"]
-    aggregation: sum
-    description: "MoE token dispatch with all-to-all communication"
-
-  - name: "MoeDistributeCombine"
-    vllm_ops: ["MoeDistributeCombineV2"]
-    tc_ops: ["tensor_cast.unpermute_tokens", "tensor_cast.all_to_all"]
-    aggregation: sum
-    description: "MoE token combine with all-to-all communication"
-
-# ============================================================================
-# TC Fusions: Multiple VLLM ops -> Single TensorCast fused op
-# ============================================================================
-# When TensorCast simulates operations as fused, we need to sum the
-# corresponding VLLM kernel times to compare fairly.
-
-tc_fusions:
-  # Attention block: QKV projection, RoPE, attention score, cache
-  # Note: This is model-specific; MLA models may need different mapping
-  - name: "attention_block_mla"
-    vllm_ops: ["FusedInferAttentionScore", "KvRmsNormRopeCache"]
-    tc_ops: ["tensor_cast.multihead_latent_attention"]
-    aggregation: sum
-    description: "Fused MLA attention with RoPE and KV cache"
-
-  # Standard attention block for non-MLA models
-  - name: "attention_block_standard"
-    vllm_ops: ["FusedInferAttentionScore", "ReshapeAndCacheNdKernel"]
-    tc_ops: ["tensor_cast.attention"]
-    aggregation: sum
-    description: "Fused attention with KV cache"
-
-# ============================================================================
-# Direct Mappings: 1:1 or 1:N mappings between VLLM and TensorCast ops
-# ============================================================================
-# These are straightforward mappings where one VLLM op corresponds to
-# one or more TensorCast ops (any match is valid).
-
-direct_mappings:
-  # MoE operations
-  GroupedMatmul:
-    - tensor_cast.grouped_matmul_quant
-    - tensor_cast.static_quant_linear
-  MoeGatingTopK:
-    - aten.topk
-
-  # Attention operations
-  FusedInferAttentionScore:
-    - tensor_cast.multihead_latent_attention
-    - tensor_cast.attention
-  KvRmsNormRopeCache:
-    - tensor_cast.reshape_and_cache
-    - tensor_cast.concat_and_cache_mla
-  PagedAttention:
-    - tensor_cast.attention
-  InterleaveRope:
-    - aten.clone
-    - aten.neg
-    - aten.mul
-
-  # Quantized linear operations
-  QuantBatchMatmulV3:
-    - tensor_cast.static_quant_linear
-    - aten.mm
-
-  # Basic matrix operations
-  MatMul:
-    - aten.mm
-    - aten.matmul
+  # === Linear operations ===
   MatMulV2:
-    - aten.mm
-    - aten.matmul
-  TransposeBatchMatMul:
-    - aten.bmm
-  BatchMatMul:
-    - aten.bmm
+    tc_ops: ["aten.mm"]
+  MatMul:
+    tc_ops: ["aten.mm"]
+  QuantBatchMatmulV3:
+    tc_ops: ["tensor_cast.static_quant_linear"]
 
-  # Communication operations
-  AllGather:
-    - tensor_cast.all_gather
-  allgatherAicpuKernel:
-    - tensor_cast.all_gather
-  AllReduce:
-    - tensor_cast.all_reduce
-  AllToAll:
-    - tensor_cast.all_to_all
-
-  # Element-wise operations
-  Add:
-    - aten.add
-  Mul:
-    - aten.mul
-  Silu:
-    - aten.silu
-  SwiGlu:
-    - aten.silu
-    - aten.mul
-  Gelu:
-    - aten.gelu
-  Sigmoid:
-    - aten.sigmoid
-
-  # Shape operations
-  Cast:
-    - aten._to_copy
-  Transpose:
-    - aten.transpose
-    - aten.permute
-  Reshape:
-    - aten.reshape
-    - aten.view
-  ConcatD:
-    - aten.cat
-  Concat:
-    - aten.cat
-  SplitVD:
-    - aten.split
-    - aten.split_with_sizes
-  Slice:
-    - aten.slice
-  Gather:
-    - aten.gather
-    - aten.index_select
-  GatherV2:
-    - aten.gather
-    - aten.index_select
-
-  # Memory operations
-  TensorMove:
-    - aten.copy_
-    - aten.clone
-  Index:
-    - aten.index_select
-    - aten.gather
-
-  # Reduction operations
-  ArgMaxV2:
-    - aten.argmax
-  ReduceMax:
-    - aten.max
-
-  # Other operations
-  MaskedFill:
-    - aten.masked_fill
-  Fill:
-    - aten.fill_
-    - aten.zeros_like
-  ZerosLike:
-    - aten.zeros_like
-  BroadcastTo:
-    - aten.expand
-    - aten.broadcast_to
-  GreaterEqual:
-    - aten.ge
-  Equal:
-    - aten.eq
-  Less:
-    - aten.lt
-  Range:
-    - aten.arange
-  PadV3:
-    - aten.pad
-
-  # KV Cache operations
-  ScatterPaKvCache:
-    - tensor_cast.reshape_and_cache
-    - tensor_cast.concat_and_cache_mla
-  PagedCacheLoadNdKernel:
-    - aten.index_select
+  # === Attention ===
+  FusedInferAttentionScore:
+    tc_ops: ["tensor_cast.attention"]
   ReshapeAndCacheNdKernel:
-    - tensor_cast.reshape_and_cache
+    tc_ops: ["tensor_cast.reshape_and_cache"]
 
-  # Normalization
-  LayerNorm:
-    - aten.layer_norm
+  # === Activation ===
+  SwiGlu:
+    tc_ops: ["aten.silu", "aten.mul"]
+  DequantSwigluQuant:
+    tc_ops: ["aten.silu", "aten.mul"]
 
-  # Buffer/Fusion operations
-  AutomaticBufferFusionOp:
-    - aten.copy_
-    - aten.add
-    - aten.mul
+  # === Communication ===
+  hcom_allReduce_:
+    tc_ops: ["tensor_cast.all_reduce"]
+  hcom_allGather_:
+    tc_ops: ["tensor_cast.all_gather"]
+  AllReduce:
+    tc_ops: ["tensor_cast.all_reduce"]
+  AllGather:
+    tc_ops: ["tensor_cast.all_gather"]
+  HcomAllGather:
+    tc_ops: ["tensor_cast.all_gather"]
 
-# ============================================================================
-# Ignored Operations
-# ============================================================================
-# Operations to exclude from comparison (overhead, not simulated, etc.)
+  # === Quantization ===
+  AscendQuantV2:
+    tc_ops: ["tensor_cast.dynamic_quantize_symmetric"]
+  DynamicQuant:
+    tc_ops: ["tensor_cast.dynamic_quantize_symmetric"]
 
+  # === MoE ===
+  MoeDistributeDispatchV2:
+    tc_ops: ["tensor_cast.permute_tokens", "tensor_cast.all_to_all"]
+  GroupedMatmul:
+    tc_ops: ["tensor_cast.static_quant_linear"]
+  MoeDistributeCombineV2:
+    tc_ops: ["tensor_cast.all_to_all", "tensor_cast.unpermute_tokens"]
+
+  # === KV Cache (MLA models) ===
+  KvRmsNormRopeCache:
+    tc_ops: ["tensor_cast.concat_and_cache_mla"]
+
+# === VLLM ops to ignore (overhead, not simulated) ===
 ignored_vllm_ops:
-  # Communication timing varies based on actual hardware
-  - "hcom_*"
-  - "HcomAllGather"
-  - "HcomAllReduce"
+  - TensorMove
+  - Fill
+  - Cast
+  - Sub
+  - GatherV2
+  - GatherV3
+  - GreaterEqual
+  - Less
+  - LogicalAnd
+  - LogicalNot
+  - Mul
+  - MaskedFill
+  - Memset
+  - Range
+  - Neg
+  - Slice
+  - Reshape
+  - Transpose
+  - ConcatD
+  - Concat
+  - SplitVD
+  - BroadcastTo
+  - Equal
+  - ZerosLike
+  - Index
+  - PadV3
+  - AutomaticBufferFusionOp
+  - PagedCacheLoadNdKernel
 
-  # Memory copy operations (overhead)
-  - "aclnn*Copy*"
-  - "AsyncMemcpy*"
-
-  # Initialization operations
-  - "Fill"
-  - "Memset"
-
-  # Profiling overhead
-  - "ProfilerRecord*"
-
+# === TC ops to ignore (zero-time views, allocations, markers) ===
 ignored_tc_ops:
-  # Memory allocation (not timed in real execution)
-  - "aten.empty"
-  - "aten.zeros"
-  - "aten.ones"
-  - "aten.full"
-
-  # View operations (zero-time)
-  - "aten.view"
-  - "aten.reshape"
-  - "aten.squeeze"
-  - "aten.unsqueeze"
-  - "aten.expand"
-  - "aten.contiguous"
+  - aten.empty
+  - aten.view
+  - aten.reshape
+  - aten.squeeze
+  - aten.unsqueeze
+  - aten.expand
+  - aten.contiguous
+  - aten.zeros
+  - aten.ones
+  - aten.full
+  - aten.slice
+  - aten._to_copy
+  - _internal_mark_region_begin
+  - _internal_mark_region_end

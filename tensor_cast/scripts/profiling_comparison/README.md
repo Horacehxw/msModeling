@@ -1,163 +1,139 @@
 # Profiling Comparison Tool
 
-A modular tool for comparing VLLM profiling data with TensorCast simulation results.
+A 3-stage pipeline for comparing VLLM profiling data with TensorCast simulation results.
 
 ## Overview
 
-This tool enables validation of TensorCast performance predictions by comparing them against real VLLM profiling data from Ascend NPU execution. It supports:
+This tool validates TensorCast performance predictions by comparing them against real VLLM profiling data from Ascend NPU execution using **order-based sequence matching**.
 
-- **Automatic phase detection** for PD Aggregation scenarios
-- **Many-to-many operator mapping** between VLLM and TensorCast
-- **YAML-based configuration** for model profiles and operator mappings
-- **Excel report generation** with detailed comparison metrics
+### 3-Stage Pipeline
+
+| Stage | Command | Input | Output |
+|-------|---------|-------|--------|
+| 1. Analyze | `analyze` | VLLM profiling dir + profile | TC execution command printed to console |
+| 2. Simulate | `simulate` | Profile/config + phase | Chrome trace JSON (subprocess) |
+| 3. Compare | `compare` | VLLM dir + TC chrome trace + mapping | Excel comparison report |
+| All | `run-all` | VLLM dir + profile + output dir | Runs 1→2→3 sequentially |
+
+### Sequence-Based Matching
+
+The core matching algorithm walks VLLM and TensorCast operation sequences in **lockstep execution order**, consuming TC ops for each VLLM op according to a decomposition mapping. This eliminates double-counting entirely since each TC op is consumed exactly once.
 
 ## Quick Start
 
-### Using a Model Profile (Recommended)
+### Run All 3 Stages (Recommended)
 
 ```bash
-# Compare Qwen3-32B profiling with TensorCast simulation
-python -m tensor_cast.scripts.profiling_comparison.cli compare \
-    --profile qwen3_32b \
+.conda/bin/python -m tensor_cast.scripts.profiling_comparison.cli run-all \
     --vllm-dir /path/to/ASCEND_PROFILER_OUTPUT \
-    --output comparison.xlsx
+    --profile qwen3_32b \
+    --output-dir /tmp/results/
 ```
 
-### Custom Configuration
+### Run Individual Stages
 
 ```bash
-# Compare with explicit TensorCast configuration
-python -m tensor_cast.scripts.profiling_comparison.cli compare \
+# Stage 1: Analyze VLLM profiling (prints TC command)
+.conda/bin/python -m tensor_cast.scripts.profiling_comparison.cli analyze \
     --vllm-dir /path/to/ASCEND_PROFILER_OUTPUT \
-    --model-id Qwen/Qwen3-32B \
-    --device ATLAS_800_A3_752T_128G_DIE \
-    --world-size 16 --tp-size 16 \
-    --num-queries 136 --context-length 4096 \
-    --output comparison.xlsx
+    --profile qwen3_32b
+
+# Stage 2: Run TensorCast simulation
+.conda/bin/python -m tensor_cast.scripts.profiling_comparison.cli simulate \
+    --profile qwen3_32b \
+    --phase decode \
+    --output-dir /tmp/tc_results/
+
+# Stage 3: Compare by execution order
+.conda/bin/python -m tensor_cast.scripts.profiling_comparison.cli compare \
+    --vllm-dir /path/to/ASCEND_PROFILER_OUTPUT \
+    --tc-trace /tmp/tc_results/chrome_trace.json \
+    --profile qwen3_32b \
+    --output /tmp/comparison.xlsx
 ```
 
 ### List Available Resources
 
 ```bash
-# List available model profiles
-python -m tensor_cast.scripts.profiling_comparison.cli list-profiles
-
-# List available operator mappings
-python -m tensor_cast.scripts.profiling_comparison.cli list-mappings
+.conda/bin/python -m tensor_cast.scripts.profiling_comparison.cli list-profiles
+.conda/bin/python -m tensor_cast.scripts.profiling_comparison.cli list-mappings
 ```
 
 ## Directory Structure
 
 ```
 tensor_cast/scripts/profiling_comparison/
-├── cli.py                      # Unified CLI entry point
+├── cli.py                      # CLI entry point (6 subcommands)
+├── stages/
+│   ├── analyze.py              # Stage 1: VLLM analysis + TC command
+│   ├── simulate.py             # Stage 2: TC subprocess execution
+│   └── compare.py              # Stage 3: Sequence matching + Excel
 ├── config/
 │   ├── schema.py               # Configuration dataclasses
 │   ├── loader.py               # YAML profile loading
 │   └── profiles/               # Model profiles
-│       ├── qwen3_32b.yaml      # Qwen3-32B configuration
-│       └── deepseek_v3.yaml    # DeepSeek-V3 configuration
+│       ├── qwen3_32b.yaml
+│       └── deepseek_v3.yaml
 ├── parsers/
-│   ├── base.py                 # Parser protocol
 │   ├── kernel_details_parser.py # VLLM kernel_details.csv parser
-│   ├── tensorcast_adapter.py   # TensorCast simulation adapter
+│   ├── chrome_trace_parser.py  # TC chrome trace JSON parser
 │   └── phase_detector.py       # Automatic phase detection
 ├── alignment/
-│   ├── op_mapper.py            # Operator mapping logic
-│   ├── mapping_loader.py       # YAML mapping loader
-│   └── mappings/               # Operator mapping files
-│       ├── default.yaml        # Default mappings
-│       └── qwen3.yaml          # Qwen3-specific mappings
+│   ├── sequence_matcher.py     # Core lockstep matching algorithm
+│   └── mappings/               # Decomposition mapping files
+│       ├── default.yaml        # Default decomposition mappings
+│       └── qwen3.yaml          # Qwen3-specific overrides
 ├── output/
-│   ├── base.py                 # Formatter protocol
+│   ├── base.py                 # Output data structures
 │   └── excel.py                # Excel report generator
-├── tests/                      # Unit tests
-├── README.md                   # This file (English)
-└── README_zh.md                # Chinese documentation
+└── tests/                      # Unit tests
 ```
 
 ## Configuration
 
 ### Model Profiles
 
-Model profiles define default TensorCast configurations for specific models. Create profiles in `config/profiles/`:
+Model profiles define default TensorCast configurations. Create profiles in `config/profiles/`:
 
 ```yaml
-# config/profiles/my_model.yaml
 name: my-model
 description: "My custom model profile"
+num_layers: 64  # Critical for correct step detection
 
 tensorcast:
   model_id: organization/model-name
   device: ATLAS_800_A3_752T_128G_DIE
   world_size: 16
   tp_size: 16
-  dp_size: 1
-  ep: false
-  quantize_linear_action: DISABLED
 
 decode_defaults:
   num_queries: 136
   query_length: 1
   context_length: 4096
-
-prefill_defaults:
-  num_queries: 136
-  query_length: 4096
-  context_length: 0
 ```
 
-### Operator Mappings
+### Decomposition Mappings
 
-Operator mappings define how VLLM operations correspond to TensorCast operations:
+Decomposition mappings define how VLLM fused ops decompose into ordered TC op sequences:
 
 ```yaml
-# alignment/mappings/default.yaml
-version: "1.0"
+version: "2.0"
 
-# VLLM fused op -> multiple TC ops
-vllm_fusions:
-  - name: "AddRmsNorm"
-    vllm_ops: ["AddRmsNorm", "InplaceAddRmsNorm"]
-    tc_ops: ["aten.add", "tensor_cast.rmsnorm"]
-    aggregation: sum
-
-# Multiple VLLM ops -> TC fused op
-tc_fusions:
-  - name: "attention_block"
-    vllm_ops: ["FusedInferAttentionScore", "ReshapeAndCacheNdKernel"]
-    tc_ops: ["tensor_cast.attention"]
-    aggregation: sum
-
-# Direct 1:1 mappings
-direct_mappings:
+decompositions:
+  AddRmsNorm:
+    tc_ops: ["aten.add", "aten.pow", "aten.mean", "aten.rsqrt"]
   MatMulV2:
-    - aten.mm
-    - aten.matmul
-```
+    tc_ops: ["aten.mm"]
+  SwiGlu:
+    tc_ops: ["aten.silu", "aten.mul"]
 
-## Phase Detection
+ignored_vllm_ops:
+  - TensorMove
+  - Fill
 
-For PD Aggregation scenarios where both prefill and decode run on the same device, the tool can automatically detect the phase:
-
-### Detection Algorithm
-
-1. **Primary Method**: Query length in `ReshapeAndCacheNdKernel` Input Shapes
-   - `query_len == 1` → DECODE (99% confidence)
-   - `query_len > 100` → PREFILL (98% confidence)
-
-2. **Secondary Method**: MatMul batch dimension
-   - `M <= 256` → DECODE (85% confidence)
-   - `M >= 512` → PREFILL (90% confidence)
-
-### Override Phase Detection
-
-```bash
-# Force decode phase
-python -m tensor_cast.scripts.profiling_comparison.cli compare \
-    --profile qwen3_32b \
-    --vllm-dir /path/to/profiling \
-    --phase decode
+ignored_tc_ops:
+  - aten.view
+  - aten.reshape
 ```
 
 ## Output
@@ -167,190 +143,12 @@ python -m tensor_cast.scripts.profiling_comparison.cli compare \
 The generated Excel report contains four sheets:
 
 1. **VLLM Operations**: All VLLM operations with timing data
-2. **TensorCast Operations**: All TensorCast operations with timing data
-3. **Comparison**: Side-by-side comparison with difference metrics
+2. **TensorCast Operations**: All TC operations from chrome trace
+3. **Sequence Comparison**: Position-by-position matching with color coding
 4. **Summary**: Configuration and summary statistics
-
-### Comparison Metrics
-
-- **Time Coverage**: Percentage of VLLM time matched to TensorCast ops
-- **Average Difference**: Average absolute percentage difference
-- **Match Status**:
-  - `exact`: Direct match within 20%
-  - `partial`: Match within 50%
-  - `missing_in_tc`: VLLM op not found in TensorCast
-  - `missing_in_vllm`: TensorCast op not found in VLLM
-
-## CLI Reference
-
-### compare
-
-Run profiling comparison.
-
-```
-python -m tensor_cast.scripts.profiling_comparison.cli compare [OPTIONS]
-
-Required:
-  --vllm-dir PATH          Path to ASCEND_PROFILER_OUTPUT directory
-
-Profile-based (recommended):
-  --profile NAME           Model profile to use (e.g., qwen3_32b)
-
-Custom configuration:
-  --model-id ID            HuggingFace model ID
-  --device NAME            Device profile name
-  --world-size N           Total number of devices
-  --tp-size N              Tensor parallelism size
-  --dp-size N              Data parallelism size
-  --ep                     Enable expert parallelism
-  --quantize-linear-action Enable quantization
-  --num-queries N          Batch size
-  --query-length N         Query length
-  --context-length N       Context length
-
-Phase detection:
-  --phase {auto,prefill,decode}  Phase type (default: auto)
-  --step-index N           Decode step index (default: 100)
-
-Output:
-  --output PATH            Output file path
-  --format {excel,json}    Output format (default: excel)
-  --mapping NAME           Custom mapping file
-```
-
-### list-profiles
-
-List available model profiles.
-
-```
-python -m tensor_cast.scripts.profiling_comparison.cli list-profiles
-```
-
-### list-mappings
-
-List available operator mappings.
-
-```
-python -m tensor_cast.scripts.profiling_comparison.cli list-mappings
-```
 
 ## Testing
 
-Run tests with pytest:
-
 ```bash
-# Run all profiling comparison tests
-pytest tensor_cast/scripts/profiling_comparison/tests/ -v
-
-# Run specific test module
-pytest tensor_cast/scripts/profiling_comparison/tests/test_config.py -v
-
-# Run with coverage
-pytest tensor_cast/scripts/profiling_comparison/tests/ --cov=tensor_cast.scripts.profiling_comparison
+.conda/bin/python -m pytest tensor_cast/scripts/profiling_comparison/tests/ -v
 ```
-
-## Extending the Tool
-
-### Adding a New Model Profile
-
-1. Create YAML file in `config/profiles/`:
-
-```yaml
-name: new-model
-tensorcast:
-  model_id: org/new-model
-  device: ATLAS_800_A3_752T_128G_DIE
-  # ... configuration
-decode_defaults:
-  num_queries: 64
-  query_length: 1
-  context_length: 2048
-```
-
-2. Optionally create model-specific mappings in `alignment/mappings/`
-
-### Adding Custom Operator Mappings
-
-1. Create YAML file in `alignment/mappings/`:
-
-```yaml
-version: "1.0"
-vllm_fusions:
-  - name: "CustomFusion"
-    vllm_ops: ["CustomOp"]
-    tc_ops: ["aten.custom1", "aten.custom2"]
-    aggregation: sum
-```
-
-2. Use with `--mapping` flag:
-
-```bash
-python -m tensor_cast.scripts.profiling_comparison.cli compare \
-    --mapping custom_mapping --vllm-dir ...
-```
-
-### Creating a Custom Output Formatter
-
-Implement the `FormatterProtocol`:
-
-```python
-from tensor_cast.scripts.profiling_comparison.output.base import (
-    BaseFormatter,
-    ComparisonResult,
-)
-
-class MyFormatter(BaseFormatter):
-    def format(self, result: ComparisonResult, output_path: Path) -> None:
-        # Custom formatting logic
-        pass
-```
-
-## Troubleshooting
-
-### Common Issues
-
-1. **"kernel_details.csv not found"**
-   - Ensure VLLM profiling was run with kernel-level profiling enabled
-   - Check the profiling directory path is correct
-
-2. **"Profile not found"**
-   - Run `list-profiles` to see available profiles
-   - Check profile name spelling (use underscores or hyphens)
-
-3. **Phase detection incorrect**
-   - Use `--phase decode` or `--phase prefill` to override
-   - Check profiling data contains expected operations
-
-4. **Large time differences**
-   - Verify TensorCast configuration matches VLLM deployment
-   - Check quantization settings match
-   - Review operator mappings for missing fusions
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                          CLI (cli.py)                           │
-│                  Unified entry point with subcommands           │
-└─────────────────────────────────────────────────────────────────┘
-                                  │
-           ┌──────────────────────┼──────────────────────┐
-           ▼                      ▼                      ▼
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Config Layer  │    │  Parser Layer   │    │ Alignment Layer │
-│ - schema.py     │    │ - VLLM parser   │    │ - op_mapper.py  │
-│ - loader.py     │    │ - TC adapter    │    │ - YAML loader   │
-│ - profiles/     │    │ - phase detect  │    │ - mappings/     │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-                                  │
-                                  ▼
-                       ┌─────────────────┐
-                       │  Output Layer   │
-                       │ - Excel format  │
-                       │ - JSON format   │
-                       └─────────────────┘
-```
-
-## License
-
-See repository LICENSE file.

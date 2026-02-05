@@ -1,25 +1,23 @@
 """Tests for configuration module."""
 
-import pytest
-from pathlib import Path
 import tempfile
+from pathlib import Path
+
+import pytest
 import yaml
 
 from tensor_cast.scripts.profiling_comparison.config import (
-    ComparisonConfig,
+    list_profiles,
+    load_profile,
     ModelProfile,
-    OutputConfig,
     PhaseType,
     ProfileDefaults,
     TensorCastConfig,
-    VLLMConfig,
-    list_profiles,
-    load_profile,
 )
 from tensor_cast.scripts.profiling_comparison.config.loader import (
-    load_profile_from_path,
-    _parse_tensorcast_config,
     _parse_defaults,
+    _parse_tensorcast_config,
+    load_profile_from_path,
 )
 
 
@@ -65,30 +63,6 @@ class TestTensorCastConfig:
         assert d["tp_size"] == 16
 
 
-class TestVLLMConfig:
-    """Tests for VLLMConfig dataclass."""
-
-    def test_default_values(self):
-        """Test default values."""
-        config = VLLMConfig()
-        assert config.profiling_dir is None
-        assert config.num_output_tokens == 1
-        assert config.step_index == 100
-        assert config.phase == PhaseType.AUTO
-
-
-class TestOutputConfig:
-    """Tests for OutputConfig dataclass."""
-
-    def test_default_values(self):
-        """Test default values."""
-        config = OutputConfig()
-        assert config.output_path is None
-        assert config.format == "excel"
-        assert config.include_unmatched is True
-        assert config.include_shapes is True
-
-
 class TestProfileDefaults:
     """Tests for ProfileDefaults dataclass."""
 
@@ -125,43 +99,6 @@ class TestModelProfile:
         )
         assert profile.name == "test-profile"
         assert profile.tensorcast.model_id == "test/model"
-
-
-class TestComparisonConfig:
-    """Tests for ComparisonConfig dataclass."""
-
-    def test_from_profile(self):
-        """Test creating ComparisonConfig from ModelProfile."""
-        tc_config = TensorCastConfig(
-            model_id="Qwen/Qwen3-32B",
-            device="ATLAS_800_A3_752T_128G_DIE",
-            world_size=16,
-            tp_size=16,
-        )
-        profile = ModelProfile(
-            name="test",
-            tensorcast=tc_config,
-            decode_defaults=ProfileDefaults(
-                num_queries=136,
-                query_length=1,
-                context_length=4096,
-            ),
-        )
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            vllm_dir = Path(tmpdir)
-
-            config = ComparisonConfig.from_profile(
-                profile=profile,
-                vllm_dir=vllm_dir,
-                phase=PhaseType.DECODE,
-            )
-
-            assert config.tensorcast.model_id == "Qwen/Qwen3-32B"
-            assert config.tensorcast.num_queries == 136
-            assert config.tensorcast.query_length == 1
-            assert config.tensorcast.context_length == 4096
-            assert config.vllm.profiling_dir == vllm_dir
 
 
 class TestProfileLoader:
@@ -203,16 +140,17 @@ class TestProfileLoader:
 
     def test_load_profile_from_path(self):
         """Test loading profile from path."""
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".yaml", delete=False
-        ) as f:
-            yaml.dump({
-                "name": "test-profile",
-                "tensorcast": {
-                    "model_id": "test/model",
-                    "device": "TEST",
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            yaml.dump(
+                {
+                    "name": "test-profile",
+                    "tensorcast": {
+                        "model_id": "test/model",
+                        "device": "TEST",
+                    },
                 },
-            }, f)
+                f,
+            )
             f.flush()
 
             profile = load_profile_from_path(Path(f.name))

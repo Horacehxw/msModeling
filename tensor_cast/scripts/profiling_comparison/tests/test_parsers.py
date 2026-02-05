@@ -1,117 +1,22 @@
 """Tests for parser modules."""
 
-import pytest
-from pathlib import Path
-import tempfile
 import csv
+import tempfile
+from pathlib import Path
+
+import pytest
+
+from tensor_cast.scripts.profiling_comparison.config import PhaseType
 
 from tensor_cast.scripts.profiling_comparison.parsers import (
     KernelDetailsParser,
     KernelOp,
     SingleStepData,
 )
-from tensor_cast.scripts.profiling_comparison.parsers.base import (
-    BaseParser,
-    OperationData,
-    ProfilingResult,
-)
 from tensor_cast.scripts.profiling_comparison.parsers.phase_detector import (
     PhaseDetector,
     PhaseInfo,
-    StepBoundary,
 )
-from tensor_cast.scripts.profiling_comparison.config import PhaseType
-
-
-class TestOperationData:
-    """Tests for OperationData dataclass."""
-
-    def test_basic_creation(self):
-        """Test basic OperationData creation."""
-        op = OperationData(
-            op_type="MatMulV2",
-            count=10,
-            total_time_us=1000.0,
-            avg_time_us=100.0,
-            input_shapes=["[136, 4096]"],
-            output_shapes=["[136, 5120]"],
-        )
-        assert op.op_type == "MatMulV2"
-        assert op.count == 10
-        assert op.total_time_ms == 1.0
-        assert op.avg_time_ms == 0.1
-
-    def test_optional_fields(self):
-        """Test optional fields."""
-        op = OperationData(
-            op_type="Test",
-            count=1,
-            total_time_us=100.0,
-            avg_time_us=100.0,
-            input_shapes=[],
-            output_shapes=[],
-            core_type="AI_CORE",
-            bound_classification="compute",
-        )
-        assert op.core_type == "AI_CORE"
-        assert op.bound_classification == "compute"
-
-
-class TestProfilingResult:
-    """Tests for ProfilingResult dataclass."""
-
-    def test_basic_creation(self):
-        """Test basic ProfilingResult creation."""
-        ops = [
-            OperationData("Op1", 10, 1000.0, 100.0, [], []),
-            OperationData("Op2", 5, 500.0, 100.0, [], []),
-        ]
-        result = ProfilingResult(
-            operations=ops,
-            total_time_us=1500.0,
-            source="vllm",
-        )
-        assert len(result.operations) == 2
-        assert result.total_time_us == 1500.0
-        assert result.source == "vllm"
-
-    def test_get_ops_by_type(self):
-        """Test filtering operations by type."""
-        ops = [
-            OperationData("MatMul", 10, 1000.0, 100.0, [], []),
-            OperationData("MatMul", 5, 500.0, 100.0, [], []),
-            OperationData("Add", 20, 200.0, 10.0, [], []),
-        ]
-        result = ProfilingResult(ops, 1700.0, "test")
-
-        matmul_ops = result.get_ops_by_type("MatMul")
-        assert len(matmul_ops) == 2
-
-    def test_get_top_ops(self):
-        """Test getting top operations by time."""
-        ops = [
-            OperationData("Op1", 1, 100.0, 100.0, [], []),
-            OperationData("Op2", 1, 500.0, 500.0, [], []),
-            OperationData("Op3", 1, 200.0, 200.0, [], []),
-        ]
-        result = ProfilingResult(ops, 800.0, "test")
-
-        top_ops = result.get_top_ops(2)
-        assert len(top_ops) == 2
-        assert top_ops[0].op_type == "Op2"
-        assert top_ops[1].op_type == "Op3"
-
-    def test_get_time_breakdown(self):
-        """Test getting time breakdown by op type."""
-        ops = [
-            OperationData("MatMul", 2, 1000.0, 500.0, [], []),
-            OperationData("Add", 1, 200.0, 200.0, [], []),
-        ]
-        result = ProfilingResult(ops, 1200.0, "test")
-
-        breakdown = result.get_time_breakdown()
-        assert breakdown["MatMul"] == 1000.0
-        assert breakdown["Add"] == 200.0
 
 
 class TestKernelOp:
@@ -198,10 +103,17 @@ class TestKernelDetailsParser:
             mode="w", suffix=".csv", delete=False, newline=""
         )
         writer = csv.writer(f)
-        writer.writerow([
-            "Name", "Type", "Start Time(us)", "Duration(us)",
-            "Accelerator Core", "Input Shapes", "Output Shapes"
-        ])
+        writer.writerow(
+            [
+                "Name",
+                "Type",
+                "Start Time(us)",
+                "Duration(us)",
+                "Accelerator Core",
+                "Input Shapes",
+                "Output Shapes",
+            ]
+        )
         for row in rows:
             writer.writerow(row)
         f.flush()
@@ -209,10 +121,20 @@ class TestKernelDetailsParser:
 
     def test_parse_all_operations(self):
         """Test parsing all operations from CSV."""
-        csv_path = self._create_test_csv([
-            ["kernel1", "MatMulV2", "1000", "500", "AI_CORE", "136,4096", "136,5120"],
-            ["kernel2", "Add", "1500", "100", "AI_CORE", "136,5120", "136,5120"],
-        ])
+        csv_path = self._create_test_csv(
+            [
+                [
+                    "kernel1",
+                    "MatMulV2",
+                    "1000",
+                    "500",
+                    "AI_CORE",
+                    "136,4096",
+                    "136,5120",
+                ],
+                ["kernel2", "Add", "1500", "100", "AI_CORE", "136,5120", "136,5120"],
+            ]
+        )
 
         parser = KernelDetailsParser(csv_path)
         ops = parser.parse_all_operations()
@@ -224,12 +146,14 @@ class TestKernelDetailsParser:
 
     def test_find_step_boundaries(self):
         """Test finding step boundaries using attention anchor."""
-        csv_path = self._create_test_csv([
-            ["k1", "MatMulV2", "100", "50", "", "", ""],
-            ["k2", "FusedInferAttentionScore", "200", "100", "", "", ""],
-            ["k3", "MatMulV2", "400", "50", "", "", ""],
-            ["k4", "FusedInferAttentionScore", "500", "100", "", "", ""],
-        ])
+        csv_path = self._create_test_csv(
+            [
+                ["k1", "MatMulV2", "100", "50", "", "", ""],
+                ["k2", "FusedInferAttentionScore", "200", "100", "", "", ""],
+                ["k3", "MatMulV2", "400", "50", "", "", ""],
+                ["k4", "FusedInferAttentionScore", "500", "100", "", "", ""],
+            ]
+        )
 
         parser = KernelDetailsParser(csv_path)
         boundaries = parser.find_step_boundaries()
@@ -240,12 +164,14 @@ class TestKernelDetailsParser:
 
     def test_extract_single_step(self):
         """Test extracting a single step."""
-        csv_path = self._create_test_csv([
-            ["k1", "FusedInferAttentionScore", "100", "50", "", "", ""],
-            ["k2", "MatMulV2", "150", "100", "", "", ""],
-            ["k3", "FusedInferAttentionScore", "300", "50", "", "", ""],
-            ["k4", "MatMulV2", "350", "100", "", "", ""],
-        ])
+        csv_path = self._create_test_csv(
+            [
+                ["k1", "FusedInferAttentionScore", "100", "50", "", "", ""],
+                ["k2", "MatMulV2", "150", "100", "", "", ""],
+                ["k3", "FusedInferAttentionScore", "300", "50", "", "", ""],
+                ["k4", "MatMulV2", "350", "100", "", "", ""],
+            ]
+        )
 
         parser = KernelDetailsParser(csv_path)
         step = parser.extract_single_step(0)
@@ -270,10 +196,17 @@ class TestPhaseDetector:
             mode="w", suffix=".csv", delete=False, newline=""
         )
         writer = csv.writer(f)
-        writer.writerow([
-            "Name", "Type", "Start Time(us)", "Duration(us)",
-            "Accelerator Core", "Input Shapes", "Output Shapes"
-        ])
+        writer.writerow(
+            [
+                "Name",
+                "Type",
+                "Start Time(us)",
+                "Duration(us)",
+                "Accelerator Core",
+                "Input Shapes",
+                "Output Shapes",
+            ]
+        )
         for row in rows:
             writer.writerow(row)
         f.flush()
@@ -281,10 +214,20 @@ class TestPhaseDetector:
 
     def test_detect_decode_phase(self):
         """Test detecting decode phase from query_len=1."""
-        csv_path = self._create_test_csv([
-            ["k1", "ReshapeAndCacheNdKernel", "100", "50", "", "136,1,128;136,64,128", ""],
-            ["k2", "FusedInferAttentionScore", "200", "100", "", "", ""],
-        ])
+        csv_path = self._create_test_csv(
+            [
+                [
+                    "k1",
+                    "ReshapeAndCacheNdKernel",
+                    "100",
+                    "50",
+                    "",
+                    "136,1,128;136,64,128",
+                    "",
+                ],
+                ["k2", "FusedInferAttentionScore", "200", "100", "", "", ""],
+            ]
+        )
 
         detector = PhaseDetector(csv_path)
         phase_info = detector.detect_phase()
@@ -294,10 +237,20 @@ class TestPhaseDetector:
 
     def test_detect_prefill_phase(self):
         """Test detecting prefill phase from query_len>100."""
-        csv_path = self._create_test_csv([
-            ["k1", "ReshapeAndCacheNdKernel", "100", "50", "", "136,4096,128;136,64,128", ""],
-            ["k2", "FusedInferAttentionScore", "200", "100", "", "", ""],
-        ])
+        csv_path = self._create_test_csv(
+            [
+                [
+                    "k1",
+                    "ReshapeAndCacheNdKernel",
+                    "100",
+                    "50",
+                    "",
+                    "136,4096,128;136,64,128",
+                    "",
+                ],
+                ["k2", "FusedInferAttentionScore", "200", "100", "", "", ""],
+            ]
+        )
 
         detector = PhaseDetector(csv_path)
         phase_info = detector.detect_phase()
@@ -307,9 +260,11 @@ class TestPhaseDetector:
 
     def test_extract_query_length(self):
         """Test extracting query length from input shapes."""
-        csv_path = self._create_test_csv([
-            ["k1", "MatMulV2", "100", "50", "", "136,4096", ""],
-        ])
+        csv_path = self._create_test_csv(
+            [
+                ["k1", "MatMulV2", "100", "50", "", "136,4096", ""],
+            ]
+        )
 
         detector = PhaseDetector(csv_path)
         query_len = detector._extract_query_length("136,4096,128")
@@ -317,9 +272,11 @@ class TestPhaseDetector:
 
     def test_extract_batch_size(self):
         """Test extracting batch size from input shapes."""
-        csv_path = self._create_test_csv([
-            ["k1", "MatMulV2", "100", "50", "", "136,4096", ""],
-        ])
+        csv_path = self._create_test_csv(
+            [
+                ["k1", "MatMulV2", "100", "50", "", "136,4096", ""],
+            ]
+        )
 
         detector = PhaseDetector(csv_path)
         batch_size = detector._extract_batch_size("136,4096,128")
