@@ -6,25 +6,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-MindStudio-Modeling (msmodeling) is a performance simulation framework for LLMs and diffusion models. It enables developers to predict neural network performance on specific hardware without requiring physical accelerator access by functioning as a virtual execution environment that intercepts PyTorch operations.
+MindStudio-Modeling (msmodeling) is a performance simulation framework for LLMs and diffusion models. It predicts neural network performance on specific hardware without requiring physical accelerator access by functioning as a virtual execution environment that intercepts PyTorch operations.
 
 Two main components:
 - **TensorCast**: Operator-level performance simulation using PyTorch's `TorchDispatchMode`
 - **ServingCast**: Service-level discrete event simulation using salabim
 
-## Python Environment
+## Git Workflow
 
-**IMPORTANT**: Always use the project's virtual environment located at `.venv/`:
-
-```bash
-# Activate the virtual environment
-source .venv/bin/activate
-
-# Or run commands directly with the venv Python
-.venv/bin/python -m tensor_cast.scripts.text_generate ...
-```
-
-When running any Python command in this project, use `.venv/bin/python` instead of the system Python.
+- Default branch (PR target): `develop`
+- Team xiaoqiaoling development branch: `dev_xiaoqiaoling`
+- Feature branches: `feat/*`
 
 ## Build & Development Commands
 
@@ -33,6 +25,12 @@ When running any Python command in this project, use `.venv/bin/python` instead 
 pip install lintrunner
 lintrunner init  # one-time setup
 ```
+
+### Code Style
+
+- Formatter: **black** (line-length 88)
+- Import sorting: **isort** (profile "black")
+- Linter: **ruff** + **flake8** via lintrunner
 
 ### Linting (run before every commit)
 ```bash
@@ -140,26 +138,12 @@ Executed in strict order in `tensor_cast/transformers/model.py`:
 3. **Multi-Token Prediction**: Add optional MTP layers for parallel token prediction
 4. **Layer Repetition Optimization**: Mark repetitive decoder layers for analysis reuse
 5. **Module Patching**: Replace attention, MLA, and MoE modules with optimized implementations
-6. **Quantization Application**: Apply precision reduction via `TensorCastQuantLinear`
+6. **Quantization Application**: Apply precision reduction via `QuantLinearBase`
 7. **Parallelism Distribution**: Apply TP/EP/DP sharding across devices
-
-### Key Files
-
-- **runtime.py**: Core `Runtime` class using `TorchDispatchMode` to intercept all PyTorch operations
-- **device.py**: `DeviceProfile` (compute TFLOPS, memory bandwidth) and `CommGrid` (network topology)
-- **model_config.py**: `ModelConfig`, `ParallelConfig`, `QuantConfig` configuration dataclasses
-- **performance_model/analytic.py**: Roofline-based `AnalyticPerformanceModel`
-- **performance_model/comm_analytic.py**: `CommAnalyticModel` for collective communication costs
-- **performance_model/memory_tracker.py**: `MemoryTracker` for allocation simulation
 
 ### OpInvokeInfo System
 
-Operations are captured as `OpInvokeInfo` objects containing:
-- Function reference and arguments
-- Output tensors and metadata
-- Cache key for performance model caching
-
-Property extractors are registered via decorator:
+Operations are captured as `OpInvokeInfo` objects. Property extractors are registered via decorator:
 ```python
 @OpInvokeInfo.register_op_properties(torch.ops.aten.mm.default)
 ```
@@ -187,15 +171,6 @@ Built on **salabim** framework with logical time management in `stime.py`:
 
 `Created` → `Scheduled` → `Running` → `Holding`/`Passive` → `Terminated`
 
-### Key Files
-
-- **stime.py**: `SimulationEnv`, `Task`, `CallableTask`, time utilities
-- **engine.py**: `BatchScheduler` for token-aware batch scheduling
-- **serving.py**: PD (Prefill-Decode) aggregation and disaggregation modes
-- **kv_cache_manager.py**: Block-based KV cache memory management
-- **config.py**: `ParallelConfig`, `InstanceConfig`, `ModelConfig`, `ServingConfig`
-- **request.py**: Request states (PREFILLING → DECODING → COMPLETED)
-
 ## Quantization Framework
 
 | Scheme | Weights | Activations | Use Case |
@@ -221,26 +196,13 @@ Configuration via `QuantConfig` mapping module paths to `LinearQuantConfig`/`Att
 
 Configured via `--tp-size`, `--dp-size`, `--ep`, `--world-size` flags.
 
-## Advanced Model Components
+### External Shared Experts & Redundant Experts (MoE)
 
-### Mixture of Experts (MoE)
+1. **Redundant Experts Only** (`--enable-redundant-experts`): Each device hosts an additional redundant expert.
 
-`MoELayer` in `tensor_cast/ops/fused_moe.py`:
-1. Gating: Compute routing logits, select top-k experts
-2. Token permutation via `permute_tokens()`
-3. Expert MLP computation
-4. Token unpermutation via `unpermute_tokens()`
-5. Weighted output combination
+2. **External Shared Experts Only** (`--enable-external-shared-experts`): Devices allocated between external shared experts and routing experts at ratio 1:`top_k`. Example: `world_size=64`, `top_k=8`, 256 routing experts → 8 devices for external shared experts, 56 devices for routing (32 host 5 experts, 24 host 4 + 1 redundant).
 
-`ParallelMoELayer` adds EP with all-to-all communication and optional redundant/external shared experts.
-
-### Multihead Latent Attention (MLA)
-
-`tensor_cast/ops/mla.py`: Compresses KV cache by projecting into lower-dimensional latent space:
-- Prefill: Full decompression via `kv_b_proj`
-- Decode: Compressed computation using `W_UK_T` and `W_UV` projections
-
-Supports INT8 quantization for query states, compressed KV, attention probabilities.
+3. **Both Enabled**: Same as #2, plus additional redundant expert per routing device if routing experts divide evenly.
 
 ## Hardware Abstraction
 
@@ -249,59 +211,9 @@ Supports INT8 quantization for query states, compressed KV, attention probabilit
 - **Memory**: Capacity, bandwidth, cache hierarchy
 - **Network**: `CommGrid` topology, bandwidth, latency
 
-Built-in profiles for Ascend ATLAS accelerators. Custom devices: drop Python files in `tensor_cast/device_profiles/` for auto-loading.
-
-## Output & Reporting
-
-- **Summary Tables**: Operator-level breakdown (execution time, memory, FLOPs, bound classification)
-- **Chrome Trace**: Timeline JSON for `chrome://tracing` visualization
-- **Memory Profile**: Peak usage tracking with allocation/deallocation events
-- **Metrics**: Total time, throughput (TPS), TTFT, TPOT, peak memory
-
-## Data Flow Pipelines
-
-### TensorCast Pipeline
-- **Entry**: `tensor_cast/scripts/text_generate.py` (prefill/decode) or `tensor_cast/scripts/benchmark.py` (throughput)
-- **Model Loading**: `tensor_cast/core/model_builder.py` → HuggingFace transformers
-- **Simulation**: `tensor_cast/performance_model/analytic.py` estimates operator time using roofline model
-- **Hardware**: Device profiles in `tensor_cast/device_profiles/` (TFLOPS, memory bandwidth, interconnect)
-- **Optimization**: `tensor_cast/compilation/passes/` applies quantization, merge linear, freezing via custom PyTorch backend
-- **Output**: Execution metrics + optional Chrome Trace JSON
-
-### ServingCast Pipeline
-- **Entry**: `serving_cast/main.py` with YAML config (instances.yaml + common.yaml)
-- **Config**: `serving_cast/config.py` dataclasses (ParallelConfig, ModelConfig, LoadGenConfig, ServingConfig)
-- **Simulation Loop**: `stime.Task`-based `BatchScheduler` in `serving_cast/engine.py`:
-  - Request arrival simulation
-  - Prefill/decode scheduling with token budget constraints
-  - KV cache allocation via `kv_cache_manager.py`
-  - Device communication modeling
-- **Backend**: `serving_cast/service/backend_factory.py` creates MindIE backend
-- **Output**: Request latency metrics (E2E, TTFT, TPOT) + optional profiling
-
-## Key Conventions & Patterns
-
-### Configuration Management
-- **Dataclass-based config**: `ParallelConfig`, `ModelConfig`, `LoadGenConfig`, `ServingConfig` in `serving_cast/config.py`
-- **Device profiles**: Each file in `tensor_cast/device_profiles/` registers device class with `@register_device`
-- **YAML schemas**: ServingCast expects flat YAML with nested dicts for model_config, serving_config, load_gen
-
-### Performance Modeling
-- **Analytic model**: `OperatorProfile` + hardware specs → execution time (no ML predictor needed)
-- **Memory tracking**: `MemoryTracker` tracks peak & total allocations per operator
-- **Quantization**: W8A8_DYNAMIC, W4A8_STATIC, MXFP4 applied uniformly to linear layers
-- **Parallelism**: Tensor/Sequence/Data parallelism stored in `model_config.parallel_config`
-
-### Code Organization
-- **tensor_cast/layers/**: Custom layer implementations (attention, MoE, parallel linear)
-- **tensor_cast/core/**: Config resolution, model building, input generation
-- **tensor_cast/compilation/passes/**: Graph optimization with pattern matching
-- **serving_cast/service/**: Backend abstraction (MindIE aggregation/disaggregation modes)
-- **serving_cast/profiler/**: Optional profiling hooks (stime-based instrumentation)
+Built-in profiles for Ascend ATLAS accelerators. Custom devices: drop Python files in `tensor_cast/device_profiles/` for auto-loading (see `tensor_cast/device_profiles/README.md` for reference).
 
 ## Mapping vLLM to TensorCast
-
-When translating vLLM deployment to TensorCast simulation:
 
 | vLLM Parameter | TensorCast Equivalent |
 |---|---|
@@ -320,7 +232,7 @@ When translating vLLM deployment to TensorCast simulation:
 **Issue**: W4A8_STATIC quantization fails with infinite recursion in `tensor.clamp()`
 **Location**: `tensor_cast/layers/quant_linear.py:160` in `pack_int4()`
 **Cause**: PyTorch meta tensors don't support `clamp()` (triggers `isnan()` recursion)
-**Fix**: Add device check before clamp or use W8A8_DYNAMIC instead
+**Workaround**: Add device check before clamp or use W8A8_DYNAMIC instead (not yet applied in code)
 ```python
 if tensor.device.type != 'meta':
     tensor = tensor.clamp(-8, 7)
@@ -337,10 +249,15 @@ if tensor.device.type != 'meta':
 | File | Purpose |
 |------|---------|
 | `stime.py` | Discrete event simulation (understand `Task`, `elapse()`, `now()` first) |
+| `tensor_cast/runtime.py` | Core `Runtime` class using `TorchDispatchMode` |
+| `tensor_cast/device.py` | `DeviceProfile` and `CommGrid` definitions |
+| `tensor_cast/model_config.py` | `ModelConfig`, `ParallelConfig`, `QuantConfig` dataclasses |
 | `tensor_cast/core/model_runner.py` | Inference API, profiling hooks |
 | `tensor_cast/core/config_resolver.py` | Config → model transformations |
 | `tensor_cast/transformers/utils.py` | Model type detection, config loading |
 | `tensor_cast/layers/quant_linear.py` | Quantization implementations (W4A8, W8A8, etc.) |
+| `tensor_cast/performance_model/analytic.py` | Roofline-based performance model |
+| `tensor_cast/performance_model/memory_tracker.py` | Memory allocation simulation |
 | `serving_cast/main.py` | Entry point, CLI args, simulation orchestration |
 | `serving_cast/engine.py` | Batch scheduling logic, KV cache preemption |
 | `serving_cast/config.py` | YAML schema definitions |
