@@ -1,17 +1,30 @@
 # TensorCast 算子性能数据库：技术设计文档 （审核中！！！！）
 
-**版本**: 1.0
+**版本**: 1.1
 **日期**: 2026 年 2 月
-**范围**: 面向华为昇腾 A3 的 LLM 仿真可扩展 Profiling 代价模型
+**范围**: 面向 LLM 仿真的可扩展 Profiling Cost Model, 不绑定具体的算力卡，支持基于实际 Profiling 数据的算子性能估算。
 **初期目标模型**: DeepSeek-V3、Qwen3-32B
 
+作者：  贺骁武
+
+审核人：龚炯
+
 ---
+
+[COMMENT:] 请根据我的注释和添加的内容改进文档，标记为 v1.1（仍然是审核中！！！！）, 并在末尾添加 change log 记录变化了哪些内容。
+
+## 1. 功能概述
+
+[COMMENT:] 需要描述清楚目标，核心功能，做成什么样子，以及不做什么（范围界定） 
+
 
 ## 1. 技术分析
 
 ### 1.1 问题陈述
 
 TensorCast 当前采用**基于 Roofline 的解析模型**（`AnalyticPerformanceModel`）估算算子执行耗时。该模型基于浮点运算量（FLOPs）与访存字节数计算 `max(计算耗时, 访存耗时)`，与 Atlas 800 A3 硬件上的实际 VLLM-Ascend Profiling 结果对比存在系统性偏差。
+
+[COMMENT:] 目前已经提供了 EmpiricalPerformanceModel 作为对接实测数据的框架，计划基于本模块进行扩展开发。请仔细阅读分析当前EmpiricalPerformanceModel 的架构设计和思路，基于此设计本方案。本文档中的 v1.0 版本用的 ProfilingPerformanceModel 命名统一为 EmpiricalPerformanceModel。
 
 **偏差根因分析**：
 
@@ -52,6 +65,8 @@ TensorCast 当前采用**基于 Roofline 的解析模型**（`AnalyticPerformanc
 
 VLLM-Ascend 不同版本对融合内核的种类及其性能有显著影响：
 
+[COMMENT:] 请联网搜索下面这些是不是对的，如果不是的话可以不写具体的，就提一嘴
+
 | 版本 | 新增融合内核 | 性能影响 |
 |-----|------------|---------|
 | v0.14.0 | Triton RoPE 内核、MatMul-AllReduce-RMSNorm 融合 | 产生全新融合模式 |
@@ -74,15 +89,20 @@ CANN 版本同样影响内核执行效率（不同编译优化策略），两者
 - 使用 `OpBenchmark` 类
 - 仅在物理设备可用时工作
 
+[COMMENT:] 目前这里EmpiricalPerformanceModel只是一个初步框架，但是目标就是本方案需要的对接实测性能数据库。提供的抽象不只是针对物理机，也可以支持从数据库读取信息，或者读取之前执行的缓存结果。当前的初步实现是假设没有现成的数据库或者执行缓存，可以在物理机上直接执行然后缓存下来。本方案可以基于这个 EmpiricalPerformanceModel 做扩展设计，而不是搞一个全新的。
+
 ### 1.5 AI Configurator 参考（NVIDIA）
+
+[COMMENT:] 在进行项目内部分析的时候可以用 `/home/horacehxw/Projects/aiconfigurator`, 最终的文档报告里面请引用项目 Github 仓 （https://github.com/ai-dynamo/aiconfigurator）
 
 从 `/home/horacehxw/Projects/aiconfigurator` 项目中提炼的核心设计模式：
 - **嵌套字典索引**：对已 Profiling 的 Shape 实现 O(1) 精确查找
 - **scipy.griddata 插值**：多维 Shape 空间匹配
-- **DatabaseMode 降级策略**：SILICON → HYBRID → EMPIRICAL → SOL
+- **DatabaseMode 降级策略**：SILICON → HYBRID → EMPIRICAL → SOL [COMMENT:] 这个是什么，需要在括号里面配上解释
 - **PerformanceResult(float)**：后向兼容的结果类型
 - **CSV 存储**：可读性强、便于版本管理
 - **延迟加载与缓存**：模块级缓存避免重复加载
+
 
 ---
 
@@ -91,6 +111,11 @@ CANN 版本同样影响内核执行效率（不同编译优化策略），两者
 ### 2.1 整体架构
 
 * TensorCast Runtime 通过 `PerformanceModel` 插件化架构接入 Profiling 数据库，选择哪种建模应该是可以配置的，都必须支持。
+
+
+[COMMENT:] 从 Tensorcast 整体的角度，可以建议设计一个 high-level 的 performance model, 然后这个顶层 performance model 可以调用底层的 perfmodel 做组合，实现类似于不断降级的功能或者组合各种 perf model 的功能。当前设计文档仅仅针对基于数据库+插值的 Empirical Perfmodel 做设计。对这部分 High-level perfmodel 的设计可以放在末尾的 Future Work 或者 Suggestion 里面，并在最上面的功能概述中提到本方案包括哪些，不包括哪些，建议后续框架支持哪些功能。
+
+[COMMENT:] 考虑到可能存在没有 profiling 到的算子，此时 Empirical Perfmodel 还是需要有通路能 fall back 到 roofline model, 这里如果要想不耦合不同的 perf model, 就对上层的 Perfmodel 实现和调度有要求，需要明确提出需求，并放在功能概述和末尾的建议/Future work 模块。
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
@@ -145,7 +170,11 @@ CANN 版本同样影响内核执行效率（不同编译优化策略），两者
 └──────────────────────────────────────────────────────────────┘
 ```
 
+[COMMENT:] 考虑到 VLLM 服务拉起开销较大，也可以考虑只拉取一次获取算子名称和列表，后续通过仿真器建模来获得不同配置下算子的 Input Shape, 让 microbenchmark 除了 grid 便利外单独抓取这些 input shape 对应的性能. 即数据库构建 Pipeline 可能可以提不同种的方式，我们给出当前的 default 方案，但是用户可以选择不同方案来权衡构建效率和数据库覆盖性。
+
 ### 2.2 模块结构
+
+[COMMENT:] 考虑放到 performance_model/ 目录下统一管理本方案相关功能
 
 ```
 tensor_cast/perf_database/              # 新增包
@@ -155,7 +184,7 @@ tensor_cast/perf_database/              # 新增包
 │   ├── query.py                        # QueryEngine（含插值逻辑）
 │   ├── storage.py                      # Parquet/CSV IO 后端
 │   └── versioning.py                   # 版本解析与管理
-├── operators/
+├── operators/ [TODO:][COMMENT:] 可能需要修改
 │   ├── __init__.py                     # 通过 importlib 自动发现
 │   ├── base.py                         # OperatorSchema 抽象基类 + 注册表
 │   ├── gemm.py                         # GEMM/MatMul 算子 Schema
@@ -173,7 +202,7 @@ tensor_cast/perf_database/              # 新增包
 │   ├── base.py                         # InterpolationStrategy 抽象基类
 │   └── linear.py                       # 基于 scipy 的线性插值
 ├── mappings/vllm_ascend/
-│   ├── v0.10.yaml                      # VLLM 内核 → Schema 映射
+│   ├── v0.10.yaml                      # VLLM 内核 → Schema 映射 [COMMENT:] 应该是到 tensorcast 算子的映射表，用于让 tensorcast 知道应该查询什么名字的算子
 │   ├── v0.12.yaml
 │   └── v0.14.yaml
 ├── data/systems/                       # Profiling 数据存储（gitignore）
@@ -200,6 +229,9 @@ tensor_cast/performance_model/
 ## 3. 核心模块设计
 
 ### 3.1 OperatorSchema（插件化架构）
+
+[COMMENT:] 这里的设计把具体算子映射到了多个类，每个类来拿性能，粒度太粗了，应该是：1. 按照 VLLM/SGLang/Pytorch 等框架实跑的算子列表覆盖，不同算子分别采集其不同 input 下的性能结果。2. 每个算子包括一个基类来定义其 shape 维度和提取逻辑，和一个映射表来告诉 tensorcast 哪些算子应该被这个 schema 处理。3. 这样在查询的时候就可以先根据算子名称找到对应的 schema，然后用这个 schema 来提取 shape 和查询性能数据库。4. 另外需要设计一个机制来支持融合算子（比如 VLLM 的一些融合内核），可以是把融合内核拆成多个基础算子来建模，或者直接针对融合内核设计专门的 schema。5. 
+
 
 每种算子类型定义其 Shape 空间、提取逻辑和 Roofline 兜底估算：
 
@@ -279,6 +311,8 @@ class OperatorSchema(ABC):
 
 ### 3.2 PerfDatabase
 
+[COMMENT：] 描述清楚数据库的功能，里面包含什么？数据库是否可以和数据源解耦？例如，实测数据可以从 micro-benchmark 单元测试获取，也可以通过 profiling 获取。数据库这里应该是定义格式和接口，可以接入任意数据源。
+
 ```python
 # tensor_cast/perf_database/core/database.py
 
@@ -324,6 +358,7 @@ class QueryMode(Enum):
     HYBRID = auto()       # 精确匹配 → 插值 → Roofline
     ROOFLINE = auto()
 
+[COMMENT:] Empirical Perfmodel 内部就只做实测的：命中就做 exact or Interpolate or Extrapolate, 不命中的算子就 Fallback 默认机制
 class QuerySource(Enum):
     MEASURED = auto()          # 精确 Profiling 数据（置信度: 1.0）
     INTERPOLATED = auto()      # scipy 插值（置信度: 0.7-0.95）
@@ -364,6 +399,8 @@ class QueryEngine:
 ```
 
 ### 3.4 算子到 Schema 的映射（YAML 配置）
+
+[COMMENT:] 这里需要根据前面的设计修改
 
 ```yaml
 # tensor_cast/perf_database/mappings/vllm_ascend/v0.14.yaml
@@ -524,6 +561,8 @@ runtime = Runtime(perf_models=perf_model, device_profile=device_profile)
 
 在 `tensor_cast/scripts/text_generate.py` 中新增以下参数：
 
+[COMMENT:] 这里 database-mode 里面不需要选择 roofline 了，就用 hybrid (exact + interpolate + 没命中的算子用 roofline 兜底) 就好了，用户不需要关心具体的降级策略细节。如果需要改的话应该改更上层的 PerfModel
+
 ```python
 parser.add_argument("--performance-model", choices=["analytic", "profiling", "empirical"],
                     default="analytic", help="性能模型类型")
@@ -574,6 +613,8 @@ text_generate.py
 ---
 
 ## 5. 自动化 Profiling 流水线
+
+[COMMENT:] 这部分作为一个独立的工具，不放在 tensorcast, 可以是一个独立的仓，可以是本仓库一个独立的子目录。 主要功能是自动化执行 VLLM Profiling 和单算子微基准测试，解析输出并构建性能数据库。设计时需要兼顾效率（减少不必要的服务重启）和覆盖性（尽可能多的 Shape 配置）。
 
 ### 5.1 两级采集策略
 
@@ -765,6 +806,8 @@ PRIORITY_MODELS = [
 
 ## 7. 开发计划
 
+[COMMENT:] 当前计划分为两组人分别开发：六壬工具团队内部开发 Tensorcast 接口，小巧灵团队开发性能数据库和数据采集流水线。需要明确接口规范和数据格式，确保两边开发的模块能够无缝对接。两边的规划可以按照 Q3 (3.20) 倒排，需要到时候完全跑通并在 Deepseek V3, Qwen3-32B 上完成初始数据采集和集成测试。每个任务给一个大概的人力或者代码量估计。
+
 ### 阶段一：核心基础设施
 - 创建 `tensor_cast/perf_database/` 包结构
 - 实现 `OperatorSchema` 基类及注册表机制
@@ -806,6 +849,7 @@ PRIORITY_MODELS = [
 | 端到端耗时误差 | 与实际 VLLM 对比 <15% |
 | 单算子误差（已匹配算子） | <20% |
 | 时间覆盖率 | 覆盖 VLLM 执行时间的 >90% |
+| 算子覆盖率 | >80% |
 
 ### 测试用例
 1. Qwen3-32B Prefill：136 请求 x 4096 tokens，TP=16
@@ -832,3 +876,14 @@ PRIORITY_MODELS = [
 - [Intel NPU Cost Model](https://github.com/intel/npu-nn-cost-model)
 - NVIDIA AI Configurator（内部参考，位于 `/home/horacehxw/Projects/aiconfigurator`）
 - 现有 Profiling 对比工具：`tensor_cast/scripts/profiling_comparison/`
+
+
+## 讨论会议纪要
+
+1. 算子性能 load 函数如何设计？AI Configurator 是每个不同的算子给一个接口，本方案为了泛化性考虑，应该是统一的 load 接口，给出任意维度的 input shape 输入，但是需要约定好 input 的顺序和维度，数据库查询按照输入的 shape 能够查询到具体的结果
+
+2. 算子覆盖列表：初步需要支持 Deepseek V3, Qwen3-32B 在 910C, VLLM-ascend 上的算子覆盖。
+    2.1 需要根据 Profling 结果 (D:\Data\Profiling\profiling-qwen3-30b-pd_tegether, D:\Data\Profiling\prof-torchair-deepseekv3-decode) 来确定哪些算子需要优先支持，哪些算子可以后续补充。提供算子的 input, input shape 和维度的解释，提供接口配置文件（在方案中设计好示例文件格式，然后单独生成配置文件在 docs/database/ 目录），做好两个团队的接口约定。
+    2.2 需要进行 VLLM 融合算子到 tensorcast 用的算子的映射（可能是一对多或者多对一），设计好映射表的格式，提供示例配置文件。tensorcast 的算子列表可以尝试跑一些测试脚本来生成。
+
+3. 算子性能数据库存储结构：参考 ai configurator 和当前设计文档的结构，需要按照硬件，软件版本分文件夹，对于查询来说就是增加一个 prefix_id。
