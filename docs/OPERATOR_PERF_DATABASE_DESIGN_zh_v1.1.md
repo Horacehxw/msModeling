@@ -28,7 +28,7 @@
 
 ### 1.3 不在本方案范围内（建议后续支持）
 
-- **CompositePerformanceModel 顶层调度器**：统一编排多种 PerformanceModel（Profiling + Empirical + Analytic），实现可配置的降级策略与模型组合（详见第 9 节 Future Work）
+- **CompositePerformanceModel 顶层调度器**：统一编排多种 PerformanceModel（Profiling + Empirical + Analytic），实现可配置的降级策略与模型组合（详见第 9 节）
 - **跨硬件泛化**：当前仅支持昇腾 A3，其他硬件需独立采集数据并注册 DeviceProfile
 - **自动化持续集成**：随 VLLM-Ascend / CANN 版本发布自动触发数据采集
 - **能耗建模**：AI Configurator 的 `PerformanceResult(float)` 支持能耗追踪，本方案暂不涉及
@@ -151,7 +151,7 @@ class EmpiricalPerformanceModel(PerformanceModel):
 
 本方案采用**三模型并列 + 共享数据层**的架构。`ProfilingPerformanceModel`、`EmpiricalPerformanceModel`、`AnalyticPerformanceModel` 作为三个独立的 `PerformanceModel` 子类，用户通过 CLI 选择使用哪一个。`PerfDatabase` 作为共享数据层，为 `ProfilingPerformanceModel`（只读）和 `EmpiricalPerformanceModel`（读写缓存）提供统一的数据存储与查询能力。
 
-> **注意**：关于顶层 CompositePerformanceModel（组合多种 PerformanceModel，实现可配置降级链）的设计，详见第 9 节建议与 Future Work。当前方案中 `ProfilingPerformanceModel` 对未收录算子内部兜底回退至 `AnalyticPerformanceModel`，作为 v1.0 的务实方案。
+> **注意**：关于顶层 CompositePerformanceModel（组合多种 PerformanceModel，实现可配置降级链）的设计，详见第 9 节。当前方案中 `ProfilingPerformanceModel` 对未收录算子内部兜底回退至 `AnalyticPerformanceModel`，作为 v1.1 的务实方案。
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -231,14 +231,14 @@ tensor_cast/performance_model/
     ├── operator_key.py                # OperatorKey（OpInvokeInfo → 查询 key 转换）
     ├── query_engine.py                # QueryEngine（精确匹配 + 插值 + 外推）
     ├── storage.py                     # CSV/Parquet IO 后端
-    ├── versioning.py                  # 版本解析与管理（VersionManager）
     └── schemas/                       # OperatorSchema 注册表
         ├── __init__.py                # 通过 importlib 自动发现
         ├── base.py                    # OperatorSchema 抽象基类 + 注册表
-        ├── matmul.py                  # MatMulSchema, GroupedMatMulSchema, QuantBatchMatMulSchema
+        ├── matmul.py                  # MatMulSchema, GroupedMatMulSchema, QuantBatchMatMulSchema, TransposeBatchMatMulSchema
         ├── attention.py               # FusedAttentionSchema
-        ├── moe.py                     # MoeDispatchSchema, MoeCombineSchema
-        ├── communication.py           # AllReduceSchema, AllToAllSchema
+        ├── rope.py                    # InterleaveRopeSchema
+        ├── moe.py                     # MoeDispatchSchema, MoeCombineSchema, MoeGatingSchema
+        ├── communication.py           # AllReduceSchema, AllGatherSchema, AllToAllSchema
         ├── normalization.py           # AddRmsNormSchema
         ├── activation.py              # SwiGluSchema
         ├── quantization.py            # AscendQuantSchema
@@ -298,20 +298,16 @@ class PerfDatabase:
 
     def __init__(
         self,
-        system: str = "atlas_a3_752t_128g",
-        backend: str = "vllm_ascend",
-        version: str = "latest",
-        data_root: Optional[Path] = None,
+        data_path: Union[str, Path],
         writable: bool = False,
-        mapping_yaml: Optional[Path] = None,
     ):
-        self.version_mgr = VersionManager(data_root or self._default_data_root())
-        self.resolved_version, self.data_path = self.version_mgr.resolve(system, backend, version)
+        self.data_path = Path(data_path)
         self.query_engine = QueryEngine()
         self.writable = writable
         self._data_cache: Dict[str, Dict] = {}  # schema_name → nested dict
-        # 从版本对应的 YAML 加载 TensorCast 算子 → Schema 映射（见 4.6 节）
-        self.op_mapping: Dict[str, str] = self._load_op_mapping(mapping_yaml)
+        # 从数据目录中的 metadata.yaml 读取版本信息和 YAML 映射表
+        self.metadata = self._load_metadata()
+        self.op_mapping: Dict[str, str] = self._load_op_mapping()
 
     def lookup(self, key: "OperatorKey") -> Optional[QueryResult]:
         """查询算子性能数据。返回 None 表示无数据。"""
@@ -512,11 +508,11 @@ class EmpiricalPerformanceModel(PerformanceModel):
 **使用示例**：
 ```python
 # 使用 ProfilingPerformanceModel（无物理设备，查预构建数据库）
-db = PerfDatabase(system="atlas_a3_752t_128g", backend="vllm_ascend", version="0.13.0")
+db = PerfDatabase("perf_database/data/atlas_a3_752t_128g/vllm_ascend/v0.13.0")
 perf_model = ProfilingPerformanceModel(device_profile, database=db)
 
 # 使用 EmpiricalPerformanceModel + 持久化缓存（有物理设备）
-cache_db = PerfDatabase(..., writable=True)
+cache_db = PerfDatabase("./my_benchmark_cache", writable=True)
 perf_model = EmpiricalPerformanceModel(device_profile, cache_db=cache_db)
 
 # 后向兼容：不传 cache_db 时与现有行为一致
@@ -598,15 +594,19 @@ class OperatorSchema(ABC):
 | `MatMulSchema` | `matmul` | `MatMulV2` | quant_mode\*, m, n, k | `matmul.csv` |
 | `GroupedMatMulSchema` | `grouped_matmul` | `GroupedMatmul` | quant_mode\*, num_tokens, hidden_size, inter_size, num_experts | `grouped_matmul.csv` |
 | `QuantBatchMatMulSchema` | `quant_batch_matmul` | `QuantBatchMatmulV3` | quant_mode\*, m, n, k | `quant_batch_matmul.csv` |
+| `TransposeBatchMatMulSchema` | `transpose_batch_matmul` | `TransposeBatchMatMul` | batch, m, n, k | `transpose_batch_matmul.csv` |
 | `FusedAttentionSchema` | `fused_attention` | `FusedInferAttentionScore` | batch, query_len, context_len, num_heads, num_kv_heads, head_dim\*, kv_cache_dtype\* | `fused_attention.csv` |
+| `InterleaveRopeSchema` | `interleave_rope` | `InterleaveRope` | num_tokens, num_heads, head_dim | `interleave_rope.csv` |
 | `AddRmsNormSchema` | `add_rms_norm` | `AddRmsNorm` / `InplaceAddRmsNorm` | num_tokens, hidden_size | `add_rms_norm.csv` |
 | `MoeDispatchSchema` | `moe_dispatch` | `MoeDistributeDispatch` | num_tokens, num_experts, hidden_size | `moe_dispatch.csv` |
 | `MoeCombineSchema` | `moe_combine` | `MoeCombine` | num_tokens, num_experts, hidden_size | `moe_combine.csv` |
+| `MoeGatingSchema` | `moe_gating` | `MoeGatingTopK` | num_tokens, num_experts | `moe_gating.csv` |
 | `SwiGluSchema` | `swiglu` | `SwiGlu` / `DequantSwigluQuant` | num_tokens, hidden_size | `swiglu.csv` |
 | `AscendQuantSchema` | `ascend_quant` | `AscendQuantV2` / `DynamicQuant` | num_tokens, hidden_size | `ascend_quant.csv` |
 | `ReshapeAndCacheSchema` | `reshape_and_cache` | `ReshapeAndCacheNdKernel` | num_tokens, num_kv_heads, head_dim | `reshape_and_cache.csv` |
 | `TensorMoveSchema` | `tensor_move` | `TensorMove` | total_bytes | `tensor_move.csv` |
 | `AllReduceSchema` | `all_reduce` | `AllReduce` | num_devices, message_bytes | `all_reduce.csv` |
+| `AllGatherSchema` | `all_gather` | `AllGather` | num_devices, message_bytes | `all_gather.csv` |
 | `AllToAllSchema` | `all_to_all` | `AllToAll` | num_devices, message_bytes | `all_to_all.csv` |
 
 > **注意**：以上为初始参考列表。标 `*` 的维度为离散匹配维度（`interpolatable=False`），其余为可插值维度。具体的 Schema 名称、维度定义和映射关系需根据实际 kernel_details.csv 的内核名称由专家确认和配置。不同 vLLM-Ascend 版本的内核名可能不同，通过版本相关的 YAML 映射表管理。
@@ -616,7 +616,11 @@ class OperatorSchema(ABC):
 # tensor_cast/performance_model/perf_database/schemas/matmul.py
 
 class MatMulSchema(OperatorSchema):
-    """对应硬件内核 MatMulV2（标准稠密矩阵乘）。"""
+    """对应硬件内核 MatMulV2（FP16 标准稠密矩阵乘）。
+
+    注意：量化 linear 算子（static_quant_linear、fp8_linear 等）在硬件上运行为
+    QuantBatchMatmulV3，应使用 QuantBatchMatMulSchema，而非本 Schema。
+    """
 
     @property
     def name(self) -> str:
@@ -625,7 +629,7 @@ class MatMulSchema(OperatorSchema):
     @property
     def dimensions(self) -> List[DimensionSpec]:
         return [
-            DimensionSpec("quant_mode", interpolatable=False),  # 量化模式（fp16/int8/fp8 等），离散匹配
+            DimensionSpec("quant_mode", interpolatable=False),  # fp16（MatMulV2 通常为 FP16）
             DimensionSpec("m", interpolatable=True),             # token 维度，可插值
             DimensionSpec("n", interpolatable=True),             # 模型参数，可插值（跨模型泛化）
             DimensionSpec("k", interpolatable=True),             # 模型参数，可插值（跨模型泛化）
@@ -633,96 +637,82 @@ class MatMulSchema(OperatorSchema):
 
     def extract_shape_from_op(self, op_invoke_info: OpInvokeInfo) -> Dict[str, Any]:
         x, w = op_invoke_info.args[0], op_invoke_info.args[1]
-        quant_mode = self._infer_quant_mode(op_invoke_info)
-        return {"quant_mode": quant_mode, "m": x.shape[0], "k": x.shape[1], "n": w.shape[1]}
-
-    def _infer_quant_mode(self, op_invoke_info: OpInvokeInfo) -> str:
-        """从算子名称或 tensor dtype 推断量化模式。"""
-        func_name = str(op_invoke_info.func)
-        if "fp8" in func_name:
-            return "fp8"
-        elif "static_quant_linear" in func_name or "int4" in func_name:
-            return "int8"
-        elif "mxfp4" in func_name:
-            return "mxfp4"
-        return "fp16"  # 默认半精度
+        return {"quant_mode": "fp16", "m": x.shape[0], "k": x.shape[1], "n": w.shape[1]}
 ```
 
 ### 4.6 TensorCast 算子 → 硬件内核 Schema 映射
 
-TensorCast 仿真侧的算子与 kernel_details.csv 中的硬件内核不是一一对应的关系。同一个 TensorCast 算子根据量化模式和部署配置的不同，可能对应不同的硬件内核。此外，vLLM-Ascend 会将 TensorCast 的多个基础算子融合为单一硬件内核执行。
+映射表解决两个问题：
 
-映射关系通过**版本相关的 YAML 配置**管理，由专家根据实际 kernel_details.csv 的内容人工配置：
+1. **名称翻译**：TensorCast dispatch 的算子名与 Profiling 的硬件内核名不同（如 `aten.mm.default` → `MatMulV2`），需要一张名称映射表将 TensorCast 算子对应到正确的 Schema。
+
+2. **融合粒度不一致**：TensorCast 与 vLLM 的融合 Pass 不完全匹配，可能出现 1:N（TensorCast 一个复合算子对应 Profiling 多个内核）或 N:1（TensorCast 多个基础算子对应 Profiling 一个融合内核）的情况。
+
+**本方案对融合粒度的处理前提**：假设主要算子的融合 Pass 已通过前置人工适配工作内化到 TensorCast 中，使 TensorCast dispatch trace 与 vLLM Profiling 的内核列表在关键算子上基本 1:1 对齐。在此前提下，映射表只需处理简单的名称翻译，无需在查询层做复杂的 1:N 分解。对于少量仍存在 N:1 不匹配的场景（TensorCast 未融合但硬件已融合），通过 `fused_kernel_mappings` 机制处理。
+
+> **关于前置适配工作**：TensorCast 当前存在若干算子粒度与 Profiling 不匹配的情况（如 `multihead_latent_attention` 将 TransposeBatchMatMul × 2 + FusedInferAttentionScore 封装为单一 dispatch 节点）。这些需要通过新增 custom op 或调整编译 Pass 等方式逐一对齐。此项工作独立于本设计方案，详见第 9.1 节。
+
+#### 映射表格式
+
+映射关系通过**版本相关的 YAML 配置**管理，由专家根据实际 kernel_details.csv 的内容配置。不同 vLLM-Ascend 版本的映射可能不同。
+
+**`tensorcast_op_to_schema`**：每个 TensorCast 算子映射到一个硬件内核 Schema（1:1）。同类算子的不同量化变体可能映射到不同的硬件内核（如 `aten.mm` → `matmul`，`static_quant_linear` → `quant_batch_matmul`）。
+
+**`fused_kernel_mappings`**：处理 TensorCast 未融合但硬件已融合的 N:1 场景。两种模式：
+- **`replaces`**：融合内核有独立 Schema 和实测数据，直接替换对应 TensorCast 算子的耗时（如 `DequantSwigluQuant` 替换 `silu` + `mul`）
+- **`components`**：融合内核无独立 Schema，拆解为基础算子耗时之和进行估算
 
 ```yaml
 # perf_database/mappings/vllm_ascend/v0.13.yaml
 version: "0.13"
 device: ATLAS_800_A3_752T_128G_DIE
 
-# ============================================================
-# TensorCast 算子 → 硬件内核 Schema 映射
-# ============================================================
-# 说明：
-# - 每个 TensorCast 算子映射到一个硬件内核 Schema（对应 kernel_details.csv 中的内核类型）
-# - 同类算子的不同量化变体可能映射到不同的硬件内核
-# - 此映射表需根据实际 kernel_details.csv 由专家确认
-# - 不同 vLLM-Ascend 版本的映射可能不同
-#
-# 格式：
-#   "TensorCast 算子名": schema_name
-# ============================================================
-
-[COMMENT:] 这里的 mxfp4_linear 是否会在 MatMul 之前包含量化、反量化等操作？如何用一个算子进行 profiling 呢？请分析思考这个问题（可以搜索 Pytorch Aten 算子和 Pytorch 下发模式）。如果确定能 map 就没事，否则的话请思考如何修改设计，或者在下方标注成遗留问题让算子专家分析。
-
 tensorcast_op_to_schema:
-  # Linear / GEMM 类
-  "aten.mm.default": matmul                              # → MatMulV2
-  "tensor_cast.static_quant_linear.default": matmul      # → MatMulV2 (INT8)
-  "tensor_cast.static_quant_linear_int4.default": matmul # → MatMulV2 (INT4)
-  "tensor_cast.fp8_linear.default": matmul               # → MatMulV2 (FP8)
-  "tensor_cast.mxfp4_linear.default": matmul             # → MatMulV2 (MXFP4)
+  # GEMM
+  "aten.mm.default": matmul                                         # MatMulV2
+  "tensor_cast.static_quant_linear.default": quant_batch_matmul     # QuantBatchMatmulV3 (INT8)
+  "tensor_cast.static_quant_linear_int4.default": quant_batch_matmul
+  "tensor_cast.fp8_linear.default": quant_batch_matmul              # QuantBatchMatmulV3 (FP8)
+  "tensor_cast.mxfp4_linear.default": quant_batch_matmul            # QuantBatchMatmulV3 (MXFP4)
 
-  # Grouped MatMul（MoE 专家计算）
-  "tensor_cast.grouped_matmul.default": grouped_matmul            # → GroupedMatmul
-  "tensor_cast.grouped_matmul_quant.default": grouped_matmul      # → GroupedMatmul (INT8)
-  "tensor_cast.grouped_matmul_fp8.default": grouped_matmul        # → GroupedMatmul (FP8)
+  # Grouped MatMul (MoE)
+  "tensor_cast.grouped_matmul.default": grouped_matmul
+  "tensor_cast.grouped_matmul_quant.default": grouped_matmul
+  "tensor_cast.grouped_matmul_fp8.default": grouped_matmul
 
   # Attention
-  "tensor_cast.attention.default": fused_attention                 # → FusedInferAttentionScore
-  "tensor_cast.attention_quant.default": fused_attention           # → FusedInferAttentionScore
-  "tensor_cast.multihead_latent_attention.default": fused_attention  # → FusedInferAttentionScore (MLA)
+  "tensor_cast.attention.default": fused_attention                  # FusedInferAttentionScore
+  "tensor_cast.attention_quant.default": fused_attention
+  "tensor_cast.multihead_latent_attention.default": fused_attention # MLA（待前置适配拆分）
   "tensor_cast.multihead_latent_attention_quant.default": fused_attention
 
+  # RoPE
+  "tensor_cast.apply_rope.default": interleave_rope                 # InterleaveRope
+
   # MoE 路由
-  "tensor_cast.permute_tokens.default": moe_dispatch     # → MoeDistributeDispatch
-  "tensor_cast.unpermute_tokens.default": moe_combine     # → MoeCombine
+  "tensor_cast.permute_tokens.default": moe_dispatch                # MoeDistributeDispatch
+  "tensor_cast.unpermute_tokens.default": moe_combine               # MoeCombine
+  "aten.topk.default": moe_gating                                   # MoeGatingTopK
 
   # Communication
-  "tensor_cast.all_reduce.default": all_reduce            # → AllReduce
-  "tensor_cast.all_gather.default": all_reduce            # → AllReduce (相同内核)
-  "tensor_cast.all_to_all.default": all_to_all            # → AllToAll
+  "tensor_cast.all_reduce.default": all_reduce
+  "tensor_cast.all_gather.default": all_gather
+  "tensor_cast.all_to_all.default": all_to_all
+
+  # 量化（linear 前的输入量化，独立 dispatch）
+  "tensor_cast.quantize.default": ascend_quant                      # AscendQuantV2
+  "tensor_cast.dynamic_quantize_symmetric.default": ascend_quant
+  "tensor_cast.dynamic_quantize_asymmetric.default": ascend_quant
+  "tensor_cast.dynamic_quantize_mxfp4.default": ascend_quant
 
   # Cache
-  "tensor_cast.reshape_and_cache.default": reshape_and_cache  # → ReshapeAndCacheNdKernel
-
-# ============================================================
-# 融合内核映射
-# ============================================================
-# vLLM-Ascend 会将 TensorCast 的多个基础算子融合为单一硬件内核。
-# 处理方式：
-#   - replaces: 融合内核直接有 Schema，替换基础算子的耗时
-#   - components: 无独立 Schema，拆解为基础算子耗时之和
-[COMMENT:] Tensorcast 里面已经有融合算子注册流程，请分析是否可以和这里结合 （tensor_cast/compilation）
-#
-# 示例：TensorCast 仿真产生 add + rms_norm 两个算子，
-#       但实际硬件上是 AddRmsNorm 融合内核。
-#       ProfilingPerformanceModel 查到 add_rms_norm Schema 后，
-#       将两个算子的耗时合并为融合内核的实测值。
+  "tensor_cast.reshape_and_cache.default": reshape_and_cache
 
 fused_kernel_mappings:
+  # replaces: 用融合内核的实测数据替换基础算子耗时
   AddRmsNorm:
     schema: add_rms_norm
-    replaces:                    # 替换以下 TensorCast 算子的耗时
+    replaces:
       - "tensor_cast.add_rms_norm.default"
       - "tensor_cast.add_rms_norm_quant.default"
       - "tensor_cast.add_rms_norm_dynamic_quant_symmetric.default"
@@ -731,11 +721,14 @@ fused_kernel_mappings:
     replaces:
       - "aten.silu.default"
       - "aten.mul.Tensor"
+  # components: 无独立 Schema，拆解为基础算子耗时之和
   split_qkv_rmsnorm_rope_kernel:
-    components: [rms_norm, qkv_split, apply_rope]  # 无独立 Schema，拆解估算
+    components: [rms_norm, qkv_split, apply_rope]
+  KvRmsNormRopeCache:
+    components: [rms_norm, interleave_rope, reshape_and_cache]
 ```
 
-> **注意**：以上映射为示例，具体映射关系需根据实际 kernel_details.csv 的内核名称和 Shape 分析由专家配置。不同版本的 vLLM-Ascend 映射表会不同（如 v0.14 新增了 MatMul-AllReduce-RMSNorm 融合 Pass）。
+> **注意**：以上映射为初始示例。具体映射关系需根据实际 kernel_details.csv 由专家配置，不同版本的 vLLM-Ascend 映射表会不同（如 v0.14 新增了 MatMul-AllReduce-RMSNorm 融合 Pass）。
 
 ### 4.7 QueryEngine（精确匹配 + 插值）
 
@@ -833,7 +826,7 @@ class Runtime(TorchDispatchMode):
 # 在 model_runner.py 或 config_resolver.py 中，根据用户 CLI 选择创建不同的 PerformanceModel：
 
 # 方式 1: ProfilingPerformanceModel（查预构建数据库，无需物理设备）
-db = PerfDatabase(system="atlas_a3_752t_128g", backend="vllm_ascend", version="0.13.0")
+db = PerfDatabase("perf_database/data/atlas_a3_752t_128g/vllm_ascend/v0.13.0")
 perf_model = ProfilingPerformanceModel(device_profile, database=db)
 
 # 方式 2: EmpiricalPerformanceModel（JIT benchmark，需物理设备）
@@ -848,36 +841,37 @@ runtime = Runtime(perf_models=perf_model, device_profile=device_profile)
 
 ### 5.2 CLI 接口
 
-[COMMENT:] 这里的 database-version 要是否需要和前面提到的 system="atlas_a3_752t_128g", backend="vllm_ascend", version="0.13.0" 匹配？还是只用给个数据库地址就行？
-
 在 `tensor_cast/scripts/text_generate.py` 中新增参数：
 
 ```python
 parser.add_argument("--performance-model",
                     choices=["analytic", "profiling", "empirical"],
                     default="analytic", help="性能模型类型")
-parser.add_argument("--database-version", type=str, default="latest",
-                    help="性能数据库版本号（profiling / empirical 模式生效）")
+parser.add_argument("--perf-database", type=str, default=None,
+                    help="性能数据库路径（profiling / empirical 模式生效），"
+                         "指向包含 metadata.yaml 和 CSV 数据文件的目录，"
+                         "如 perf_database/data/atlas_a3_752t_128g/vllm_ascend/v0.13.0/")
 ```
+
+> **设计说明**：使用 `--perf-database <path>` 直接指向数据目录，而非 `--database-version` + 内部路径解析。这样更简洁灵活：用户无需了解 `(system, backend, version)` 三元组的内部约定，直接指定包含 CSV 数据的目录即可。`PerfDatabase` 从目录中的 `metadata.yaml` 读取版本信息和 YAML 映射表路径。
 
 | CLI 选项 | 创建的 PerformanceModel | 是否需要物理设备 | 是否需要数据库 |
 |---------|------------------------|----------------|-------------|
 | `--performance-model analytic` | `AnalyticPerformanceModel` | 否 | 否 |
-| `--performance-model profiling` | `ProfilingPerformanceModel` | 否 | 是 |
-| `--performance-model empirical` | `EmpiricalPerformanceModel` | 是 | 可选（缓存） |
+| `--performance-model profiling` | `ProfilingPerformanceModel` | 否 | 是（`--perf-database`） |
+| `--performance-model empirical` | `EmpiricalPerformanceModel` | 是 | 可选（`--perf-database` 作缓存） |
 
 ### 5.3 数据流（以 ProfilingPerformanceModel 为例）
-[COMMENT:]这里给的 database-version 不如直接给一个 database location 绝对/相对路径
 ```
 用户 CLI                     TensorCast                    数据库
 ────────                     ──────────                    ──────
 text_generate.py
   --performance-model profiling
-  --database-version 0.13.0
+  --perf-database ./perf_database/data/atlas_a3/.../v0.13.0/
        │
        ▼
   创建 ProfilingPerformanceModel
-  + PerfDatabase(version="0.13.0")
+  + PerfDatabase(data_path="./perf_database/data/.../v0.13.0/")
        │
        ▼
   Runtime.__torch_dispatch__
@@ -1060,27 +1054,47 @@ def discover_operators(profiling_output: Path, mapping_yaml: Path) -> Dict:
 
 | 层级 | 判定标准 | 处理方式 | 算子数量 |
 |-----|---------|---------|---------|
-| **Tier 1** | 执行耗时占比 >2% | 必须使用完整 Shape 网格进行 Profiling | 约 11 个 |
-| **Tier 2** | 执行耗时占比 0.5-2% | 使用精简 Shape 网格进行 Profiling | 约 8 个 |
+| **Tier 1** | 执行耗时占比 >2% | 必须使用完整 Shape 网格进行 Profiling | 约 13 个 |
+| **Tier 2** | 执行耗时占比 0.5-2% | 使用精简 Shape 网格进行 Profiling | 约 10 个 |
 | **Tier 3** | 执行耗时占比 <0.5% | 采用 Roofline 兜底估算 | 60+ 个 |
 
 ### 7.2 Tier 1 完整算子列表
 
+> **数据来源**：以下占比均基于 kernel_details.csv 的全量内核耗时（包含通信内核）。
+> - **Qwen3-30B**：Prefill 模式，16卡，通信占 89.8%，计算内核占比相应偏小
+> - **DeepSeekV3**：Decode 模式，32卡，计算/通信比例更均衡
+>
+> 某内核在任一模型中超过 2% 即列入 Tier 1。
+
 | VLLM 内核名称 | 数据库 Schema | Qwen3 占比 | DSV3 占比 |
 |-------------|-------------|-----------|---------|
-| MatMulV2 | `matmul` | 42.4% | - |
-| GroupedMatmul | `grouped_matmul` | - | 20.9% |
-| QuantBatchMatmulV3 | `quant_batch_matmul` | - | 16.9% |
-| FusedInferAttentionScore | `fused_attention` | 18.2% | 18.5% |
-| TensorMove | `tensor_move` | 10.7% | ~3% |
-| AddRmsNorm / InplaceAddRmsNorm | `add_rms_norm` | 8.0% | 2.0% |
-| split_qkv_rmsnorm_rope_kernel | 融合拆解（见 4.6 节） | 5.2% | - |
-| SwiGlu / DequantSwigluQuant | `swiglu` | 4.8% | 2.7% |
-| ReshapeAndCacheNdKernel | `reshape_and_cache` | 3.3% | - |
-| MoeDistributeDispatch / MoeCombine | `moe_dispatch` / `moe_combine` | - | 11.8% |
-| AscendQuantV2 / DynamicQuant | `ascend_quant` | - | 5.5% |
-| TransposeBatchMatMul | `matmul` | - | 4.2% |
-| InterleaveRope | 暂无独立 Schema（Tier 2 候选） | - | 2.8% |
+| hcom_allReduce\_ | `all_reduce` | **89.8%** | 8.1% |
+| GroupedMatmul | `grouped_matmul` | - | **18.7%** |
+| QuantBatchMatmulV3 | `quant_batch_matmul` | - | **18.3%** |
+| FusedInferAttentionScore | `fused_attention` | 1.7% | **16.5%** |
+| MoeDistributeDispatchV2 | `moe_dispatch` | - | **7.0%** |
+| MatMulV2 | `matmul` | **4.1%** | 0.5% |
+| AscendQuantV2 / DynamicQuant | `ascend_quant` | - | **3.9%** |
+| TransposeBatchMatMul | `transpose_batch_matmul` | - | **3.8%** |
+| MoeDistributeCombineV2 | `moe_combine` | - | **3.6%** |
+| InterleaveRope | `interleave_rope` | - | **2.5%** |
+| DequantSwigluQuant / SwiGlu | `swiglu` | 0.5% | **2.4%** |
+| InplaceAddRmsNorm / AddRmsNorm | `add_rms_norm` | 0.8% | 1.8% |
+| HcomAllGather | `all_gather` | 0.6% | 1.7% |
+
+**Tier 2 参考列表**（0.5-2%）：
+
+| VLLM 内核名称 | 数据库 Schema | Qwen3 占比 | DSV3 占比 |
+|-------------|-------------|-----------|---------|
+| MatMul（MLA latent proj） | `matmul` | - | 1.3% |
+| MoeGatingTopK | `moe_gating` | - | 1.1% |
+| TensorMove | `tensor_move` | 1.0% | 0.1% |
+| RmsNorm | Roofline 兜底 | <0.1% | 0.9% |
+| KvRmsNormRopeCache | 融合拆解（见 4.6 节） | - | 0.8% |
+| Transpose | Roofline 兜底 | - | 0.8% |
+| split\_qkv\_rmsnorm\_rope\_kernel | 融合拆解（见 4.6 节） | 0.5% | - |
+| ReshapeAndCacheNdKernel | `reshape_and_cache` | 0.3% | - |
+| SwiGlu | `swiglu` | 0.5% | - |
 
 ### 7.3 Shape 网格策略
 
@@ -1108,6 +1122,8 @@ PRIORITY_MODELS = [
 - **六壬工具团队**：TensorCast 内部接口（ProfilingPerformanceModel、EmpiricalPerformanceModel 增强、OperatorSchema、CLI 集成）
 - **小巧灵团队**：PerfDatabase 共享数据层和数据采集流水线（perf_database/、QueryEngine、CSV 数据生成、VLLM Profiling 脚本）
 
+**前置依赖**：TensorCast 算子追踪对齐（详见第 9.1 节），需在阶段三集成测试前完成，可与本方案开发并行推进。
+
 **关键接口约定**：两组团队需共同定义以下接口，确保数据采集和查询无缝对接：
 - **OperatorSchema 维度定义**：每个 Schema 的维度名称、类型（可插值/离散）和取值范围，需根据实际 kernel_details.csv 的数据由两组团队联合确认
 - **YAML 映射表**：TensorCast 算子 → 硬件内核 Schema 映射（见 4.6 节），由小巧灵团队根据 Profiling 结果编写，六壬团队验证
@@ -1128,7 +1144,7 @@ PRIORITY_MODELS = [
 **小巧灵团队**：
 - 设计 CSV 数据格式规范，编写示例数据文件
 - 实现 `PerfDatabase`（CSV 加载、嵌套字典构建、`lookup()` / `store()` / `save()` 接口）（~400 行）
-- 实现精确匹配查询和 `VersionManager`（~200 行）
+- 实现精确匹配查询（~200 行）
 
 ### 阶段二：插值引擎与数据采集（2 周，~2000 行）
 
@@ -1175,9 +1191,21 @@ PRIORITY_MODELS = [
 
 ---
 
-## 9. 建议与 Future Work
+## 9. 外部依赖与扩展建议
 
-### 9.1 CompositePerformanceModel 顶层调度器
+### 9.1 前置依赖：TensorCast 算子追踪对齐
+
+本方案假设 TensorCast dispatch trace 与 vLLM Profiling 的内核列表在关键算子上基本 1:1 对齐（见 4.6 节）。当前存在若干不匹配项需通过前置适配工作解决：
+
+| 不匹配项 | 现状 | 所需适配 |
+|---------|------|---------|
+| `multihead_latent_attention` | 单一 dispatch 节点，包含 TransposeBatchMatMul × 2 + FusedInferAttentionScore | 拆分为独立 dispatch 算子 |
+| `aten.topk` / MoeGatingTopK | aten.topk 在非 MoE 场景也被调用 | 区分 MoE 路由 topk 和采样 topk |
+| 其他潜在差异 | 需逐模型比对确认 | 逐一人工适配 |
+
+**建议方式**：以 DeepSeek-V3 和 Qwen3-32B 的 kernel_details.csv 为基准，导出 TensorCast dispatch trace 逐一比对，通过新增 custom op、调整编译 Pass 或拆分复合算子等方式消除差异。工具团队可考虑提供基于配置的通用优化 Pass 机制以降低人工适配成本，但该机制不在本方案讨论范畴内。
+
+### 9.2 CompositePerformanceModel 顶层调度器
 
 当前方案中 `ProfilingPerformanceModel` 对未收录算子内部兜底回退至 `AnalyticPerformanceModel`，这是 v1.1 的务实做法。长期来看，建议在 TensorCast 框架层面设计一个 `CompositePerformanceModel`：
 
@@ -1204,7 +1232,7 @@ class CompositePerformanceModel(PerformanceModel):
 
 **使用方式**：
 ```python
-db = PerfDatabase(system="atlas_a3_752t_128g", backend="vllm_ascend", version="0.13.0")
+db = PerfDatabase("perf_database/data/atlas_a3_752t_128g/vllm_ascend/v0.13.0")
 composite = CompositePerformanceModel([
     ProfilingPerformanceModel(device_profile, database=db),
     EmpiricalPerformanceModel(device_profile),
@@ -1215,7 +1243,7 @@ runtime = Runtime(perf_models=composite, device_profile=device_profile)
 
 引入 `CompositePerformanceModel` 后，`ProfilingPerformanceModel` 不再需要内部持有 `fallback_model` 引用，三种模型完全解耦，fallback 逻辑统一由 Composite 层管理。
 
-### 9.2 其他 Future Work
+### 9.3 其他扩展建议
 
 - **跨硬件泛化**：支持更多 DeviceProfile（如 Atlas A2、GPU），需为每种硬件独立采集数据
 - **自动化 CI**：随 VLLM-Ascend / CANN 版本发布自动触发数据采集流水线
@@ -1332,30 +1360,74 @@ class DatabasePerformanceModel(EmpiricalPerformanceModel):
 | **生命周期** | Runtime 退出即丢弃 | 可保存到磁盘，跨运行复用 |
 
 
-### 附录3：Schema 设计
-
 ---
 
 ## Change Log
 
 ### v1.0 → v1.1（2026 年 2 月）
 
-| 变更项 | 详细说明 |
-|-------|---------|
-| **新增第 1 节：功能概述** | 明确目标、核心功能、范围界定（做什么/不做什么） |
-| **架构方案调整：三模型并列** | 从 v1.0 的 DataSource 抽象层（在 EmpiricalPerformanceModel 内部组合多种数据源）调整为三个独立的 PerformanceModel 子类并列：`ProfilingPerformanceModel`（新增，查数据库）、`EmpiricalPerformanceModel`（现有，JIT benchmark）、`AnalyticPerformanceModel`（现有，Roofline）|
-| **新增 ProfilingPerformanceModel** | 独立的 PerformanceModel 子类，只读查询 PerfDatabase，未命中时内部 fallback 至 AnalyticPerformanceModel |
-| **新增 PerfDatabase 共享数据层** | 抽取为 `ProfilingPerformanceModel`（只读）和 `EmpiricalPerformanceModel`（读写缓存）共享的数据层，支持 `lookup()` / `store()` / `save()` 接口 |
-| **新增 OperatorKey** | 封装 `OpInvokeInfo` → schematized 查询 key 的共享转换逻辑，区别于 CachingPerformanceModel 的 SHA256 session 级缓存 |
-| **EmpiricalPerformanceModel 增强** | 可选接入 `PerfDatabase` 作为跨 session 持久化缓存（`cache_db` 参数），默认行为不变（后向兼容） |
-| **模块目录调整** | 共享数据层移至 `tensor_cast/performance_model/perf_database/`；`ProfilingPerformanceModel` 作为 `profiling.py` 与 `analytic.py`、`empirical.py` 并列；数据采集流水线位于顶层 `perf_database/` |
-| **OperatorSchema 对齐硬件内核** | Schema 粒度与 kernel_details.csv 硬件内核类型一一对应（~13 个 Schema），而非与 TensorCast 抽象算子对齐；TensorCast 算子 → Schema 映射通过版本相关的 YAML 配置管理（`perf_database/mappings/`）；新增融合内核处理机制（`replaces` 直接替换 vs `components` 拆解估算） |
-| **离散维度设计** | 新增 `quant_mode` 作为 GEMM/Attention 等 Schema 的离散匹配维度，`kv_cache_dtype` 和 `head_dim` 作为 Attention Schema 的离散维度；不追踪 stride/layout（TensorCast 不感知）；BF16/FP16 统一为 `fp16`（参考 AI Configurator） |
-| **OperatorKey 使用 YAML 映射** | `OperatorKey.from_op_invoke_info()` 接收 `op_mapping` 参数（来自 PerfDatabase 加载的 YAML），替代原有的 `OperatorSchema.get_schema_for_op()` 静态注册方式 |
-| **QueryEngine 简化** | 仅处理实测数据（精确/插值/外推），不在 QueryEngine 内做 Roofline；未收录算子的 Roofline 兜底由 `ProfilingPerformanceModel` 的 `fallback_model` 处理 |
-| **CLI 更新** | 新增 `--performance-model` 参数（`analytic` / `profiling` / `empirical` 三选一），`--database-version` 参数 |
-| **版本信息核实** | 基于 vLLM-Ascend 官方发布说明和 GitHub Releases 核实版本影响分析 |
-| **数据库构建多策略** | 新增方案 B（仿真驱动 + 微基准测试）和方案 C（纯 Profiling 导入） |
-| **新增第 9 节：建议与 Future Work** | CompositePerformanceModel 顶层调度器设计建议（引入后可消除各 Model 内部的 fallback 逻辑）、跨硬件泛化、CI 自动化等 |
-| **新增附录2** | 架构设计分析：三种方案对比、缓存与数据库耦合分析、命名决策 |
-| **开发计划更新** | 明确两组团队分工、Q3 倒排时间线、代码量估计 |
+#### 文档结构变更
+
+| v1.0 | v1.1 | 变更说明 |
+|------|------|---------|
+| — | **第 1 节：功能概述** | 新增。明确目标、核心功能清单、不在范围内的功能、初期目标（模型/硬件/精度/时间） |
+| 第 1 节：技术分析 | 第 2 节：技术分析 | 新增 2.3 版本影响分析（vLLM-Ascend 版本核实）、2.4 现有基础设施分析、2.5 AI Configurator 参考 |
+| 第 2 节：系统架构 | 第 3 节：系统架构 | 架构图重绘为三模型并列 + 共享数据层；数据采集新增方案 B/C |
+| 第 3 节：核心模块设计 | 第 4 节：核心模块设计 | 大幅重构（见下方详细变更） |
+| 第 4 节：接口设计 | 第 5 节：TensorCast 集成接口 | CLI 参数从 `--data-source` 改为 `--performance-model` + `--perf-database` |
+| 第 5 节：Profiling 流水线 | 第 6 节：自动化 Profiling 流水线 | 新增数据库构建多策略（方案 A/B/C） |
+| 第 6 节：算子覆盖策略 | 第 7 节：全面算子覆盖策略 | Schema 列更新为硬件内核对齐名称 |
+| 第 7 节：开发计划 | 第 8 节：开发计划 | 从 5 阶段改为 4 阶段 + 两组团队分工；新增关键接口约定 |
+| — | **第 9 节：外部依赖与扩展建议** | 新增。算子追踪对齐（前置依赖）、CompositePerformanceModel 设计建议、跨硬件泛化、CI、能耗建模 |
+| — | **附录1：讨论会议纪要** | 新增 |
+| — | **附录2：架构设计分析** | 新增。三种方案对比（合并/分开/继承）、缓存与数据库耦合分析 |
+
+#### 架构与设计变更
+
+| 变更项 | v1.0 | v1.1 |
+|-------|------|------|
+| **PerformanceModel 架构** | 仅新增 `ProfilingPerformanceModel`，内部含 PerfDatabase + QueryEngine（含 Roofline 兜底） | 三个独立 PerformanceModel 并列：`ProfilingPerformanceModel`（新增）、`EmpiricalPerformanceModel`（增强）、`AnalyticPerformanceModel`（现有）；Roofline 兜底从 QueryEngine 移至 Model 层 |
+| **PerfDatabase 定位** | `tensor_cast/perf_database/` 独立包，仅供 ProfilingPerformanceModel 使用 | `tensor_cast/performance_model/perf_database/` 共享数据层，供 Profiling（只读）和 Empirical（读写缓存）共用 |
+| **EmpiricalPerformanceModel** | 不涉及（仅保持现有 JIT benchmark） | 增强：可选接入 `PerfDatabase` 作为跨 session 持久化缓存（`cache_db` 参数），后向兼容 |
+| **OperatorKey** | 无独立概念（Schema 内部处理） | 新增共享 `OperatorKey` dataclass，封装 `OpInvokeInfo` → 查询 key 转换逻辑 |
+| **OperatorSchema 粒度** | 按抽象算子类型（~8 类：gemm、attention、moe、communication、normalization、fused、elementwise） | 按 kernel_details.csv 硬件内核类型（~13 个 Schema：matmul、grouped_matmul、fused_attention 等），YAML 映射表管理 TensorCast 算子→Schema 对应关系 |
+| **DimensionSpec** | `DimensionType` 枚举（BATCH、SEQUENCE、FEATURE、EXPERT） | 二值 `interpolatable: bool`（可插值 vs 离散匹配），更简洁灵活 |
+| **离散维度** | 未明确设计 | 系统性分析：`quant_mode`（离散）、`kv_cache_dtype`（Attention）、`head_dim`（Attention）；不追踪 stride/layout；BF16/FP16 统一为 fp16 |
+| **融合算子处理** | YAML 映射中标记 `is_fused: true` | 区分 `replaces`（硬件融合替换基础算子耗时）vs `components`（拆解为基础算子之和）；与 TensorCast 编译 Pass 互补 |
+| **QueryEngine** | 含 4 级降级策略（精确→插值→外推→Roofline） | 仅 3 级（精确→插值→外推），Roofline 由 `fallback_model` 处理 |
+| **CLI 参数** | `--data-source profiling\|microbench\|auto` | `--performance-model analytic\|profiling\|empirical` + `--perf-database <path>` |
+| **PerfDatabase 初始化** | `PerfDatabase(system, backend, version)` 三元组 | `PerfDatabase(data_path)` 路径直传，从 `metadata.yaml` 读取元信息 |
+| **数据格式** | Parquet 为主，CSV 可选 | CSV 为主（Git-friendly），Parquet 可选 |
+| **数据采集策略** | 仅 Level 1 + Level 2 两级采集 | 新增三种构建方案：A（全模型 Profiling + 微基准）、B（仿真驱动 + 微基准）、C（纯 Profiling 导入） |
+| **量化算子映射** | 未详细分析 | 分析了 `mxfp4_linear` 等融合 linear 算子的 dispatch 机制：量化算子（`dynamic_quantize_*`）和 linear 算子在 dispatch trace 中是独立的，分别映射到不同 Schema |
+| **模块目录** | 全部在 `tensor_cast/perf_database/` 单一包内（含 operators/、shape_generators/、interpolation/、scripts/） | 拆分为 TensorCast 内部模块（`tensor_cast/performance_model/perf_database/`）+ 独立数据采集子系统（`perf_database/`） |
+| **开发计划** | 5 阶段单团队 | 4 阶段 + 两组团队分工（六壬工具团队 + 小巧灵团队），含关键接口约定和代码量估计 |
+| **算子追踪对齐** | 未涉及（假设 TensorCast 算子与 Profiling 内核直接对应） | 列为外部依赖（第 9.1 节）：要求 TensorCast dispatch trace 与 Profiling 内核列表对齐，YAML 映射保持 1:1 |
+
+
+#### Profiling 数据验证更新（2026 年 2 月）
+
+基于 DeepSeekV3 decode（86840 条 kernel 记录，3430.8 ms）和 Qwen3-30B PD-together（1505 条记录，212.1 ms）的 kernel_details.csv 实测数据，对设计文档进行了以下修正：
+
+| 变更项 | 修正前 | 修正后 | 原因 |
+|-------|-------|-------|------|
+| **量化 linear 映射** | `static_quant_linear` → `matmul` (MatMulV2) | `static_quant_linear` → `quant_batch_matmul` (QuantBatchMatmulV3) | Profiling 实测：INT8 量化矩阵乘在硬件上运行为 QuantBatchMatmulV3（占 DSV3 18.3%），非 MatMulV2 |
+| **TransposeBatchMatMul** | 归入 `matmul` Schema | 新增 `transpose_batch_matmul` 独立 Schema | 3D batch matmul（MLA latent projection），占 DSV3 3.8%，与 2D MatMulV2 的 Shape 和内核完全不同 |
+| **InterleaveRope** | Tier 2 候选，暂无 Schema | 提升为 Tier 1，新增 `interleave_rope` Schema | 占 DSV3 2.5%，超过 Tier 1 的 2% 门槛 |
+| **MoeGatingTopK** | 未提及 | 新增 `moe_gating` Schema（Tier 2） | 占 DSV3 1.1%，MoE 路由的独立内核 |
+| **KvRmsNormRopeCache** | 未提及 | 新增 fused_kernel_mapping（components 拆解） | 占 DSV3 0.8%，融合 RmsNorm + RoPE + KV Cache |
+| **AllGather 映射** | 映射到 `all_reduce`（标注"相同内核"） | 新增 `all_gather` 独立 Schema | AllGather 和 AllReduce 是不同通信操作，性能特征不同 |
+| **Tier 1 百分比口径** | Qwen3 用 op_statistic.csv（排除通信），DSV3 用 kernel_details.csv | 统一使用 kernel_details.csv（含通信） | 统一统计口径；新增 Tier 2 参考列表 |
+| **Schema 总数** | ~13 个 | ~17 个 | 新增 TransposeBatchMatMul、InterleaveRope、MoeGating、AllGather 四个 Schema |
+| **VersionManager** | 文件列表和开发计划中存在引用 | 删除（PerfDatabase 采用路径驱动 API） | PerfDatabase 已改为 `data_path` 直传，不再需要版本解析 |
+| **算子追踪对齐** | 未提及（MLA TransposeBatchMatMul 无法映射） | 列为外部依赖（第 9.1 节），从源头对齐算子粒度 | 避免在数据库查询层做 1:N 分解，YAML 映射保持 1:1 |
+
+## 遗留问题
+
+1. ~~量化+Matmul+反量化算子在 TensorCast 里面是分别 dispatch 的，在 vLLM 里面是怎么搞的？~~ **已解决**：TensorCast 每个量化 linear 恰好 dispatch 2 个 op（quantize + quant_linear），无独立 dequantize。硬件侧同样：AscendQuantV2/DynamicQuant + QuantBatchMatmulV3，反量化融合在 QuantBatchMatmulV3 内部。YAML 映射已正确覆盖。
+
+2. ~~数据库应该直接存路径还是按照 system/backend/version 来读写？~~ **已解决**：采用路径驱动 API，删除 VersionManager
+
+3. ~~`InterleaveRope`、`MoeGatingTopK` 的 TensorCast 算子映射~~ **已解决**：InterleaveRope → `tensor_cast.apply_rope.default`；MoeGatingTopK → `aten.topk.default`（TensorCast 无专用 op，使用标准 aten）
+
+4. ~~`TransposeBatchMatMul` 在 Profiling 中的角色和 TensorCast 映射~~ **已解决（方案确定）**：TransposeBatchMatMul 100% 出现在 MLA 中，每层 2 次（absorbed key projection: q_nope @ W_UK_T，value uncompression: attn_out @ W_UV），占 DSV3 总耗时 3.8%。当前 TensorCast 的 `multihead_latent_attention` 是单一 custom op，内部 batch matmul 不会被单独 dispatch。解决方案：**不在数据库查询层做 1:N 分解**，而是作为"算子追踪对齐"前置工作的一部分，由六壬团队修改 TensorCast 编译 Pass / Runtime，将 MLA 拆分为独立的 dispatch 算子（TransposeBatchMatMul × 2 + FusedInferAttentionScore 等），使 dispatch trace 直接对齐 Profiling 内核列表。YAML 映射保持简单的 1:1 关系。详见 4.6 节和第 9.1 节。
