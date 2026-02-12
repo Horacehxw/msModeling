@@ -38,7 +38,7 @@
 - **目标硬件**：Atlas 800 A3（752T，128G DIE）
 - **目标后端**：vllm-0.13.0 (内部镜像)
 - **精度目标**：端到端仿真误差 <15%（对比实际 VLLM Profiling）
-- **交付时间**：Q3（2026.3.20）完全跑通并完成初始数据采集和集成测试
+- **交付时间**：Q1（2026.3.20）完全跑通并完成初始数据采集和集成测试
 
 ---
 
@@ -64,6 +64,8 @@ TensorCast 当前采用**基于 Roofline 的解析模型**（`AnalyticPerformanc
 ### 2.2 Profiling 数据分析
 
 基于实际昇腾 Profiler 输出（`kernel_details.csv`、`op_statistic.csv`）：
+
+> **注意**：以下占比仅统计**计算内核**，不含通信内核（如 AllReduce）。与第 7.2 节包含通信的全量内核占比不同。
 
 **Qwen3-32B（共 41 个独立算子）**：
 | 核心算子 | 耗时占比 | 核心类型 |
@@ -258,6 +260,7 @@ class PerfDatabase:
 
     职责：
     - 按 data_path 定位数据目录，从 metadata.yaml 读取版本信息和 YAML 映射表路径
+      metadata.yaml 包含 device、backend、version、mapping_yaml（指向 YAML 映射表的路径）、collection_date 等字段
     - 延迟加载并缓存算子性能数据（CSV/Parquet）
     - 提供 lookup() / store() / save() 接口
     - 委托 QueryEngine 执行查询（精确匹配 + 插值）
@@ -278,6 +281,10 @@ class PerfDatabase:
         self.query_engine = QueryEngine()
         self.writable = writable
         self._data_cache: Dict[str, Dict] = {}  # schema_name → nested dict
+        # writable=True 时若 data_path 不存在或无 metadata.yaml，自动创建目录和默认 metadata
+        if self.writable and not (self.data_path / "metadata.yaml").exists():
+            self.data_path.mkdir(parents=True, exist_ok=True)
+            self._create_default_metadata()
         self.metadata = self._load_metadata()
         self.op_mapping: Dict[str, str] = self._load_op_mapping()
 
@@ -322,10 +329,6 @@ class PerfDatabase:
 quant_mode,m,n,k,latency_us
 fp16,1,4096,5120,12.5
 fp16,8,4096,5120,13.2
-fp16,32,4096,5120,18.7
-int8,1,4096,5120,8.1
-int8,8,4096,5120,8.9
-fp8,1,4096,5120,7.3
 ...
 ```
 
@@ -572,23 +575,13 @@ class MatMulSchema(OperatorSchema):
 
 ### 4.6 TensorCast 算子 → 硬件内核 Schema 映射
 
-映射表解决两个问题：
+映射表解决**名称翻译**问题：TensorCast dispatch 的算子名与 Profiling 的硬件内核名不同（如 `aten.mm.default` → `MatMulV2`），需要映射表将 TensorCast 算子对应到正确的 Schema。
 
-1. **名称翻译**：TensorCast dispatch 的算子名与 Profiling 的硬件内核名不同（如 `aten.mm.default` → `MatMulV2`），需要映射表将 TensorCast 算子对应到正确的 Schema。
-
-2. **融合粒度不一致**：TensorCast 与 vLLM 的融合 Pass 不完全匹配，可能出现 1:N 或 N:1 的情况。
-
-**处理前提**：假设主要算子的融合 Pass 已通过前置人工适配工作内化到 TensorCast 中，使 TensorCast dispatch trace 与 vLLM Profiling 的内核列表在关键算子上基本 1:1 对齐。对于少量仍存在 N:1 不匹配的场景（TensorCast 未融合但硬件已融合），通过 `fused_kernel_mappings` 机制处理。
+**核心前提：通过编译 Pass 实现 1:1 对齐**。TensorCast 已有成熟的 `PatternMatcherPass` 基础设施（`tensor_cast/compilation/patterns/` 下已实现 13+ 种 RMSNorm 融合和 2 种 RoPE 融合），对于 vLLM 硬件融合内核与 TensorCast dispatch trace 不一致的情况，**统一通过新增编译 Pass 解决**，使 dispatch trace 与硬件内核列表保持 1:1 对齐。当前仍需补充的编译 Pass 详见第 9.1 节。
 
 #### 映射表格式
 
-映射关系通过**版本相关的 YAML 配置**管理。
-
-**`tensorcast_op_to_schema`**：每个 TensorCast 算子映射到一个硬件内核 Schema（1:1）。同类算子的不同量化变体可能映射到不同的硬件内核（如 `aten.mm` → `matmul`，`static_quant_linear` → `quant_batch_matmul`）。
-
-**`fused_kernel_mappings`**：处理 N:1 场景。两种模式：
-- **`replaces`**：融合内核有独立 Schema 和实测数据，直接替换对应 TensorCast 算子的耗时
-- **`components`**：融合内核无独立 Schema，拆解为基础算子耗时之和
+映射关系通过**版本相关的 YAML 配置**管理。`tensorcast_op_to_schema` 为扁平的 1:1 映射：每个 TensorCast 算子映射到一个硬件内核 Schema。同类算子的不同量化变体可能映射到不同的硬件内核（如 `aten.mm` → `matmul`，`static_quant_linear` → `quant_batch_matmul`）。
 
 ```yaml
 # perf_database/mappings/vllm_ascend/v0.13.yaml
@@ -617,10 +610,19 @@ tensorcast_op_to_schema:
   # RoPE
   "tensor_cast.apply_rope.default": interleave_rope
 
+  # Normalization（已有编译 Pass 融合，见 compilation/patterns/rms_norm.py）
+  "tensor_cast.add_rms_norm.default": add_rms_norm
+  "tensor_cast.add_rms_norm_quant.default": add_rms_norm
+  "tensor_cast.add_rms_norm_dynamic_quant_symmetric.default": add_rms_norm
+
+  # Activation（需新增编译 Pass，见 9.1 节）
+  "tensor_cast.swiglu.default": swiglu                  # 待实现
+  "tensor_cast.dequant_swiglu_quant.default": swiglu     # 待实现
+
   # MoE 路由
   "tensor_cast.permute_tokens.default": moe_dispatch
   "tensor_cast.unpermute_tokens.default": moe_combine
-  "aten.topk.default": moe_gating
+  "aten.topk.default": moe_gating  # 注意：aten.topk 也用于采样，此处仅近似处理 MoE 场景，待 9.1 节适配后改用专用算子
 
   # Communication
   "tensor_cast.all_reduce.default": all_reduce
@@ -635,28 +637,9 @@ tensorcast_op_to_schema:
 
   # Cache
   "tensor_cast.reshape_and_cache.default": reshape_and_cache
-
-fused_kernel_mappings:
-  # replaces: 用融合内核的实测数据替换基础算子耗时
-  AddRmsNorm:
-    schema: add_rms_norm
-    replaces:
-      - "tensor_cast.add_rms_norm.default"
-      - "tensor_cast.add_rms_norm_quant.default"
-      - "tensor_cast.add_rms_norm_dynamic_quant_symmetric.default"
-  DequantSwigluQuant:
-    schema: swiglu
-    replaces:
-      - "aten.silu.default"
-      - "aten.mul.Tensor"
-  # components: 无独立 Schema，拆解为基础算子耗时之和
-  split_qkv_rmsnorm_rope_kernel:
-    components: [rms_norm, qkv_split, apply_rope]
-  KvRmsNormRopeCache:
-    components: [rms_norm, interleave_rope, reshape_and_cache]
 ```
 
-> **注意**：以上映射为初始示例。具体映射关系需根据实际 kernel_details.csv 由专家配置，不同版本的 vLLM-Ascend 映射表会不同。
+> **注意**：以上映射为初始示例。标注"待实现"的算子需先完成第 9.1 节中的编译 Pass 适配。具体映射关系需根据实际 kernel_details.csv 由专家配置，不同版本的 vLLM-Ascend 映射表会不同。
 
 ### 4.7 QueryEngine（精确匹配 + 插值）
 
@@ -703,6 +686,8 @@ class QueryEngine:
         # Step 4: 外推（最近邻 + 线性外推）
         return self._try_extrapolate(subset, shape, interp_dims)
 ```
+
+> **插值策略参考**：参考 [AI Configurator](https://github.com/ai-dynamo/aiconfigurator) 的 2D+1D 混合插值方法（见第 2.5 节）：先对两个维度做双线性插值，再对第三个维度做 1D 插值。对 Attention 等 O(n²) 复杂度的算子，在插值前对序列维度做 sqrt 变换以提高拟合精度。置信度评分基于查询点到最近实测数据点的距离计算。
 
 ---
 
@@ -909,14 +894,14 @@ def discover_operators(profiling_output: Path, mapping_yaml: Path) -> Dict:
 
 | 层级 | 判定标准 | 处理方式 | 算子数量 |
 |-----|---------|---------|---------|
-| **Tier 1** | 执行耗时占比 >2% | 必须使用完整 Shape 网格进行 Profiling | 约 13 个 |
-| **Tier 2** | 执行耗时占比 0.5-2% | 使用精简 Shape 网格进行 Profiling | 约 10 个 |
+| **Tier 1** | 执行耗时占比 >2%（或计算内核中 >5%） | 必须使用完整 Shape 网格进行 Profiling | 约 14 个 |
+| **Tier 2** | 执行耗时占比 0.5-2% | 使用精简 Shape 网格进行 Profiling | 约 9 个 |
 | **Tier 3** | 执行耗时占比 <0.5% | 采用 Roofline 兜底估算 | 60+ 个 |
 
 ### 7.2 Tier 1 完整算子列表
 
-> **数据来源**：以下占比均基于 kernel_details.csv 的全量内核耗时（包含通信内核）。
-> - **Qwen3-30B**：Prefill 模式，16卡，通信占 89.8%，计算内核占比相应偏小
+> **数据来源**：以下占比均基于 kernel_details.csv 的**全量内核耗时（包含通信内核）**，与第 2.2 节仅统计计算内核的占比口径不同。例如 Qwen3 的 FusedInferAttentionScore 在计算内核中占 18.2%（第 2.2 节），但在全量内核（含通信）中仅占 1.7%。
+> - **Qwen3-32B**：Prefill 模式，16卡，通信占 89.8%，计算内核占比相应偏小
 > - **DeepSeekV3**：Decode 模式，32卡，计算/通信比例更均衡
 >
 > 某内核在任一模型中超过 2% 即列入 Tier 1。
@@ -1018,15 +1003,20 @@ PRIORITY_MODELS = [
 
 ### 9.1 前置依赖：TensorCast 算子追踪对齐
 
-本方案假设 TensorCast dispatch trace 与 vLLM Profiling 的内核列表在关键算子上基本 1:1 对齐（见 4.6 节）。当前存在若干不匹配项需通过前置适配工作解决：
+本方案要求 TensorCast dispatch trace 与 vLLM Profiling 的硬件内核列表在关键算子上 1:1 对齐（见 4.6 节）。对齐方式为**新增编译 Pass**（`PatternMatcherPass`），将多个 aten 算子融合为单一 TensorCast 自定义算子，与已有的 13+ 种 RMSNorm 融合 Pass（`compilation/patterns/rms_norm.py`）和 RoPE 融合 Pass（`compilation/patterns/rotary_embedding.py`）一致。
 
-| 不匹配项 | 现状 | 所需适配 |
-|---------|------|---------|
-| `multihead_latent_attention` | 单一 dispatch 节点，包含 TransposeBatchMatMul × 2 + FusedInferAttentionScore | 拆分为独立 dispatch 算子 |
-| `aten.topk` / MoeGatingTopK | aten.topk 在非 MoE 场景也被调用 | 区分 MoE 路由 topk 和采样 topk |
-| 其他潜在差异 | 需逐模型比对确认 | 逐一人工适配 |
+当前存在若干不匹配项需通过前置适配工作解决：
 
-**建议方式**：以 DeepSeek-V3 和 Qwen3-32B 的 kernel_details.csv 为基准，导出 TensorCast dispatch trace 逐一比对，通过新增 custom op、调整编译 Pass 或拆分复合算子等方式消除差异。工具团队可考虑提供基于配置的通用优化 Pass 机制以降低人工适配成本，但该机制不在本方案讨论范畴内。
+| 不匹配项 | 现状 | 所需适配 | 对应硬件内核 |
+|---------|------|---------|------------|
+| **SwiGlu 融合** | TensorCast dispatch `aten.silu` + `aten.mul` 两个独立算子 | 新增 `PatternMatcherPass` 将 silu+mul 融合为 `tensor_cast.swiglu`；含量化变体 `tensor_cast.dequant_swiglu_quant` | `SwiGlu` / `DequantSwigluQuant` |
+| **split_qkv_rmsnorm_rope 融合** | TensorCast 分别 dispatch qkv_split、rms_norm、apply_rope | 新增编译 Pass 融合为 `tensor_cast.split_qkv_rmsnorm_rope` | `split_qkv_rmsnorm_rope_kernel` |
+| **KvRmsNormRopeCache 融合** | TensorCast 分别 dispatch rms_norm、apply_rope、reshape_and_cache | 新增编译 Pass 融合为 `tensor_cast.kv_rmsnorm_rope_cache` | `KvRmsNormRopeCache` |
+| `multihead_latent_attention` | 单一 dispatch 节点，包含 TransposeBatchMatMul × 2 + FusedInferAttentionScore | 拆分为独立 dispatch 算子 |  |
+| `aten.topk` / MoeGatingTopK | aten.topk 在非 MoE 场景也被调用 | 区分 MoE 路由 topk 和采样 topk |  |
+| 其他潜在差异 | 需逐模型比对确认 | 逐一人工适配 |  |
+
+**建议方式**：以 DeepSeek-V3 和 Qwen3-32B 的 kernel_details.csv 为基准，导出 TensorCast dispatch trace 逐一比对，通过新增 custom op 和编译 Pass 消除差异。SwiGlu 融合优先级最高（Decode 阶段占比 2.4%）。
 
 ### 9.2 CompositePerformanceModel 顶层调度器
 
@@ -1085,7 +1075,7 @@ PRIORITY_MODELS = [
 3. 新增 `OperatorKey` 共享抽象，封装 `OpInvokeInfo → 查询 key` 转换逻辑
 4. `PerfDatabase` API 从 `(system, backend, version)` 三元组改为 `data_path` 路径直传，删除 `VersionManager`
 5. Schema 粒度从按抽象算子类型分组（~6 类）改为按 kernel_details.csv 硬件内核一一对齐（~17 个），`DimensionSpec` 从枚举简化为 `interpolatable: bool`
-6. YAML 映射格式从按 Schema 分组改为扁平的 `tensorcast_op_to_schema`（1:1）+ `fused_kernel_mappings`（区分 `replaces` 和 `components` 两种融合模式）
+6. YAML 映射格式从按 Schema 分组改为扁平的 `tensorcast_op_to_schema`（1:1）
 7. QueryEngine 从 4 级降级（含 Roofline）精简为 3 级（精确→插值→外推）
 8. 存储格式从 Parquet 为主改为 CSV 为主；数据采集从单一 L1+L2 扩展为三种可选方案（全模型 Profiling / 仿真驱动 / 纯导入）
 9. 基于 DeepSeekV3/Qwen3 实测 Profiling 数据修正了多项算子映射（如 `static_quant_linear` → `quant_batch_matmul`），新增 TransposeBatchMatMul、InterleaveRope、AllGather、MoeGating 独立 Schema
