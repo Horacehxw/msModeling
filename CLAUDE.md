@@ -345,6 +345,12 @@ if tensor.device.type != 'meta':
 | `serving_cast/engine.py` | Batch scheduling logic, KV cache preemption |
 | `serving_cast/config.py` | YAML schema definitions |
 
+## Design Principles
+
+### ProfilingPerformanceModel
+
+ProfilingPerformanceModel 的设计应尽量贴合实测的 Profiling 算子，需要能和实际的 NPU Kernel 对齐算子和 Shape，不应为了迁就 TensorCast 当前的算子抽象而妥协。未来最好直接从 VLLM 实跑抓取算子图（而非依赖 TensorCast 的 dispatch trace）。
+
 ## Python Version
 
 - TensorCast: Python 3.10+
