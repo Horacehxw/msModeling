@@ -1118,76 +1118,44 @@ PRIORITY_MODELS = [
 
 ## 8. 开发计划
 
-当前计划由两组团队分工协作：
-- **六壬工具团队**：TensorCast 内部接口（ProfilingPerformanceModel、EmpiricalPerformanceModel 增强、OperatorSchema、CLI 集成）
-- **小巧灵团队**：PerfDatabase 共享数据层和数据采集流水线（perf_database/、QueryEngine、CSV 数据生成、VLLM Profiling 脚本）
+**团队分工**：
+- **六壬工具团队**：TensorCast 侧（PerformanceModel、OperatorSchema、CLI 集成）
+- **小巧灵团队**：数据侧（PerfDatabase、QueryEngine、数据采集流水线）
 
-**前置依赖**：TensorCast 算子追踪对齐（详见第 9.1 节），需在阶段三集成测试前完成，可与本方案开发并行推进。
+**前置依赖**：TensorCast 算子追踪对齐（详见第 9.1 节），需在集成测试前完成。
 
-**关键接口约定**：两组团队需共同定义以下接口，确保数据采集和查询无缝对接：
-- **OperatorSchema 维度定义**：每个 Schema 的维度名称、类型（可插值/离散）和取值范围，需根据实际 kernel_details.csv 的数据由两组团队联合确认
-- **YAML 映射表**：TensorCast 算子 → 硬件内核 Schema 映射（见 4.6 节），由小巧灵团队根据 Profiling 结果编写，六壬团队验证
-- **CSV 数据格式**：列名与 Schema.dimensions 一致，`latency_us` 作为性能指标列
-- **OperatorKey 构建逻辑**：`from_op_invoke_info()` 的映射和 Shape 提取逻辑
+**目标**：2026.3.20 完成端到端集成，DeepSeek-V3 / Qwen3-32B 仿真误差 <15%。
 
-**目标**：Q3（2026.3.20）完全跑通，在 DeepSeek-V3、Qwen3-32B 上完成初始数据采集和端到端集成测试。
+### 阶段一：核心框架与端到端穿刺（3 周）
 
-### 阶段一：接口定义与核心基础设施（2 周，~1500 行）
+联合对齐 Qwen3-32B 和 DeepSeek-V3 在目标版本上的算子列表和 YAML 映射表。
 
-**六壬团队**：
-- 实现 `ProfilingPerformanceModel`（~100 行）
-- 增强 `EmpiricalPerformanceModel`（添加 `cache_db` 参数），保持后向兼容（~80 行）
-- 实现 `OperatorSchema` 基类、注册表机制和自动发现（~300 行）
-- 实现初始 Schema 集合：`MatMulSchema`、`FusedAttentionSchema`、`GroupedMatMulSchema` 等（~400 行）
-- 实现 `OperatorKey`（~80 行）
+| 六壬团队 | 小巧灵团队 |
+|---------|-----------|
+| `ProfilingPerformanceModel` + Roofline fallback | `PerfDatabase`（加载、查询、存储） |
+| `OperatorSchema` 基类 + 初始 Schema 集合 | CSV 数据格式规范 + 精确匹配查询 |
+| `OperatorKey` + CLI 集成 | Profiling 解析器（`parse_ascend_output.py`） |
+| 基于示例数据库穿刺端到端仿真 | 穿刺数据采集方案 |
 
-**小巧灵团队**：
-- 设计 CSV 数据格式规范，编写示例数据文件
-- 实现 `PerfDatabase`（CSV 加载、嵌套字典构建、`lookup()` / `store()` / `save()` 接口）（~400 行）
-- 实现精确匹配查询（~200 行）
+### 阶段二：插值引擎与数据采集（2 周）
 
-### 阶段二：插值引擎与数据采集（2 周，~2000 行）
+| 六壬团队 | 小巧灵团队 |
+|---------|-----------|
+| `EmpiricalPerformanceModel` 增强（可选 `cache_db`） | `QueryEngine`（逐轴 1D 插值、置信度评分） |
+| 扩展 Schema 覆盖（MoE、归一化、融合算子等） | 数据采集脚本（全模型 Profiling + 微基准测试） |
+| | A3 上初始数据库采集 |
 
-**六壬团队**：
-- 在 `text_generate.py` 和 `model_runner.py` 中添加 CLI 参数和 PerformanceModel 选择逻辑（~100 行）
-- 集成 `ProfilingPerformanceModel` 的 Roofline fallback 逻辑（~50 行）
-- 实现 `QueryEngine`（逐轴 1D 插值、置信度评分）（~500 行）
+### 阶段三：集成测试与验证（1 周）
 
-**小巧灵团队**：
-- 实现 `generate_shape_grid.py`（模型驱动 + 通用网格）（~300 行）
-- 实现 `collect_full_model.py`（Level 1 编排脚本）（~400 行）
-- 实现 `collect_microbench.py`（Level 2 torch_npu 微基准测试）（~300 行）
-- 实现 `parse_ascend_output.py`（kernel_details.csv 解析器）（~400 行）
+联合使用 Qwen3-32B 和 DeepSeek-V3 进行端到端精度验证。
 
-### 阶段三：数据采集与集成测试（2 周）
-
-**联合**：
-- 完成 GEMM 和 Attention 在 A3 上的初始数据采集
-- 实现 `calibrate.py`（L1 与 L2 校准对齐）
-- 使用 Qwen3-32B 和 DeepSeek-V3 进行端到端测试
-- 与实际 VLLM Profiling 对比验证精度
-
-### 阶段四：扩展算子与精度验证（持续迭代）
-
-- 新增 MoE、归一化、融合算子、缓存算子的 Schema
-- 测试 PD 聚合与分离（Aggregation/Disaggregation）场景
-- 完善新模型算子发现流水线
-- 编写使用文档
-
-### 验证标准
+**验证标准**：
 
 | 指标 | 目标值 |
 |-----|-------|
-| 端到端耗时误差 | 与实际 VLLM 对比 <15% |
+| 端到端耗时误差 | <15%（对比实际 VLLM Profiling） |
 | 单算子误差（已匹配算子） | <20% |
-| 时间覆盖率 | 覆盖 VLLM 执行时间的 >90% |
-
-### 测试用例
-1. Qwen3-32B Prefill：136 请求 x 4096 tokens，TP=16
-2. Qwen3-32B Decode：136 请求 x 1 token，context=4096，TP=16
-3. DeepSeek-V3 Prefill：18 请求 x 4096 tokens，TP=4，DP=8，EP
-4. DeepSeek-V3 Decode：18 请求 x 1 token，context=4096，TP=4，DP=8，EP
-5. PD 聚合/分离模式：分别测试两种模式
+| 时间覆盖率 | >90% |
 
 ---
 
@@ -1247,7 +1215,6 @@ runtime = Runtime(perf_models=composite, device_profile=device_profile)
 
 - **跨硬件泛化**：支持更多 DeviceProfile（如 Atlas A2、GPU），需为每种硬件独立采集数据
 - **自动化 CI**：随 VLLM-Ascend / CANN 版本发布自动触发数据采集流水线
-- **能耗建模**：参考 AI Configurator 的 `PerformanceResult(float)` 模式，在 `PerformanceModel.Result` 中增加 energy 字段
 - **预插值优化**：参考 AI Configurator 的 `_extrapolate_data_grid`，在数据库加载时预填充常用网格点，减少运行时插值开销
 - **SOL 数据校正**：用 Roofline 理论下界校正异常测量值，确保 `measured >= SOL`
 
@@ -1401,7 +1368,7 @@ class DatabasePerformanceModel(EmpiricalPerformanceModel):
 | **数据采集策略** | 仅 Level 1 + Level 2 两级采集 | 新增三种构建方案：A（全模型 Profiling + 微基准）、B（仿真驱动 + 微基准）、C（纯 Profiling 导入） |
 | **量化算子映射** | 未详细分析 | 分析了 `mxfp4_linear` 等融合 linear 算子的 dispatch 机制：量化算子（`dynamic_quantize_*`）和 linear 算子在 dispatch trace 中是独立的，分别映射到不同 Schema |
 | **模块目录** | 全部在 `tensor_cast/perf_database/` 单一包内（含 operators/、shape_generators/、interpolation/、scripts/） | 拆分为 TensorCast 内部模块（`tensor_cast/performance_model/perf_database/`）+ 独立数据采集子系统（`perf_database/`） |
-| **开发计划** | 5 阶段单团队 | 4 阶段 + 两组团队分工（六壬工具团队 + 小巧灵团队），含关键接口约定和代码量估计 |
+| **开发计划** | 5 阶段单团队 | 3 阶段 + 两组团队分工（六壬工具团队 + 小巧灵团队） |
 | **算子追踪对齐** | 未涉及（假设 TensorCast 算子与 Profiling 内核直接对应） | 列为外部依赖（第 9.1 节）：要求 TensorCast dispatch trace 与 Profiling 内核列表对齐，YAML 映射保持 1:1 |
 
 
