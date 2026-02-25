@@ -1,14 +1,13 @@
 import argparse
 import logging
 
-from .. import config
+from .. import config, device_profiles  # noqa: F401
 from ..core.input_generator import generate_inputs
 from ..core.model_runner import ModelRunner
 from ..core.quantization.datatypes import QuantizeAttentionAction, QuantizeLinearAction
 from ..core.user_config import UserInputConfig
-from .. import device_profiles # noqa: F401
 from ..device import DeviceProfile
-from .utils import check_positive_integer
+from .utils import check_positive_integer, LOG_LEVELS
 
 
 def main():
@@ -105,9 +104,9 @@ def main():
     )
     parser.add_argument(
         "--log-level",
-        type=str,
-        default=None,
-        help="Logging level",
+        choices=LOG_LEVELS,
+        default="info",
+        help="Set the logging level",
     )
     parser.add_argument(
         "--decode",
@@ -194,9 +193,22 @@ def main():
         help="The dp size for lm head, can override dp-size for lm head",
     )
     parser.add_argument(
-        "--ep",
-        action="store_true",
-        help="Whether or not to implement expert parallel",
+        "--moe-dp-size",
+        type=check_positive_integer,
+        default=1,
+        help="The dp size for experts, can override dp-size for experts",
+    )
+    parser.add_argument(
+        "--moe-tp-size",
+        type=check_positive_integer,
+        default=None,
+        help="The tp size for experts, can override tp-size for experts",
+    )
+    parser.add_argument(
+        "--ep-size",
+        type=check_positive_integer,
+        default=1,
+        help="The ep size for experts",
     )
     parser.add_argument(
         "--word-embedding-tp",
@@ -251,16 +263,15 @@ def main():
     )
 
     args = parser.parse_args()
-
-    if args.log_level:
-        logging.basicConfig(level=args.log_level.upper())
+    logging.basicConfig(level=LOG_LEVELS[args.log_level.lower()])
 
     if args.graph_log_url:
         config.compilation.debug.graph_log_url = args.graph_log_url
 
     user_input = UserInputConfig.from_args(args)
     model_runner = ModelRunner(user_input)
-    model_runner.run_inference(generate_inputs_func=generate_inputs)
+    metrics = model_runner.run_inference(generate_inputs_func=generate_inputs)
+    metrics.print_info()
 
 
 if __name__ == "__main__":

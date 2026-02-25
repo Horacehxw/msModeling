@@ -36,7 +36,8 @@ from .utils import (
     AutoModelConfigLoader,
     init_on_device_without_buffers,
     model_type_to_custom_attention_module_mapping,
-    patch_method_for_qwen3_vl,
+    model_type_to_custom_expert_module_mapping,
+    patch_method_for_vl,
     strip_module_name,
 )
 
@@ -169,12 +170,20 @@ class TransformerModel(ModelWrapperBase):
         super().__init__(None)
         self.model_id = model_id
         self.model_config = model_config
+
+        logger.info("Initializing 'TransformerModel' for model_id: %s", model_id)
         with init_on_device_without_buffers("meta"), no_init_weights():
             auto_loader = AutoModelConfigLoader()
             if self.model_config.hf_config is not None:
+                logger.info("Using provided HuggingFace configuration")
                 self.hf_config = self.model_config.hf_config
+
                 if self.model_config.num_hidden_layers_override:
-                    self.hf_config.num_hidden_layers = (
+                    logger.info(
+                        "Overriding num_hidden_layers to %s",
+                        model_config.num_hidden_layers_override,
+                    )
+                    self.hf_config.get_text_config().num_hidden_layers = (
                         model_config.num_hidden_layers_override
                     )
                 self._inner = auto_loader.load_model(
@@ -183,6 +192,7 @@ class TransformerModel(ModelWrapperBase):
                     trust_remote_code=self.model_config.trust_remote_code,
                 )
             else:
+                logger.info("Auto-loading model and configuration for: %s", model_id)
                 self.hf_config, self._inner = auto_loader.auto_load_model_and_config(
                     self.model_id, self.model_config
                 )
@@ -190,22 +200,27 @@ class TransformerModel(ModelWrapperBase):
 
             self.text_config = self.hf_config.get_text_config()
             self.is_vl_model = hasattr(self.hf_config, "vision_config")
+            logger.info(
+                "Model type: %s", "Vision-Language" if self.is_vl_model else "Text-only"
+            )
+
             if (
                 self.model_config.attention_cls
                 and self.model_config.attention_cls.attn_implmentation
             ):
-                self.text_config._attn_implementation = (
-                    self.model_config.attention_cls.attn_implmentation
-                )
+                attn_impl = self.model_config.attention_cls.attn_implmentation
+                logger.info("Setting attention implementation to: %s", attn_impl)
+                self.text_config._attn_implementation = attn_impl
                 if self.is_vl_model:
-                    self.hf_config.vision_config._attn_implementation = (
-                        self.model_config.attention_cls.attn_implmentation
-                    )
+                    self.hf_config.vision_config._attn_implementation = attn_impl
 
+            logger.info("Initializing parallel groups")
             self.parallel_group_manager = ParallelGroupManager(
                 self.model_config.parallel_config
             )
             # the order of these functions matters!
+
+            logger.info("Applying model transformations")
             with self.set_default_dtype():
                 self.wrap_model()
                 self.maybe_enable_mtp()
@@ -213,6 +228,8 @@ class TransformerModel(ModelWrapperBase):
                 self.patch_model()
                 self.quantize_model()
                 self.shard_model()
+
+        logger.info("Loading model weights")
         self.load_weights()
 
     @contextlib.contextmanager
@@ -326,7 +343,7 @@ class TransformerModel(ModelWrapperBase):
         vl_language_model = self.get_vl_language_model()
         if vl_language_model is not None:
             unwrapped = vl_language_model
-            patch_method_for_qwen3_vl()
+            patch_method_for_vl(self.hf_config.model_type)
         if self.model_config.cache_rotary_embedding and hasattr(
             unwrapped, "rotary_emb"
         ):
@@ -334,6 +351,7 @@ class TransformerModel(ModelWrapperBase):
                 unwrapped.rotary_emb,
                 act_dtype=self.model_config.dtype,
                 max_position_embeddings=self.text_config.max_position_embeddings,
+                expand_to_3d_position_ids=vl_language_model is not None,
             )
         # replace attention with custom implementation if defined
         if self.model_config.attention_cls is not None:
@@ -433,6 +451,25 @@ class TransformerModel(ModelWrapperBase):
                 adapter = custom_attention_adapter_cls(module, self.attention_by_layers)
                 self._replace_module(name, adapter)
 
+    def patch_moe_expert(self, module):
+        # patch moe experts just loop over the experts and compute the output for each expert
+        custom_experts_adapter_cls = model_type_to_custom_expert_module_mapping(
+            self.hf_config.model_type
+        )
+        if custom_experts_adapter_cls is None:
+            return
+        assert hasattr(module, "num_experts"), (
+            f"Module {type(module).__name__} must have 'num_experts' attribute."
+        )
+        expert_num = module.num_experts
+        assert isinstance(expert_num, int) and expert_num > 0, (
+            f"Expected 'num_experts' to be a positive integer, but got {expert_num}."
+        )
+        experts = torch.nn.ModuleList(
+            [custom_experts_adapter_cls(module.experts) for _ in range(expert_num)]
+        )
+        module.experts = experts
+
     def get_moe_config(self):
         return self.model_config.moe_config
 
@@ -447,6 +484,7 @@ class TransformerModel(ModelWrapperBase):
             if type(module).__name__ == moe_config.module_name:
                 if not self._all_required_fields_exist(module, moe_config.field_names):
                     continue
+                self.patch_moe_expert(module)
                 moe_layer = MoELayer(
                     moe_config,
                     module,
@@ -460,12 +498,30 @@ class TransformerModel(ModelWrapperBase):
 
                 self._replace_module(name, moe_layer)
 
+    def shard_model_visual_by_tp(self):
+        tp_size = self.parallel_group_manager.tp_group.world_size
+        visual_layers_path = self.get_visual_layers_path()
+        if tp_size <= 1 or visual_layers_path is None:
+            return
+        pattern = f"{visual_layers_path}.*.attn"
+        for name, module in self._inner.named_modules():
+            if fnmatch.fnmatchcase(strip_module_name(name), pattern) and hasattr(
+                module, "qkv"
+            ):
+                # This section is mainly used to modify the tp parallel of qkv in the vision part of qwen3-vl,
+                # Otherwise, dimension mapping may fail when apply_rotary_pos_emb_vision is calculated.
+                assert module.num_heads % tp_size == 0, (
+                    f"module.num_heads ({module.num_heads}) must be divisible by tp_size ({tp_size})"
+                )
+                module.num_heads = module.num_heads // tp_size
+
     def get_shard_plan(self):
         tp_group = self.parallel_group_manager.tp_group
         o_proj_tp_group = self.parallel_group_manager.o_proj_tp_group
         mlp_tp_group = self.parallel_group_manager.mlp_tp_group
         lmhead_tp_group = self.parallel_group_manager.lmhead_tp_group
         all_rank_group = self.parallel_group_manager.all_rank_group
+        moe_tp_group = self.parallel_group_manager.moe_tp_group
 
         def get_tp_plan():
             # TODO:
@@ -530,14 +586,34 @@ class TransformerModel(ModelWrapperBase):
             }
             tp_plan.update(
                 {
-                    # TODO: first complete tensor parallelism for the language_model;
-                    #  vision parallelism needs to be handled later
                     f"{language_layers}.*.mlp.gate_proj": (COLWISE_LINEAR, params),
                     f"{language_layers}.*.mlp.up_proj": (COLWISE_LINEAR, params),
                     f"{language_layers}.*.mlp.down_proj": (ROWWISE_LINEAR, params),
                 }
             )
+            visual_layers_path = self.get_visual_layers_path()
+            if visual_layers_path is not None:
+                params = {
+                    "tp_group": tp_group,
+                    "global_tp_group": tp_group,
+                }
+                tp_plan.update(
+                    {
+                        f"{visual_layers_path}.*.attn.qkv": (COLWISE_LINEAR, params),
+                        f"{visual_layers_path}.*.attn.proj": (ROWWISE_LINEAR, params),
+                    }
+                )
+                visual_merger_linear = self.get_visual_merger_linear()
+                for key, parallel_type in visual_merger_linear.items():
+                    tp_plan[key] = (parallel_type, params)
 
+                params = {
+                    "tp_group": mlp_tp_group,
+                    "global_tp_group": tp_group,
+                }
+                visual_mlp_linear = self.get_visual_mlp_linear()
+                for key, parallel_type in visual_mlp_linear.items():
+                    tp_plan[key] = (parallel_type, params)
             if not self.model_config.parallel_config.has_ep():
                 params = {
                     "tp_group": all_rank_group,
@@ -545,9 +621,56 @@ class TransformerModel(ModelWrapperBase):
                 }
                 tp_plan.update(
                     {
-                        "layers.*.experts.*.gate_proj": (COLWISE_LINEAR, params),
-                        "layers.*.experts.*.up_proj": (COLWISE_LINEAR, params),
-                        "layers.*.experts.*.down_proj": (ROWWISE_LINEAR, params),
+                        f"{language_layers}.*.experts.*.gate_proj": (
+                            COLWISE_LINEAR,
+                            params,
+                        ),
+                        f"{language_layers}.*.experts.*.up_proj": (
+                            COLWISE_LINEAR,
+                            params,
+                        ),
+                        f"{language_layers}.*.experts.*.down_proj": (
+                            ROWWISE_LINEAR,
+                            params,
+                        ),
+                        # Adaptation to gate_up
+                        f"{language_layers}.*.experts.*.gate_up_proj": (
+                            COLWISE_LINEAR,
+                            params,
+                        ),
+                    }
+                )
+            else:
+                params = {
+                    "tp_group": moe_tp_group,
+                    "global_tp_group": tp_group,
+                }
+                tp_plan.update(
+                    {
+                        f"{language_layers}.*.experts.*.gate_proj": (
+                            COLWISE_LINEAR,
+                            params,
+                        ),
+                        f"{language_layers}.*.experts.*.up_proj": (
+                            COLWISE_LINEAR,
+                            params,
+                        ),
+                        f"{language_layers}.*.experts.*.down_proj": (
+                            ROWWISE_LINEAR,
+                            params,
+                        ),
+                        f"{language_layers}.*.shared_expert.*.gate_proj": (
+                            COLWISE_LINEAR,
+                            params,
+                        ),
+                        f"{language_layers}.*.shared_expert.*.up_proj": (
+                            COLWISE_LINEAR,
+                            params,
+                        ),
+                        f"{language_layers}.*.shared_expert.*.down_proj": (
+                            ROWWISE_LINEAR,
+                            params,
+                        ),
                     }
                 )
 
@@ -586,6 +709,7 @@ class TransformerModel(ModelWrapperBase):
                     module, **tp_config[1]
                 )
                 self._replace_module(name, parallel_module)
+        self.shard_model_visual_by_tp()
 
     def shard_model_by_ep(self):
         moe_config = self.get_moe_config()
@@ -718,23 +842,34 @@ class TransformerModel(ModelWrapperBase):
             return None
         return _VISUAL_FAMILY[family]
 
-    def get_visual(self):
+    def _get_spec_value_from_key(self, key: str):
         spec = self._get_vl_model_spec()
         if spec is None:
             return None
-        return spec["visual"](self.unwrap())
+        return spec.get(key, lambda _: None)(self.unwrap())
+
+    def get_visual(self):
+        return self._get_spec_value_from_key("visual")
 
     def get_vl_language_model(self):
-        spec = self._get_vl_model_spec()
-        if spec is None:
-            return None
-        return spec["language_model"](self.unwrap())
+        return self._get_spec_value_from_key("language_model")
 
     def get_visual_layers(self):
-        spec = self._get_vl_model_spec()
-        if spec is None:
-            return None
-        return spec["visual.layers"](self.unwrap())
+        return self._get_spec_value_from_key("visual.layers")
+
+    def get_visual_merger_linear(self):
+        return self._get_spec_value_from_key("visual_merger_linear")
+
+    def get_visual_mlp_linear(self):
+        return self._get_spec_value_from_key("visual_mlp_linear")
+
+    def get_visual_layers_path(self) -> Optional[str]:
+        """
+        Return the string prefix of visual layers path:
+          - "visual.blocks"
+          - "vision_tower.encoder.layer"
+        """
+        return self._get_spec_value_from_key("path.visual.layers")
 
     def get_language_layers(self) -> str:
         """
@@ -745,7 +880,7 @@ class TransformerModel(ModelWrapperBase):
         spec = self._get_vl_model_spec()
         if spec is None:
             return "layers"
-        return spec["language_model.layers"](self.unwrap())
+        return spec["path.language_model.layers"](self.unwrap())
 
     @staticmethod
     def get_weight_size_nested(modules):

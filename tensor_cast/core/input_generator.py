@@ -4,16 +4,16 @@ input_generation
 """
 
 from dataclasses import dataclass
+from importlib import import_module
 from typing import Any, List, Tuple
 
 import torch
-from transformers.models.qwen2_vl.image_processing_qwen2_vl import smart_resize
 
 from ..layers.attention import AttentionMetadataTensorCast
 from ..layers.sampler import SamplingMetadata
 from ..performance_model import bytes_of_tensor
 from ..transformers.utils import get_attention_quant_config, logger
-from ..utils import exact_division
+from ..utils import exact_division, get_nested_attr
 
 
 @dataclass
@@ -27,6 +27,23 @@ class RequestInfo:
     image_batch_size: int = None
     image_height: int = None
     image_width: int = None
+
+
+def _get_padding_alignment(model_config) -> int:
+    parallel_config = model_config.parallel_config
+    if (
+        parallel_config.moe_tensor_parallel_size != parallel_config.tensor_parallel_size
+        and parallel_config.has_ep()
+    ):
+        num_experts = get_nested_attr(
+            model_config.hf_config, model_config.moe_config.num_experts_key
+        )
+        if num_experts is None:
+            raise ValueError("failed to access number of experts from model config")
+        division_num = num_experts * parallel_config.tensor_parallel_size
+    else:
+        division_num = parallel_config.tensor_parallel_size
+    return division_num
 
 
 def generate_inputs(model, requests: List[RequestInfo], block_size: int = 128):
@@ -47,10 +64,10 @@ def generate_inputs(model, requests: List[RequestInfo], block_size: int = 128):
             concurrency,
         )
         num_image_tokens = image_kwargs.pop("num_image_tokens", 0)
+        seq_len += num_image_tokens
         if is_decode:
             # In the decode phase, the image input is removed, but the image token needs to be added to content_length
             image_kwargs = {}
-            seq_len += num_image_tokens
         else:
             query_len += num_image_tokens
     else:
@@ -106,11 +123,14 @@ def generate_inputs(model, requests: List[RequestInfo], block_size: int = 128):
     # We use padding to ensure that the number of tokens in each DP domain is divisible by tp_size.
     # This allows the data to be evenly distributed across each device if needed,
     # thereby enabling arbitrary conversion of DP domains.
+    # two cases:
+    # prefill, moe-tp-size and tp-size usually is different, padding to multiples of (moe-tp-size * tp-size)
+    # decode, moe-tp-size and tp-size usually is same, padding to multiples of tp-size
     padding_tokens = 0
-    if batch_size * query_len % parallel_config.tensor_parallel_size != 0:
-        padding_tokens = parallel_config.tensor_parallel_size - (
-            batch_size * query_len % parallel_config.tensor_parallel_size
-        )
+    division_num = _get_padding_alignment(model_config)
+
+    if batch_size * query_len % division_num != 0:
+        padding_tokens = division_num - (batch_size * query_len % division_num)
 
     query_start_loc[-1] = query_start_loc[-1] + padding_tokens
 
@@ -156,21 +176,72 @@ def generate_inputs(model, requests: List[RequestInfo], block_size: int = 128):
     return kwargs
 
 
+def resize_image(
+    model_type, image_height, image_width, patch_size, merge_size, temporal_patch_size
+):
+    factor = patch_size * merge_size
+
+    def build_qwen_resize_params():
+        return {
+            "height": image_height,
+            "width": image_width,
+            "factor": factor,
+        }
+
+    def build_glm_resize_params():
+        return {
+            "height": image_height,
+            "width": image_width,
+            "factor": factor,
+            "num_frames": temporal_patch_size,
+            "temporal_factor": temporal_patch_size,
+        }
+
+    resize_specs = {
+        "glm4v_moe": (
+            "transformers.models.glm4v.image_processing_glm4v",
+            build_glm_resize_params,
+        ),
+        "qwen3_vl": (
+            "transformers.models.qwen2_vl.image_processing_qwen2_vl",
+            build_qwen_resize_params,
+        ),
+        "qwen3_vl_moe": (
+            "transformers.models.qwen2_vl.image_processing_qwen2_vl",
+            build_qwen_resize_params,
+        ),
+    }
+
+    module_path, params_builder = resize_specs.get(model_type, resize_specs["qwen3_vl"])
+    smart_resize = import_module(module_path).smart_resize
+    return smart_resize(**params_builder())
+
+
 def generate_image_inputs(
     model, image_batch_size, image_height, image_width, concurrency
 ):
     if image_batch_size is None or image_height is None or image_width is None:
         print("For vision-language models,without image input")
         return {}
-    vision_config = model.model_config.hf_config.vision_config
+    hf_config = model.model_config.hf_config
+    vision_config = hf_config.vision_config
     patch_size = vision_config.patch_size
     merge_size = (
         vision_config.spatial_merge_size if vision_config.spatial_merge_size else 2
     )
     # Rescales the image
-    resized_height, resized_width = smart_resize(
-        image_height, image_width, factor=patch_size * merge_size
+    temporal_patch_size = (
+        vision_config.temporal_patch_size if vision_config.temporal_patch_size else 2
     )
+    resized_height, resized_width = resize_image(
+        hf_config.model_type,
+        image_height,
+        image_width,
+        patch_size=patch_size,
+        merge_size=merge_size,
+        temporal_patch_size=temporal_patch_size,
+    )
+
     # For images, the value of grid_t is 1.
     grid_t = 1
     grid_h, grid_w = resized_height // patch_size, resized_width // patch_size
@@ -178,9 +249,6 @@ def generate_image_inputs(
         image_batch_size, 3
     )
     channel = vision_config.in_channels if vision_config.in_channels else 3
-    temporal_patch_size = (
-        vision_config.temporal_patch_size if vision_config.temporal_patch_size else 2
-    )
     hidden_dim = channel * temporal_patch_size * patch_size * patch_size
     tokens = grid_t * grid_h * grid_w
     pixel_values = torch.empty(
@@ -310,7 +378,6 @@ def generate_inputs_varlen(model, requests: List[RequestInfo], block_size):
     requests: List[RequestInfo], each dict represents a request, containing keys: query_len, seq_len, is_decode
     """
     model_config = model.model_config
-    parallel_config = model_config.parallel_config
     mtp = getattr(model_config, "mtp_config", None)
     num_mtp_tokens = mtp.num_mtp_layers if mtp else 0
 
@@ -324,9 +391,8 @@ def generate_inputs_varlen(model, requests: List[RequestInfo], block_size):
     num_tokens = sum(query_lens)
 
     # padding query to make sure total num_tokens is divisible by tp_size in each dp domain
-    padding_nums = parallel_config.tensor_parallel_size - (
-        num_tokens % parallel_config.tensor_parallel_size
-    )
+    division_num = _get_padding_alignment(model_config)
+    padding_nums = (-num_tokens) % division_num
     num_tokens += padding_nums
 
     query_start_loc = [0]

@@ -4,6 +4,7 @@ import dataclasses
 import json
 import logging
 import threading
+import time
 from typing import Dict, List, Optional, Union
 
 import torch
@@ -13,8 +14,9 @@ from torch.utils._python_dispatch import TorchDispatchMode
 
 from .device import DeviceProfile
 from .patch_torch import patch_torch
-from .performance_model import CachingPerformanceModel, OpInvokeInfo, PerformanceModel
+from .performance_model.base import CachingPerformanceModel, PerformanceModel
 from .performance_model.memory_tracker import MemoryTracker
+from .performance_model.op_invoke_info import OpInvokeInfo
 
 logger = logging.getLogger(__name__)
 
@@ -68,10 +70,25 @@ class Runtime(TorchDispatchMode):
 
     def __torch_dispatch__(self, func, types, args=(), kwargs=None):
         kwargs = {} if kwargs is None else kwargs
+
         if not torch.compiler.is_compiling():
+            func_name = (
+                func.__qualname__ if hasattr(func, "__qualname__") else str(func)
+            )
+            start = time.perf_counter() if logger.isEnabledFor(logging.DEBUG) else None
             out = func(*args, **kwargs)
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "Operation '%s' executed in %.6f",
+                    func_name,
+                    time.perf_counter() - start,
+                )
+
             op_invoke_info = OpInvokeInfo(func, args, kwargs, out)
             self.op_invoke_infos.append(op_invoke_info)
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug("Recorded '%s': %s", func_name, op_invoke_info)
+
             return out
         else:
             return func(*args, **kwargs)

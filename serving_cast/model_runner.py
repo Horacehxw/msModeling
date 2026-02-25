@@ -9,7 +9,6 @@ from multiprocessing import Event, Manager
 from typing import List, Optional, Tuple
 
 import numpy as np
-import stime
 from scipy.interpolate import LinearNDInterpolator
 from serving_cast.config import Config
 from serving_cast.request import Request, RequestState
@@ -20,6 +19,7 @@ from tensor_cast.core.model_runner import (
     ModelRunnerMetrics,
 )
 from tensor_cast.core.user_config import UserInputConfig
+from . import stime
 
 logger = stime.get_logger(__name__)
 
@@ -100,7 +100,9 @@ class ModelRunner:
                 mlp_dp_size=parallel_config.mlp_dp_size,
                 lmhead_tp_size=parallel_config.lmhead_tp_size,
                 lmhead_dp_size=parallel_config.lmhead_dp_size,
-                ep=parallel_config.ep,
+                ep_size=parallel_config.ep_size,
+                moe_tp_size=parallel_config.moe_tp_size,
+                moe_dp_size=parallel_config.moe_dp_size,
                 reserved_memory_gb=0.0,
                 block_size=common_config.serving_config.block_size,
             )
@@ -351,8 +353,10 @@ class ModelRunner:
 
         with stime.Duration(duration):
             logger.debug(
-                f"{self.common_config.model_config.name} process batch, batch length: {len(batch)}, "
-                f"consume {duration} seconds"
+                "%s process batch, batch length: %d, consume %s seconds",
+                self.common_config.model_config.name,
+                len(batch),
+                duration,
             )
 
     def warmup(self) -> Tuple[int, int]:
@@ -380,7 +384,7 @@ class ModelRunner:
         num_blocks = int(
             all_mem_for_kv_cache / inference_metrics.kv_cache_per_token_gb // block_size
         )
-        logger.debug(f"warmup result: {num_blocks} blocks")
+        logger.debug("warmup result: %d blocks", num_blocks)
         return num_blocks, block_size
 
     def get_kv_cache_num_bytes(self, num_tokens) -> int:
@@ -504,10 +508,8 @@ class CompletionEventManager:
                 # Remove all remaining elements (including the dummy None if present)
                 self.completion_queue.get_nowait()
                 self.completion_queue.task_done()
-        except Exception as e:
-            logger.error(
-                f"CompletionEventManager: Error while clearing queue - {str(e)}"
-            )
+        except Exception:
+            logger.exception("CompletionEventManager: Error while clearing queue")
 
         # Clear event dictionary to release resources
         self.event_dict.clear()
@@ -578,10 +580,10 @@ class AsyncTaskManager:
         for idx, p in enumerate(self.workers):
             p.join(timeout=15)
             if p.is_alive():
-                logger.warning(f"Worker {idx} not exit in time, terminating")
+                logger.warning("Worker %d not exit in time, terminating", idx)
                 p.terminate()
                 p.join(timeout=5)
-            logger.debug(f"Worker {idx} exited")
+            logger.debug("Worker %d exited", idx)
         self.workers.clear()
 
         self.event_manager.shutdown()
@@ -597,8 +599,8 @@ class AsyncTaskManager:
                     common_config, parallel_config, device_type
                 )
                 barrier.wait()  # ensure all processes have built the model
-            except Exception as e:
-                logger.error(f"Worker initialization failed: {str(e)}")
+            except Exception:
+                logger.exception("Worker initialization failed")
                 return
 
             while not self.stop_event.is_set():

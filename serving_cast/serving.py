@@ -4,10 +4,11 @@
 from abc import ABC, abstractmethod
 from typing import List
 
-import stime
 from serving_cast.config import Config
 from serving_cast.instance import Instance, InstanceLoadBalancer
 from serving_cast.request import Request, RequestState
+
+from . import stime
 
 
 logger = stime.get_logger(__name__)
@@ -107,7 +108,7 @@ class PdDisaggregationServing(Serving):
         if request.state != RequestState.KVS_TRANSFERRING:
             raise ValueError(
                 "In continue serving: request.state shoulf be KVS_TRANSFERRING, "
-                "but get %s" % request.state
+                f"but get {request.state}"
             )
         decode_instance = self.decode_balancer.select(request)
         decode_instance.handle(request)

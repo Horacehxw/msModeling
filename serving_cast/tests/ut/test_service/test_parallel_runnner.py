@@ -1,0 +1,164 @@
+# Copyright Huawei Technologies Co., Ltd. 2025-2025. All rights reserved.
+import unittest
+from unittest.mock import MagicMock, Mock
+
+from serving_cast.parallel_runner import ParallelRunner
+from serving_cast.service.optimizer_summary import OptimizerSummary
+from serving_cast.service.utils import OptimizerData
+
+from tensor_cast.core.user_config import UserInputConfig
+from tensor_cast.device import DeviceProfile
+from .test_common import SimpleArgs
+
+
+class TestTaskRunner(unittest.TestCase):
+    def setUp(self):
+        """Set up test fixtures before each test method."""
+        self.args = SimpleArgs()
+        self.args.serving_cost = 0
+        self.args.jobs = 4
+        self.device_profile = DeviceProfile.all_device_profiles[self.args.device]
+
+    def test_initialization(self):
+        """Test TaskRunner initialization"""
+        task_runner = ParallelRunner(self.args)
+        user_input = UserInputConfig.from_args(self.args)
+
+        self.assertEqual(task_runner.user_input, user_input)
+
+    def test_get_user_config_multiple_tp(self):
+        """Test _get_user_config with multiple TP values"""
+        self.args.tp_sizes = [2, 4]
+        self.args.num_devices = 4
+
+        task_runner = ParallelRunner(self.args)
+
+        configs = list(task_runner._get_user_config())
+        # Should only include TPs that divide evenly into num_devices
+        self.assertEqual(len(configs), 2)  # TP=2, 4 all divide 4
+        tps = [config.tp_size for config in configs]
+        self.assertIn(2, tps)
+        self.assertIn(4, tps)
+
+    def test_get_user_config_default_tps(self):
+        """Test _get_user_config with default TP values"""
+        self.args.tp_sizes = None
+        self.args.num_devices = 8
+
+        task_runner = ParallelRunner(self.args)
+
+        configs = list(task_runner._get_user_config())
+        # Default TPs should be powers of 2 up to num_devices
+        expected_tps = [1, 2, 4, 8]  # 2^0 to 2^3
+        actual_tps = [config.tp_size for config in configs]
+        for expected_tp in expected_tps:
+            self.assertIn(expected_tp, actual_tps)
+
+    def test_run_with_tpot_limit(self):
+        """Test run method with TPOT limit"""
+        self.args.tpot_limits = 50
+        self.args.batch_range = [2, 2]
+        task_runner = ParallelRunner(self.args)
+        result = task_runner.run_agg()
+
+        self.assertEqual(len(result), 1)
+        self.assertIsInstance(result[0], OptimizerSummary)
+
+        summary_df = result[0].get_summary_df()
+        row = summary_df.iloc[0]
+        self.assertEqual(row["concurrency"], 2)
+
+    def test_given_mocked_executor_when_called_then_returns_empty_list_and_verifies_executor_initialization(
+        self,
+    ):
+        executor_cls = Mock()
+        executor_inst = MagicMock()
+        executor_cls.return_value = executor_inst
+        executor_inst.__enter__.return_value = executor_inst
+        executor_inst.__exit__.return_value = None
+        initializer = Mock()
+
+        def test_map(fn, *iterables, timeout=None, chunksize=1):
+            initializer()
+            return []
+
+        executor_inst.map = test_map
+
+        task_runner = ParallelRunner(self.args, executor_cls, initializer)
+        df_list = task_runner._get_df_list(task_runner.optimizer_data)
+
+        executor_cls.assert_called_once_with(
+            max_workers=self.args.jobs, initializer=initializer
+        )
+        initializer.assert_called_once_with()
+
+        self.assertEqual(df_list, [])
+
+    def test_given_worker_initializer_raises_runtime_error_when_called_then_raises_and_logs_expected_errors(
+        self,
+    ):
+        initializer = MagicMock(side_effect=RuntimeError)
+        task_runner = ParallelRunner(self.args, worker_initializer=initializer)
+
+        with self.assertLogs("serving_cast.parallel_runner", "ERROR") as cm:
+            self.assertRaises(
+                RuntimeError, task_runner._get_df_list, task_runner.optimizer_data
+            )
+            self.assertTrue(len(cm.output), 3)
+            self.assertRegex(
+                cm.output[0],
+                "ERROR:serving_cast.parallel_runner:A worker process crashed unexpectedly during execution. "
+                "Common causes: memory issues, unpicklable objects, or unhandled exceptions in worker.",
+            )
+            self.assertRegex(
+                cm.output[1],
+                "ERROR:serving_cast.parallel_runner:Executor: ProcessPoolExecutor, Workers: 4",
+            )
+
+    def test_run_disagg_with_ttft_and_tpot_limit(self):
+        """Test run_disagg method with ttft and tpot limit"""
+        self.args.ttft_limits = 1000
+        self.args.tpot_limits = 50
+        self.args.batch_range = [2, 2]
+        self.args.disagg = True
+        task_runner = ParallelRunner(self.args)
+        result = task_runner.run_disagg()
+
+        # Prefill and decode
+        self.assertEqual(len(result), 2)
+        self.assertIsInstance(result[0], OptimizerSummary)
+
+        prefill_df = result[0].get_summary_df()
+        row = prefill_df.iloc[0]
+        self.assertEqual(row["concurrency"], 2)
+        self.assertIsNone(row["tpot"])
+
+        decode_df = result[1].get_summary_df()
+        row = decode_df.iloc[0]
+        self.assertEqual(row["concurrency"], 2)
+        self.assertIsNone(row["ttft"])
+
+    def test_submit_task(self):
+        """Test _submit_task method"""
+        user_config = UserInputConfig.from_args(self.args)
+        optimizer_data = OptimizerData(
+            input_length=self.args.input_length,
+            output_length=self.args.output_length,
+            ttft_limits=1000,
+            tpot_limits=50,
+            max_prefill_tokens=self.args.max_prefill_tokens,
+            num_devices=self.args.num_devices,
+            num_mtp_tokens=1,
+            mtp_acceptance_rate=[0.9],
+        )
+
+        task_runner = ParallelRunner(self.args)
+        result_df = task_runner._submit_task(user_config, optimizer_data)
+        self.assertIsNotNone(result_df)
+        row = result_df.iloc[0]
+        self.assertEqual(row["model_id"], self.args.model_id)
+        self.assertEqual(row["parallel"], "tp1pp1dp1")
+
+
+if __name__ == "__main__":
+    unittest.main()

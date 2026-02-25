@@ -1,6 +1,7 @@
 import fnmatch
+import logging
 import re
-from typing import List, Optional
+from typing import List, Optional, Union
 
 import torch
 from transformers.utils.quantization_config import (
@@ -15,6 +16,9 @@ DTYPE_FP8 = torch.float8_e5m2
 DTYPE_FP4 = torch.int4
 
 
+logger = logging.getLogger(__name__)
+
+
 def register_tensor_cast_op(name, mutates_args=(), **kwargs):
     """
     Register tensor_cast custom op with `name` under tensor_cast namespace.
@@ -27,6 +31,7 @@ def register_tensor_cast_op(name, mutates_args=(), **kwargs):
             f"tensor_cast::{name}", mutates_args=mutates_args, **kwargs
         )(func)
         custom_op.register_fake(func)
+        logger.debug("Registered Operator: tensor_cast::%s", name)
         return func
 
     return decorator
@@ -85,3 +90,21 @@ def str_to_dtype(string: str) -> torch.dtype:
     if res is None:
         raise ValueError(f"Unsupported type for model: {string}")
     return res
+
+
+def get_nested_attr(obj, attr: Union[str, List[str]]):
+    """Get attribute recursively from an object.
+
+    Args:
+        obj: The object to get the attribute from.
+        attr: The attribute to get, can be a list of attributes.
+    """
+    if obj is None:
+        return None
+    if isinstance(attr, str):
+        return getattr(obj, attr, None)
+    elif isinstance(attr, list):
+        if len(attr) == 0:
+            return obj
+        else:
+            return get_nested_attr(getattr(obj, attr[0], None), attr[1:])

@@ -4,10 +4,12 @@ from typing import Optional
 import torch
 from torch.utils._cxx_pytree import tree_map
 
-from ..device import DeviceProfile
 from ..config import performance_model as perf_config
 
-from . import OpInvokeInfo, PerformanceModel
+from ..device import DeviceProfile
+from .base import PerformanceModel
+
+from .op_invoke_info import OpInvokeInfo
 
 from .utils import is_view_op
 

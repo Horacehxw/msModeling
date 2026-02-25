@@ -8,9 +8,9 @@ from typing import Any, Dict
 import numpy as np
 
 import pandas as pd
+from serving_cast.stime import get_logger
 
-import stime
-from stime import get_logger
+from . import stime
 
 logger = get_logger(__name__)
 
@@ -26,7 +26,7 @@ def main_processing(serving, load_gen):
         stime.elapse(10)
 
     logger.debug(
-        f"time {stime.now():.1f}: all of the requests are finished, stop simulation"
+        "time %.1f: all of the requests are finished, stop simulation", stime.now()
     )
     stime.stop_simulation()
     return
