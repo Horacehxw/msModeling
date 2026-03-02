@@ -669,22 +669,9 @@ class QueryEngine:
         interp_dims = schema.get_interpolation_dimensions()
 
         # Step 1: 按离散维度过滤到子集
-        subset = self._filter_by_discrete(data, shape, discrete_dims)
-        if subset is None:
-            raise PerfDataNotAvailableError(f"No data for discrete dims: {shape}")
-
         # Step 2: 精确匹配
-        result = self._try_exact(subset, shape, interp_dims)
-        if result is not None:
-            return result
-
         # Step 3: 插值
-        result = self._try_interpolate(subset, shape, interp_dims)
-        if result is not None:
-            return result
-
         # Step 4: 外推（最近邻 + 线性外推）
-        return self._try_extrapolate(subset, shape, interp_dims)
 ```
 
 > **插值策略参考**：参考 [AI Configurator](https://github.com/ai-dynamo/aiconfigurator) 的 2D+1D 混合插值方法（见第 2.5 节）：先对两个维度做双线性插值，再对第三个维度做 1D 插值。对 Attention 等 O(n²) 复杂度的算子，在插值前对序列维度做 sqrt 变换以提高拟合精度。置信度评分基于查询点到最近实测数据点的距离计算。
