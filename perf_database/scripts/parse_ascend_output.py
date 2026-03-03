@@ -24,8 +24,37 @@ OUTPUT_SHAPES = "Output Shapes"
 OUTPUT_DTYPES = "Output Data Types"
 OUTPUT_FORMATS = "Output Formats"
 TYPE_COL = "Type"
+OP_STATE = "OP State"
+ACCELERATOR_CORE = "Accelerator Core"
 DURATION_US = "Duration(us)"
 AVG_DURATION_US = "Average Duration(us)"
+EXTRA_NUMERIC_COLUMNS = [
+    "aicore_time(us)",
+    "aic_total_cycles",
+    "aic_mac_time(us)",
+    "aic_mac_ratio",
+    "aic_scalar_time(us)",
+    "aic_scalar_ratio",
+    "aic_mte1_time(us)",
+    "aic_mte1_ratio",
+    "aic_mte2_time(us)",
+    "aic_mte2_ratio",
+    "aic_fixpipe_time(us)",
+    "aic_fixpipe_ratio",
+    "aic_icache_miss_rate",
+    "aiv_time(us)",
+    "aiv_total_cycles",
+    "aiv_vec_time(us)",
+    "aiv_vec_ratio",
+    "aiv_scalar_time(us)",
+    "aiv_scalar_ratio",
+    "aiv_mte2_time(us)",
+    "aiv_mte2_ratio",
+    "aiv_mte3_time(us)",
+    "aiv_mte3_ratio",
+    "aiv_icache_miss_rate",
+    "cube_utilization(%)",
+]
 
 
 def check_version(value: str) -> str:
@@ -75,6 +104,8 @@ class AscendProfilerParser:
             reader = csv.DictReader(f)
             required_columns = {
                 TYPE_COL,
+                OP_STATE,
+                ACCELERATOR_CORE,
                 INPUT_SHAPES,
                 INPUT_DTYPES,
                 INPUT_FORMATS,
@@ -83,6 +114,7 @@ class AscendProfilerParser:
                 OUTPUT_FORMATS,
                 DURATION_US,
             }
+            required_columns.update(EXTRA_NUMERIC_COLUMNS)
             missing = required_columns - set(reader.fieldnames or [])
             if missing:
                 missing_str = ", ".join(sorted(missing))
@@ -103,10 +135,13 @@ class AscendProfilerParser:
             lambda: {
                 "sum_duration": 0.0,
                 "count": 0,
+                "op_state": "",
+                "accelerator_core": "",
                 "input_dtypes": "",
                 "input_formats": "",
                 "output_dtypes": "",
                 "output_formats": "",
+                "sum_extra": {col: 0.0 for col in EXTRA_NUMERIC_COLUMNS},
             }
         )
 
@@ -121,8 +156,16 @@ class AscendProfilerParser:
                 self._safe_cell(row, DURATION_US)
             )
             item["count"] = int(item["count"]) + 1
+            for col in EXTRA_NUMERIC_COLUMNS:
+                item["sum_extra"][col] = float(item["sum_extra"][col]) + self._parse_duration(
+                    self._safe_cell(row, col)
+                )
 
             # Keep the first non-empty meta fields for this shape pair.
+            if not item["op_state"]:
+                item["op_state"] = self._safe_cell(row, OP_STATE)
+            if not item["accelerator_core"]:
+                item["accelerator_core"] = self._safe_cell(row, ACCELERATOR_CORE)
             if not item["input_dtypes"]:
                 item["input_dtypes"] = self._safe_cell(row, INPUT_DTYPES)
             if not item["input_formats"]:
@@ -137,8 +180,16 @@ class AscendProfilerParser:
             if not op_type:
                 continue
             avg_duration = float(item["sum_duration"]) / int(item["count"])
+            avg_extra = {
+                f"Average {col}": (
+                    float(item["sum_extra"][col]) / int(item["count"])
+                )
+                for col in EXTRA_NUMERIC_COLUMNS
+            }
             rows_by_type[op_type].append(
                 {
+                    OP_STATE: item["op_state"],
+                    ACCELERATOR_CORE: item["accelerator_core"],
                     INPUT_SHAPES: input_shapes,
                     INPUT_DTYPES: item["input_dtypes"],
                     INPUT_FORMATS: item["input_formats"],
@@ -146,11 +197,14 @@ class AscendProfilerParser:
                     OUTPUT_DTYPES: item["output_dtypes"],
                     OUTPUT_FORMATS: item["output_formats"],
                     AVG_DURATION_US: f"{avg_duration:.6f}",
+                    **{k: f"{v:.6f}" for k, v in avg_extra.items()},
                 }
             )
 
         output_files: List[Path] = []
         ordered_columns = [
+            OP_STATE,
+            ACCELERATOR_CORE,
             INPUT_SHAPES,
             INPUT_DTYPES,
             INPUT_FORMATS,
@@ -159,6 +213,7 @@ class AscendProfilerParser:
             OUTPUT_FORMATS,
             AVG_DURATION_US,
         ]
+        ordered_columns.extend([f"Average {col}" for col in EXTRA_NUMERIC_COLUMNS])
         for op_type, type_rows in rows_by_type.items():
             output_path = self.output_dir / f"{self._sanitize_filename(op_type)}.csv"
             # Stable ordering for reproducible output
