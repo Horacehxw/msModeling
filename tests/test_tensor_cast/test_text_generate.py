@@ -1017,7 +1017,8 @@ class TestTextGenerate(unittest.TestCase):
         result = model_runner.run_inference(generate_inputs_func=generate_inputs)
         self._validate_inference_result(result, "test_o_proj_specific_parallelism")
 
-    def test_word_embedding_parallel(self):
+    @parameterized.expand([["col"], ["row"]])
+    def test_word_embedding_parallel(self, embedding_tp_mode):
         """Test with word embedding parallel."""
         user_input = UserInputConfig(
             device=self.device,
@@ -1031,10 +1032,13 @@ class TestTextGenerate(unittest.TestCase):
             world_size=4,
             tp_size=2,
             word_embedding_tp=True,
+            word_embedding_tp_mode=embedding_tp_mode,
         )
         model_runner = ModelRunner(user_input)
         result = model_runner.run_inference(generate_inputs_func=generate_inputs)
-        self._validate_inference_result(result, "test_word_embedding_parallel")
+        self._validate_inference_result(
+            result, f"test_word_embedding_parallel_{embedding_tp_mode}"
+        )
 
     def test_qwen3_32b_tp16(self):
         """Make sure tp_size can be greater than num_key_value_heads."""

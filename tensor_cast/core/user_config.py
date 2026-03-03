@@ -58,6 +58,7 @@ class UserInputConfig:
     moe_dp_size: int = 1
     moe_tp_size: Optional[int] = None
     word_embedding_tp: bool = False
+    word_embedding_tp_mode: str = "col"
     enable_redundant_experts: bool = False
     enable_external_shared_experts: bool = False
     host_external_shared_experts: bool = False
@@ -71,10 +72,18 @@ class UserInputConfig:
 
     def __post_init__(self):
         self._validate_device()
+        self._validate_embedding_tp_mode()
 
     def _validate_device(self):
         if self.device not in DeviceProfile.all_device_profiles:
             raise ValueError(f"Device '{self.device}' not recognized.")
+
+    def _validate_embedding_tp_mode(self):
+        if self.word_embedding_tp_mode not in {"col", "row"}:
+            raise ValueError(
+                "word_embedding_tp_mode must be one of {'col', 'row'}, "
+                f"got {self.word_embedding_tp_mode!r}."
+            )
 
     def _print_info(self):
         print("--- Configuration ---")
@@ -126,6 +135,7 @@ class UserInputConfig:
             moe_tensor_parallel_size=self.moe_tp_size,
             moe_data_parallel_size=self.moe_dp_size,
             embedding_parallel=self.word_embedding_tp,
+            embedding_parallel_mode=self.word_embedding_tp_mode,
             pipeline_parallel_size=self.pp_size,
         )
 

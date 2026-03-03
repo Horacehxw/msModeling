@@ -231,6 +231,7 @@ class ParallelConfig:
     lmhead_tensor_parallel_size: Optional[int] = None
     lmhead_data_parallel_size: Optional[int] = None
     embedding_parallel: bool = False
+    embedding_parallel_mode: str = "col"
     expert_parallel_size: int = 1
     moe_tensor_parallel_size: Optional[int] = None
     moe_data_parallel_size: int = 1

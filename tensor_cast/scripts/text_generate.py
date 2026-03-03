@@ -216,6 +216,13 @@ def main():
         help="Whether or not to implement word embedding tensor parallel",
     )
     parser.add_argument(
+        "--word-embedding-tp-mode",
+        type=str,
+        choices=["col", "row"],
+        default="col",
+        help="Word embedding tensor parallel sharding mode.",
+    )
+    parser.add_argument(
         "--enable-redundant-experts",
         action="store_true",
         help="Whether or not to use redundant experts. When this flag is True: "
