@@ -28,14 +28,26 @@ DURATION_US = "Duration(us)"
 AVG_DURATION_US = "Average Duration(us)"
 
 
+def check_version(value: str) -> str:
+    version = value.strip()
+    if not re.fullmatch(r"[0-9]+(?:\.[0-9A-Za-z_-]+)*", version):
+        raise argparse.ArgumentTypeError(
+            f"Invalid --vllm-ascend-version: {value!r}. Expected value like 0.9.2"
+        )
+    return version
+
+
 class AscendProfilerParser:
     """Parse Ascend kernel_details.csv and export averaged op duration by op type."""
 
-    def __init__(self, device: str, kernel_details_path: str):
+    def __init__(self, device: str, kernel_details_path: str, vllm_ascend_version: str):
         self.device = device
         self.kernel_details_path = Path(kernel_details_path)
+        self.vllm_ascend_version = vllm_ascend_version
         self.base_dir = Path(__file__).resolve().parents[1]
-        self.output_dir = self.base_dir / "data" / device
+        self.output_dir = (
+            self.base_dir / "data" / device / "vllm_ascend" / vllm_ascend_version
+        )
 
     @staticmethod
     def _parse_duration(value: str) -> float:
@@ -172,7 +184,16 @@ def build_argparser() -> argparse.ArgumentParser:
         "--device",
         required=True,
         choices=SUPPORTED_DEVICES,
-        help="Target device name used as output folder: perf_database/data/{device}/",
+        help=(
+            "Target device name used as output folder: "
+            "perf_database/data/{device}/vllm_ascend/{version}/"
+        ),
+    )
+    parser.add_argument(
+        "--vllm-ascend-version",
+        required=True,
+        type=check_version,
+        help="vLLM-Ascend version, e.g. 0.9.2.",
     )
     parser.add_argument(
         "--kernel-details-path",
@@ -185,7 +206,9 @@ def build_argparser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_argparser().parse_args()
     parser = AscendProfilerParser(
-        device=args.device, kernel_details_path=args.kernel_details_path
+        device=args.device,
+        kernel_details_path=args.kernel_details_path,
+        vllm_ascend_version=args.vllm_ascend_version,
     )
     output_files = parser.parse_and_export()
     print(
