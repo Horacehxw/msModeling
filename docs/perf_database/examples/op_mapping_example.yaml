@@ -705,6 +705,13 @@ torch_npu_reference:
     aclnn: [aclnnMm, aclnnMatmulWeightNz]
     microbench_api: "torch.mm"
 
+  MatMul:
+    apis:
+      - name: "torch.matmul"
+        note: "aten::matmul → aclnnMatMul (broadcasting support, N-D tensors)"
+    aclnn: aclnnMatMul
+    microbench_api: "torch.matmul"
+
   TransposeBatchMatMul:
     apis:
       - name: "torch.bmm"
