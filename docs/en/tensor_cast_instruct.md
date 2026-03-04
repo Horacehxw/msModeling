@@ -1,0 +1,138 @@
+## Introduction
+TensorCast is a performance simulation and analysis framework for PyTorch programs. It empowers developers and researchers to predict the performance of their neural network models on specific hardware configurations without needing access to the physical machine.
+
+At its core, TensorCast operates as a "virtual machine" or a runtime simulator. Instead of executing computations on a live accelerator, it intercepts a PyTorch program's computational graph and simulates its execution on a user-defined MachineConfig. This configuration specifies the target hardware's characteristics, such as theoretical compute power (TFLOPS), memory bandwidths, cache hierarchies, and interconnect speeds. In order to accurately estimate the optimal performance of the model on the given HW, TensorCast provides a model optimization pipeline including automatic model sharding, quantization and FX-graph optimization converting the source program into an optimal one before conducting the analysis.
+
+By running a model on this "virtual" hardware, TensorCast provides detailed performance insights, including:
+
+- Out-of-the-box support for Huggingface transformer models.
+
+- Support various hardware accelerator devices with simple configurations.
+
+- Operator-level execution time: Estimated using extensible models like analytic roofline model, empirical data, or ML-based predictors.
+
+- Memory footprint: Tracks total and peak memory allocation.
+
+- Computational characteristics: Analyzes FLOPs (Floating Point Operations) and memory access volume for each operator.
+
+- Advanced Scheduling Simulation: Models complex execution patterns like concurrent computations across multiple streams.
+
+The final output includes both comprehensive summary tables and detailed Chrome Trace files, allowing for deep visualization and identification of performance bottlenecks.
+
+## Supported Accelerators
+We support most of the AI accelerator devices with simple configurations. We have built-in support for Ascend ATLAS-family accelerators in `device.py` and also provide more device examples under `device_profile_examples` that can be copied into `device_profiles` folder for experiments. Note that these are examples for reference only - we do not guarantee their correctness.
+
+### Custom device types
+You may also define your own device types in a Python file and drop it under `device_profiles` folder. TensorCast will load them automatically. Refer to `device.py` for examples how to define a new device.
+
+## How to use
+### Supported python versions
+3.10+
+
+> [!Warning] Warning
+> If your operating system is Windows, please ensure that your PyTorch version is 2.8 or earlier, otherwise the program may not function correctly.
+
+### Install required packages
+```bash
+git clone https://gitcode.com/Ascend/msmodeling.git -b develop
+cd msmodeling
+pip install -r requirements.txt
+```
+
+### Run text generation with given query length
+We provide a `text_generate.py` command line interface to simulate the text generation. The script supports text generation with a batch of queries with the same input length and optionally same context length. The table summary of op performance breakdown is provided by default. An option is also provided to dump the chrome trace.
+
+Its general usage is shown below:
+```text
+usage: text_generate.py [-h]
+                        [--device {TEST_DEVICE,ATLAS_800_A2_376T_64G,ATLAS_800_A2_313T_64G,ATLAS_800_A2_280T_64G,ATLAS_800_A2_280T_64G_PCIE,ATLAS_800_A2_280T_32G_PCIE,ATLAS_800_A3_752T_128G_DIE,ATLAS_800_A3_560T_128G_DIE}]
+                        --num-queries NUM_QUERIES --query-length QUERY_LENGTH [--context-length CONTEXT_LENGTH] [--compile] [--compile-allow-graph-break]
+                        [--dump-input-shapes] [--chrome-trace CHROME_TRACE]
+                        [--quantize-linear-action {DISABLED,W8A16_STATIC,W8A8_STATIC,W4A8_STATIC,W8A16_DYNAMIC,W8A8_DYNAMIC,W4A8_DYNAMIC,FP8,MXFP4}] [--quantize-lmhead]        
+                        [--mxfp4-group-size MXFP4_GROUP_SIZE] [--quantize-attention-action {DISABLED,INT8}] [--graph-log-url GRAPH_LOG_URL] [--log-level LOG_LEVEL] [--decode]  
+                        [--num-mtp-tokens NUM_MTP_TOKENS] [--num-hidden-layers-override NUM_HIDDEN_LAYERS_OVERRIDE] [--disable-repetition]
+                        [--reserved-memory-gb RESERVED_MEMORY_GB] [--world-size WORLD_SIZE] [--tp-size TP_SIZE] [--dp-size DP_SIZE] [--mlp-tp-size MLP_TP_SIZE]
+                        [--mlp-dp-size MLP_DP_SIZE] [--lmhead-tp-size LMHEAD_TP_SIZE] [--lmhead-dp-size LMHEAD_DP_SIZE] [--o-proj-tp-size O_PROJ_TP_SIZE]
+                        [--o-proj-dp-size O_PROJ_DP_SIZE] [--word-embedding-tp] [--ep] [--enable-redundant-experts] [--enable-external-shared-experts]
+                        [--host-external-shared-experts] [--remote-source {huggingface,modelscope}]
+                        model_id
+
+Run a simulated LLM inference pass and dump the perf result.
+```
+Run `python -m cli.inference.text_generate --help` for details.
+#### External Shared Experts & Redundant Experts Implementation
+The following outlines the implementation logic for External Shared Experts and Redundant Experts.
+
+1. Redundant Experts Only:
+Each device will host an additional redundant expert.
+
+2. External Shared Experts Only:
+Devices are allocated between external shared experts and routing experts at a ratio of 1:`top_k`. Redundant experts are used to pad routing experts if needed.
+For example, if `world_size` is 64, `top_k` is 8, and number of routing experts is 256, 8 devices are assigned to host external shared experts.
+The remaining 56 devices are used to distribute 256 routing experts. 32 devices host 5 routing experts each. 24 devices host 4 routing experts and 1 redundant expert.
+
+3. Both External Shared Experts & Redundant Experts Enabled: 
+The allocation logic is identical to the "External Shared Experts Only" mode, with one addition: If no redundant experts are needed to pad routing experts (i.e., routing experts are evenly distributed across devices), each device hosting routing experts will host an additional redundant expert.
+
+#### Run Prefill
+To run a prefill of Qwen3-32B with two requests with 3500-token input length each on A2. You can run the following command:
+```bash
+python -m cli.inference.text_generate Qwen/Qwen3-32B --num-queries 2 --query-length 3500 --device TEST_DEVICE
+```
+You can also quantize the linear with various quantization schemes, such as W8A8 dynamic quantization and with 4500-token context as the prefix:
+```bash
+python -m cli.inference.text_generate Qwen/Qwen3-32B --num-queries 2 --query-length 3500 --context-length 4500 --device TEST_DEVICE --quantize-linear-action W8A8_DYNAMIC
+```
+
+#### Run Decode
+Running decode is similar by tweaking the input length and context length. Usually, the input length is 1.
+```bash
+python -m cli.inference.text_generate Qwen/Qwen3-32B --num-queries 10 --query-length 1 --context-length 4500 --device TEST_DEVICE --quantize-linear-action W8A8_STATIC
+```
+
+## TODO List
+- [X] Qwen3-32B: op perf model, memory allocation, TP, W8A8 (dynamic quant), interconnect modeling
+- [X] Model: Add more model support (make them compilable): kimi-k2, DSv3-671B, Qwen3-235B, GLM-4.5
+- [ ] Model: Support model auto sharding (DP/TP/EP/CP/SP)
+  - [X] DP
+  - [X] TP
+  - [X] EP
+  - [ ] CP
+  - [ ] SP
+- [ ] Model: Support model auto quantization (W8A8, W4A8, C8 etc.)
+  - [X] W8A8
+  - [X] W4A8
+  - [ ] FP8
+  - [ ] FP4
+  - [ ] C8
+- [ ] Compiler: Complete fusion support for models
+  - [ ] Qwen3 Dense
+  - [ ] DeepSeek
+- [ ] PerfModel: Implement empirical model. Collect empirical op perf data.
+- [ ] PerfModel: Implement analytic model for key PyTorch and Ascend ops.
+- [X] Device: Add interconnect modeling.
+- [X] Device: Support H20 modeling.
+- [X] Runtime: Perf text summary.
+- [X] Runtime: Perf chrome trace output.
+- [X] Runtime: Memory consumption estimation for ops.
+
+## Contributions
+### Installation
+`pip install -r requirements.txt`
+
+### Coding style
+Use `lintrunner` to make sure the coding style aligns:
+```bash
+pip install lintrunner
+cd /path/to/msmodeling
+lintrunner init  # run once
+lintrunner -a  # run every time before code check-in: check and apply necessary changes to follow the coding style
+```
+Fix the remaining lint issues reported by `lintrunner`.
+
+### Unit tests
+```bash
+pip install -r requirements.txt
+cd /path/to/msmodeling
+```
+Make sure unit tests pass by running: `pytest tests/tensor_cast -n auto`

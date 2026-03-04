@@ -1,5 +1,4 @@
 import contextlib
-import copy
 import logging
 import os
 from operator import attrgetter
@@ -14,9 +13,11 @@ from transformers.utils.quantization_config import (
     QuantizationConfigMixin,
 )
 
+from ..layers import COLWISE_LINEAR, ROWWISE_LINEAR
 from ..layers.attention_adapters import BailingMoeV2AttentionAdapter
 
 from ..layers.mla import MultiheadLatentAttentionBase
+from ..layers.moe_layer import TensorQwen3VLMoeTextMLP
 from ..model_config import (
     AttentionQuantConfig,
     ModelConfig,
@@ -33,17 +34,30 @@ logger = logging.getLogger(__name__)
 _model_type_to_moe_config: Dict[str, MoEConfig] = {
     "deepseek_v3": MoEConfig(
         module_name="DeepseekV3MoE",
+        num_experts_key="n_routed_experts",
     ),
     "glm4_moe": MoEConfig(
         module_name="Glm4MoeMoE",
+        num_experts_key="n_routed_experts",
     ),
     "minimax_m2": MoEConfig(
         module_name="MiniMaxM2SparseMoeBlock",
         gate_returns_raw_logits=True,
+        num_experts_key="num_local_experts",
     ),
     "qwen3_moe": MoEConfig(
         module_name="Qwen3MoeSparseMoeBlock",
         gate_returns_raw_logits=True,
+    ),
+    "qwen3_vl_moe": MoEConfig(
+        module_name="Qwen3VLMoeTextSparseMoeBlock",
+        gate_returns_raw_logits=True,
+        num_experts_key=["text_config", "num_experts"],
+    ),
+    "glm4v_moe": MoEConfig(
+        module_name="Glm4vMoeTextMoE",
+        gate_returns_raw_logits=False,
+        num_experts_key=["text_config", "n_routed_experts"],
     ),
     "qwen3_next": MoEConfig(
         module_name="Qwen3NextSparseMoeBlock",
@@ -54,6 +68,7 @@ _model_type_to_moe_config: Dict[str, MoEConfig] = {
     ),
     "mimo_v2_flash": MoEConfig(
         module_name="MiMoV2MoE",
+        num_experts_key="n_routed_experts",
     ),
     "ernie4_5_moe": MoEConfig(
         # This is not a strict mapping to ERNIE MoE which has bias correction
@@ -63,6 +78,7 @@ _model_type_to_moe_config: Dict[str, MoEConfig] = {
         # is minor and ignorable compared to other primary ones.
         module_name="Ernie4_5_MoeSparseMoeBlock",
         gate_returns_raw_logits=True,
+        num_experts_key="moe_num_experts",
     ),
     "bailing_moe": MoEConfig(
         module_name="BailingMoeV2SparseMoeBlock",
@@ -135,26 +151,173 @@ def get_attention_quant_config(model, layer_idx) -> Optional[AttentionQuantConfi
     return None
 
 
+_model_type_to_custom_expert_module_mapping: Dict[str, type[torch.nn.Module]] = {
+    "qwen3_vl_moe": TensorQwen3VLMoeTextMLP,
+}
+
+
+def model_type_to_custom_expert_module_mapping(
+    model_type: str,
+) -> Optional[type[torch.nn.Module]]:
+    return _model_type_to_custom_expert_module_mapping.get(model_type)
+
+
+"""
+This dictionary defines the access paths for model components and their
+structural mapping during weight conversion or parallelization.
+
+Key Descriptions:
+visual:
+    - Meaning: Retrieves the Vision Encoder instance.
+    - Purpose: Points to the root module responsible for image feature extraction.
+
+language_model:
+    - Meaning: Retrieves the Language Model (LLM) instance.
+    - Purpose: Points to the core LLM responsible for text processing and multi-modal fusion.
+
+visual.layers:
+    - Meaning: Points to the list of layers (Transformer Layers) within the vision module.
+    - Distinction: This is an [Object Accessor]. It tells the program how to retrieve the
+      actual Layer objects from the model instance.
+    - Mapping: Internally usually corresponds to `visual.blocks` (e.g., Qwen2-VL or GLM).
+
+path.visual.layers:
+    - Meaning: The [String Path Representation] of vision layers inside the model.
+    - Distinction: This is a [Path Mapping]. It returns a string "visual.blocks" rather than an object.
+    - Purpose: Used for distributed strategies or logging to identify weight namespaces in state_dict.
+
+path.language_model.layers:
+    - Meaning: The [String Path Representation] of language model layers.
+    - Purpose: Same as above, mapping to "language_model.layers".
+
+visual_merger_linear:
+    - Meaning: Configuration for linear layers in the vision feature fusion layer (Merger/Projector).
+    - Purpose: Targets linear mapping layers that merge or transform multiple visual tokens.
+      Returning an empty dict typically indicates using the default parallel strategy.
+
+visual_mlp_linear:
+    - Meaning: Configuration for linear layers within the MLP blocks of the vision module.
+    - Purpose: Points to the Feed-Forward Network (FFN) inside each Vision Transformer layer.
+"""
+common_visual_config = {
+    "visual": attrgetter("visual"),
+    "language_model": attrgetter("language_model"),
+    "visual.layers": attrgetter("visual.blocks"),
+    "path.visual.layers": lambda _: "visual.blocks",
+    "path.language_model.layers": lambda _: "language_model.layers",
+    "visual_merger_linear": lambda _: {},
+    "visual_mlp_linear": lambda _: {},
+}
+
+
+def resolve_model_config(custom_config=None):
+    if custom_config is None:
+        return common_visual_config
+    visual_config = common_visual_config.copy()
+    visual_config.update(custom_config)
+    return visual_config
+
+
 _VISUAL_FAMILY = {
-    "qwen3_vl": {
-        "visual": attrgetter("visual"),
-        "language_model": attrgetter("language_model"),
-        "visual.layers": attrgetter("visual.blocks"),
-        "language_model.layers": lambda _: "language_model.layers",
-    },
-    "internvl": {
-        "visual": attrgetter("vision_tower"),
-        "language_model": attrgetter("language_model"),
-        "visual.layers": attrgetter("vision_tower.encoder.layer"),
-        "language_model.layers": lambda _: "language_model.layers",
-    },
+    "default": resolve_model_config(),
+    "qwen3_vl": resolve_model_config(
+        {
+            "visual_merger_linear": lambda _: {
+                "visual.merger.linear_fc1": COLWISE_LINEAR,
+                "visual.merger.linear_fc2": ROWWISE_LINEAR,
+                "visual.deepstack_merger_list.*.linear_fc1": COLWISE_LINEAR,
+                "visual.deepstack_merger_list.*.linear_fc2": ROWWISE_LINEAR,
+            },
+            "visual_mlp_linear": lambda _: {
+                "visual.blocks.*.mlp.linear_fc1": COLWISE_LINEAR,
+                "visual.blocks.*.mlp.linear_fc2": ROWWISE_LINEAR,
+            },
+        }
+    ),
+    "glm4v": resolve_model_config(
+        {
+            "visual_merger_linear": lambda _: {
+                "visual.merger.gate_proj": COLWISE_LINEAR,
+                "visual.merger.up_proj": COLWISE_LINEAR,
+                "visual.merger.down_proj": ROWWISE_LINEAR,
+            },
+            "visual_mlp_linear": lambda _: {
+                "visual.blocks.*.mlp.gate_proj": COLWISE_LINEAR,
+                "visual.blocks.*.mlp.up_proj": COLWISE_LINEAR,
+                "visual.blocks.*.mlp.down_proj": ROWWISE_LINEAR,
+            },
+        }
+    ),
+    "internvl": resolve_model_config(
+        {
+            "visual.layers": attrgetter("vision_tower.encoder.layer"),
+            "path.visual.layers": lambda _: "vision_tower.encoder.layer",
+            "visual_mlp_linear": lambda _: {
+                "vision_tower.encoder.layer.*.mlp.fc1": COLWISE_LINEAR,
+                "vision_tower.encoder.layer.*.mlp.fc2": ROWWISE_LINEAR,
+            },
+        }
+    ),
 }
 
 _MODEL_TYPE_TO_FAMILY = {
     "qwen3_vl": "qwen3_vl",
     "qwen3_vl_moe": "qwen3_vl",
+    "glm4v_moe": "glm4v",
     "internvl": "internvl",
 }
+
+
+def patch_method_for_glm4_vl():
+    """
+    Patch the GLM4V-MoE model to fix simulation issues in meta mode.
+
+    Problem background:
+    1. VisionEmbeddings.forward converts lengths in list form to a meta tensor,
+        while subsequent computations require actual values (implicitly calling item), which causes errors;
+    2. get_placeholder_mask uses boolean-mask-based tensor indexing operations,
+        which fail or cause dimension mismatch in meta mode.
+
+    Solution:
+    * Convert list-based lengths to a tensor before entering forward, avoiding the creation of a meta tensor.
+    * Force image_features=None to skip image-related checks in get_placeholder_mask.
+    """
+
+    from transformers.models.glm4v_moe import Glm4vMoeModel
+
+    original_get_placeholder_mask = Glm4vMoeModel.get_placeholder_mask
+
+    def patched_get_placeholder_mask(self, *args, **kwargs):
+        # Forcibly skip image_features
+        kwargs["image_features"] = None
+        return original_get_placeholder_mask(self, *args, **kwargs)
+
+    Glm4vMoeModel.get_placeholder_mask = patched_get_placeholder_mask
+
+    from transformers.models.glm4v_moe.modeling_glm4v_moe import (
+        Glm4vMoeVisionEmbeddings,
+    )
+
+    original_forward = Glm4vMoeVisionEmbeddings.forward
+
+    def patched_forward(self, *args, **kwargs):
+        if len(args) > 1 and isinstance(args[1], list):
+            lengths_tensor = torch.tensor(args[1], dtype=torch.long)
+            args = (args[0], lengths_tensor) + args[2:]
+        return original_forward(self, *args, **kwargs)
+
+    Glm4vMoeVisionEmbeddings.forward = patched_forward
+
+
+def patch_method_for_vl(model_type):
+    patchers = {
+        "qwen3_vl": patch_method_for_qwen3_vl,
+        "qwen3_vl_moe": patch_method_for_qwen3_vl,
+        "glm4v_moe": patch_method_for_glm4_vl,
+    }
+    patcher = patchers.get(model_type)
+    if patcher is not None:
+        patcher()
 
 
 def patch_method_for_qwen3_vl():

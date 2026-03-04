@@ -173,14 +173,6 @@ class ParallelMoELayer(ModelWrapperBase):
             self.transform_dp_group = (
                 self.global_dp_group.world_size != self.ep_group.world_size
             )
-            if (
-                self.transform_dp_group
-                and self.ep_group.world_size != self.ep_group.global_world_size
-            ):
-                raise ValueError(
-                    f"The scenario where expert_parallel_size {self.ep_group.world_size}"
-                    f"!= world_size {self.ep_group.global_world_size} is not supported."
-                )
         else:
             self.transform_dp_group = self.global_dp_group.world_size != 1
 
@@ -454,3 +446,23 @@ class FusedMoETensorCast(FusedMoEBase):
             final_hidden_states = final_hidden_states + shared_expert_output
 
         return final_hidden_states.to(hidden_states.dtype)
+
+
+class TensorQwen3VLMoeTextMLP(torch.nn.Module):
+    def __init__(self, original_module: torch.nn.Module):
+        super().__init__()
+        self.hidden_size = original_module.hidden_size
+        self.intermediate_size = original_module.intermediate_size
+        self.act_fn = original_module.act_fn
+        self.gate_up_proj = torch.nn.Linear(
+            self.hidden_size, self.intermediate_size * 2, bias=False
+        )
+        self.down_proj = torch.nn.Linear(
+            self.intermediate_size, self.hidden_size, bias=False
+        )
+
+    def forward(self, hidden_states):
+        gate_up = self.gate_up_proj(hidden_states)
+        gate, up = gate_up.chunk(2, dim=-1)
+        hidden_states = self.down_proj(up * self.act_fn(gate))
+        return hidden_states

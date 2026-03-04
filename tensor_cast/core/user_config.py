@@ -1,9 +1,9 @@
-#!/usr/bin/env python
 # _*_coding:utf-8_*_
 """
 user_config
 """
 
+import logging
 from dataclasses import dataclass, field, fields
 from typing import List, Optional
 
@@ -12,6 +12,9 @@ from ..core.quantization.config import create_quant_config
 from ..core.quantization.datatypes import QuantizeAttentionAction, QuantizeLinearAction
 from ..device import DeviceProfile
 from ..model_config import ParallelConfig, QuantConfig, RemoteSource
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -51,7 +54,9 @@ class UserInputConfig:
     mlp_dp_size: Optional[int] = None
     lmhead_tp_size: Optional[int] = None
     lmhead_dp_size: Optional[int] = None
-    ep: bool = False
+    ep_size: int = 1
+    moe_dp_size: int = 1
+    moe_tp_size: Optional[int] = None
     word_embedding_tp: bool = False
     enable_redundant_experts: bool = False
     enable_external_shared_experts: bool = False
@@ -64,25 +69,10 @@ class UserInputConfig:
 
     def __post_init__(self):
         self._validate_device()
-        self._validate_quantize_action()
 
     def _validate_device(self):
         if self.device not in DeviceProfile.all_device_profiles:
             raise ValueError(f"Device '{self.device}' not recognized.")
-
-    def _validate_quantize_action(self):
-        if self.quantize_linear_action != QuantizeLinearAction.DISABLED:
-            print(
-                f"Quantization Linear: {self.quantize_linear_action}, quantize LM Head: {self.quantize_lmhead}"
-            )
-            if self.quantize_linear_action == QuantizeLinearAction.MXFP4:
-                print(f"  MXFP4 group size: {self.mxfp4_group_size}")
-        else:
-            print("Quantization Linear: Disabled")
-        if self.quantize_attention_action != QuantizeAttentionAction.DISABLED:
-            print(f"Quantization Attention: {self.quantize_attention_action}")
-        else:
-            print("Quantization Attention: Disabled")
 
     def _print_info(self):
         print("--- Configuration ---")
@@ -95,6 +85,18 @@ class UserInputConfig:
         print(f"Enable repetition: {not self.disable_repetition}")
         if self.num_mtp_tokens > 0:
             print(f"Number of MTP layers: {self.num_mtp_tokens}")
+        if self.quantize_linear_action != QuantizeLinearAction.DISABLED:
+            print(
+                f"Quantization Linear: {self.quantize_linear_action}, quantize LM Head: {self.quantize_lmhead}"
+            )
+            if self.quantize_linear_action == QuantizeLinearAction.MXFP4:
+                print(f"  MXFP4 group size: {self.mxfp4_group_size}")
+        else:
+            print("Quantization Linear: Disabled")
+        if self.quantize_attention_action != QuantizeAttentionAction.DISABLED:
+            print(f"Quantization Attention: {self.quantize_attention_action}")
+        else:
+            print("Quantization Attention: Disabled")
         print(f"Use torch.compile: {self.do_compile}")
         if self.do_compile:
             print(f"  allow graph break: {self.allow_graph_break}")
@@ -118,7 +120,9 @@ class UserInputConfig:
             mlp_data_parallel_size=self.mlp_dp_size,
             lmhead_tensor_parallel_size=self.lmhead_tp_size,
             lmhead_data_parallel_size=self.lmhead_dp_size,
-            expert_parallel=self.ep,
+            expert_parallel_size=self.ep_size,
+            moe_tensor_parallel_size=self.moe_tp_size,
+            moe_data_parallel_size=self.moe_dp_size,
             embedding_parallel=self.word_embedding_tp,
             pipeline_parallel_size=self.pp_size,
         )
@@ -159,6 +163,13 @@ class UserInputConfig:
     def from_args(cls, args) -> "UserInputConfig":
         # get all names of cls
         field_names = {_field.name for _field in fields(cls)}
+        logger.debug(
+            "Initializing %s from command-line arguments. "
+            "Class has %d defined fields: %s",
+            cls.__name__,
+            len(field_names),
+            sorted(field_names),
+        )
 
         # Extract only the fields that exist in the cls from args.
 
@@ -171,6 +182,10 @@ class UserInputConfig:
             "query_length": "query_len",
             "num_devices": "world_size",
         }
+        logger.debug(
+            "Using special input key mapping for backward compatibility: %s",
+            special_input_key_map,
+        )
         filtered_kwargs = {}
         for field_name, field_value in vars(args).items():
             if field_name in special_input_key_map:

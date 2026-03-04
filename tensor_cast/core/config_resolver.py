@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 # _*_coding:utf-8_*_
 """
 Resolves and configures model settings for tensor cast operations.
@@ -194,4 +193,8 @@ class ConfigResolver:
 
     def update_parallel_config(self):
         if self.model_config.moe_config is None:
-            self.model_config.parallel_config.expert_parallel = False
+            self.model_config.parallel_config.expert_parallel_size = 1
+            self.model_config.parallel_config.moe_tensor_parallel_size = 1
+            self.model_config.parallel_config.moe_data_parallel_size = (
+                self.model_config.parallel_config.world_size
+            )

@@ -1,5 +1,4 @@
 # Copyright Huawei Technologies Co., Ltd. 2025-2025. All rights reserved.
-import stime
 from serving_cast.device import DummyDeviceConfig, MachineConfig
 from serving_cast.instance import Instance
 from serving_cast.load_gen import FixedLengthLoadGen
@@ -7,13 +6,14 @@ from serving_cast.model_runner import ModelConfig
 from serving_cast.serving import PdAggregationServing, PdDisaggregationServing
 from serving_cast.utils import main_processing, summarize
 
+from . import stime
+
 logger = stime.get_logger(__name__)
 
 
 def main_pd_aggregation():
     stime.init_simulation()
 
-    dummy_duration = 0.3
     unit_time = 0.0001
     num_prefill_decode_instances = 2
     prefill_decode_instances = []
@@ -44,7 +44,7 @@ def main_pd_aggregation():
         request_rate=1.0,
     )
 
-    main_task = stime.CallableTask(main_processing, serving, load_runner)
+    stime.CallableTask(main_processing, serving, load_runner)
 
     stime.start_simulation()
     summarize(load_runner.get_finished_requests().values())
@@ -53,7 +53,6 @@ def main_pd_aggregation():
 def main_pd_disaggregation():
     stime.init_simulation()
 
-    dummy_duration = 0.3
     unit_time = 0.0001
     num_prefill_instances = 1
     num_decode_instances = 1
@@ -94,7 +93,7 @@ def main_pd_disaggregation():
         request_rate=1000.0,
     )
 
-    main_task = stime.CallableTask(main_processing, serving, load_runner)
+    stime.CallableTask(main_processing, serving, load_runner)
 
     stime.start_simulation()
     summarize(load_runner.get_finished_requests().values())

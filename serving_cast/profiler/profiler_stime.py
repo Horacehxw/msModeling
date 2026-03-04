@@ -1,11 +1,10 @@
 # Copyright Huawei Technologies Co., Ltd. 2025-2025. All rights reserved.
-from stime import current_task_name, get_logger, now
+from serving_cast.stime import current_task_name, get_logger, now
 
 logger = get_logger(__name__)
 
 try:
-    from ms_service_profiler import Level, Profiler
-    from ms_service_profiler.parse import main as parse_main_func
+    from ms_service_profiler import Profiler
 except ImportError as e:
     raise ImportError("Please install ms_service_profiler") from e
 

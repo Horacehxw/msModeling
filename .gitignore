@@ -8,3 +8,7 @@
 
 .conda/
 .venv/
+
+# generated profiling data
+perf_database/data/
+temp/
