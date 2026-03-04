@@ -5,3 +5,7 @@
 # DT coverage report
 **/coverage
 .coverage
+
+# generated profiling data
+perf_database/data/
+temp/

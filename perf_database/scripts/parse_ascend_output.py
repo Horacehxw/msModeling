@@ -1,5 +1,6 @@
 import argparse
 import csv
+import math
 import re
 from collections import defaultdict
 from pathlib import Path
@@ -28,6 +29,7 @@ OP_STATE = "OP State"
 ACCELERATOR_CORE = "Accelerator Core"
 DURATION_US = "Duration(us)"
 AVG_DURATION_US = "Average Duration(us)"
+STD_DURATION_US = "Std Duration(us)"
 EXTRA_NUMERIC_COLUMNS = [
     "aicore_time(us)",
     "aic_total_cycles",
@@ -94,6 +96,11 @@ class AscendProfilerParser:
     def _safe_cell(row: Dict[str, str], key: str) -> str:
         return (row.get(key, "") or "").strip()
 
+    @staticmethod
+    def _is_na_shape(value: str) -> bool:
+        normalized = value.strip().strip('"').upper()
+        return normalized == "N/A"
+
     def _load_rows(self) -> List[Dict[str, str]]:
         if not self.kernel_details_path.exists():
             raise FileNotFoundError(
@@ -134,6 +141,7 @@ class AscendProfilerParser:
         ] = defaultdict(  # (type, input_shapes, output_shapes)
             lambda: {
                 "sum_duration": 0.0,
+                "sum_duration_sq": 0.0,
                 "count": 0,
                 "op_state": "",
                 "accelerator_core": "",
@@ -149,12 +157,14 @@ class AscendProfilerParser:
             op_type = self._safe_cell(row, TYPE_COL)
             input_shapes = self._safe_cell(row, INPUT_SHAPES)
             output_shapes = self._safe_cell(row, OUTPUT_SHAPES)
+            if self._is_na_shape(input_shapes) or self._is_na_shape(output_shapes):
+                continue
             key = (op_type, input_shapes, output_shapes)
             item = grouped[key]
 
-            item["sum_duration"] = float(item["sum_duration"]) + self._parse_duration(
-                self._safe_cell(row, DURATION_US)
-            )
+            duration = self._parse_duration(self._safe_cell(row, DURATION_US))
+            item["sum_duration"] = float(item["sum_duration"]) + duration
+            item["sum_duration_sq"] = float(item["sum_duration_sq"]) + duration * duration
             item["count"] = int(item["count"]) + 1
             for col in EXTRA_NUMERIC_COLUMNS:
                 item["sum_extra"][col] = float(item["sum_extra"][col]) + self._parse_duration(
@@ -179,10 +189,14 @@ class AscendProfilerParser:
         for (op_type, input_shapes, output_shapes), item in grouped.items():
             if not op_type:
                 continue
-            avg_duration = float(item["sum_duration"]) / int(item["count"])
+            count = int(item["count"])
+            avg_duration = float(item["sum_duration"]) / count
+            avg_duration_sq = float(item["sum_duration_sq"]) / count
+            variance = max(0.0, avg_duration_sq - avg_duration * avg_duration)
+            std_duration = math.sqrt(variance)
             avg_extra = {
                 f"Average {col}": (
-                    float(item["sum_extra"][col]) / int(item["count"])
+                    float(item["sum_extra"][col]) / count
                 )
                 for col in EXTRA_NUMERIC_COLUMNS
             }
@@ -197,6 +211,7 @@ class AscendProfilerParser:
                     OUTPUT_DTYPES: item["output_dtypes"],
                     OUTPUT_FORMATS: item["output_formats"],
                     AVG_DURATION_US: f"{avg_duration:.6f}",
+                    STD_DURATION_US: f"{std_duration:.6f}",
                     **{k: f"{v:.6f}" for k, v in avg_extra.items()},
                 }
             )
@@ -212,6 +227,7 @@ class AscendProfilerParser:
             OUTPUT_DTYPES,
             OUTPUT_FORMATS,
             AVG_DURATION_US,
+            STD_DURATION_US,
         ]
         ordered_columns.extend([f"Average {col}" for col in EXTRA_NUMERIC_COLUMNS])
         for op_type, type_rows in rows_by_type.items():

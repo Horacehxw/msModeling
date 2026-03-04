@@ -1,0 +1,2 @@
+perf_database/data/** filter=lfs diff=lfs merge=lfs -text
+temp/** filter=lfs diff=lfs merge=lfs -text
