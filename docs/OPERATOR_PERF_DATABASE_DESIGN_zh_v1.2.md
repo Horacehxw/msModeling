@@ -115,18 +115,55 @@ TensorCast 已有完善的性能模型框架：
 ### 3.1 整体架构
 
 ```
-EmpiricalPerformanceModel
-    │
-    ├── DataSource (抽象接口)
-    │   ├── ProfilingDataSource         # 预采集 Profiling CSV 数据
-    │   ├── CacheKeyDataSource          # JIT benchmark 缓存（未来）
-    │   └── InterpolatingDataSource     # Wrapper：在底层 DataSource 上添加插值能力
-    │
-    ├── fallback_model
-    │   ├── AnalyticPerformanceModel    # 计算算子 Roofline 兜底
-    │   └── CommAnalyticModel           # 通信算子解析模型兜底
-    │
-    └── op_mapping.yaml                 # 纯名字映射 + 元数据 + 插值策略
+┌───────────────────────────────────────────────────────────────────────────┐
+│                           TensorCast Runtime                              │
+│                                                                           │
+│  ┌────────────────────┐     ┌──────────────────────────────────────────┐  │
+│  │  Runtime            │     │  用户可配置选择 PerformanceModel          │  │
+│  │  (TorchDispatchMode)│────▶│                                          │  │
+│  │                     │     │  ┌──────────────────────────────────┐    │  │
+│  │  拦截所有算子调用   │     │  │ EmpiricalPerformanceModel（重构）│    │  │
+│  │  生成 OpInvokeInfo  │     │  │  DataSource.lookup(OpInvokeInfo) │    │  │
+│  └────────────────────┘     │  │  未命中 → fallback (Analytic)    │    │  │
+│                              │  └──────────────────────────────────┘    │  │
+│                              │  ┌──────────────────────────────────┐    │  │
+│                              │  │ AnalyticPerformanceModel（现有） │    │  │
+│                              │  │  Roofline 理论模型               │    │  │
+│                              │  └──────────────────────────────────┘    │  │
+│                              └──────────────────────────────────────────┘  │
+│                                           │                                │
+└───────────────────────────────────────────┼────────────────────────────────┘
+                                            │
+                      ┌─────────────────────┼─────────────────────┐
+                      │                     ▼                     │
+                      │       DataSource（抽象接口）              │
+                      │  ┌──────────────────────────────────┐    │
+                      │  │  ProfilingDataSource              │    │
+                      │  │  op_mapping.yaml 映射 + CSV 查询  │    │
+                      │  │  FRACTAL_NZ 恢复 + dtype 匹配     │    │
+                      │  └──────────────────────────────────┘    │
+                      │  ┌──────────────────────────────────┐    │
+                      │  │  InterpolatingDataSource (Wrapper)│    │
+                      │  │  精确匹配 → 插值 → 外推            │    │
+                      │  └──────────────────────────────────┘    │
+                      │  ┌──────────────────────────────────┐    │
+                      │  │  CacheKeyDataSource（未来扩展）   │    │
+                      │  │  JIT benchmark 缓存               │    │
+                      │  └──────────────────────────────────┘    │
+                      │  ┌──────────────────────────────────┐    │
+                      │  │  存储层                            │    │
+                      │  │  计算: vllm_ascend/{version}/*.csv │    │
+                      │  │  通信: hccl/{cann_version}/*.csv   │    │
+                      │  └──────────────────────────────────┘    │
+                      └──────────────────────────────────────────┘
+
+数据采集工具（离线执行，独立子系统）
+┌──────────────────────────────────────────────────────────────┐
+│  三步走：                                                     │
+│  1. vLLM Profiling → kernel_details.csv → 按 Type 拆分 CSV  │
+│  2. Microbenchmark 网格遍历 → 扩充 CSV 覆盖范围              │
+│  3. 端到端验证 → 精度报告                                    │
+└──────────────────────────────────────────────────────────────┘
 ```
 
 **设计原则**：
@@ -151,25 +188,10 @@ tensor_cast/performance_model/
         └── atlas_a3_752t_128g/
             ├── vllm_ascend/v0.13.0/      # 计算算子（和 vLLM 版本绑定）
             │   ├── op_mapping.yaml
-            │   ├── MatMulV2.csv
-            │   ├── QuantBatchMatmulV3.csv
-            │   ├── GroupedMatmul.csv
-            │   ├── FusedInferAttentionScore.csv
-            │   ├── AddRmsNorm.csv
-            │   ├── SwiGlu.csv
-            │   ├── AscendQuantV2.csv
-            │   ├── DynamicQuant.csv
-            │   ├── InterleaveRope.csv
-            │   ├── ReshapeAndCacheNdKernel.csv
-            │   ├── TransposeBatchMatMul.csv
-            │   ├── MoeDistributeDispatchV2.csv
-            │   └── MoeDistributeCombineV2.csv
+            │   └── {KernelType}.csv      # MatMulV2.csv, GroupedMatmul.csv, ... (~14 个)
             └── hccl/v8.1.RC1/            # HCCL 通信（和 CANN 版本绑定，跨 vLLM 版本复用）
                 ├── comm_config.yaml
-                ├── hcom_allReduce_.csv
-                ├── HcomAllGather.csv
-                ├── hcom_reduceScatter_.csv
-                └── hcom_alltoall_.csv
+                └── {hcom_op}.csv         # hcom_allReduce_.csv, HcomAllGather.csv, ... (~4 个)
 
 tools/perf_data_collection/               # 数据采集与数据库构建工具
 ├── parse_kernel_details.py               # 解析 kernel_details.csv → 按 Type 拆分
@@ -203,11 +225,6 @@ tools/perf_data_collection/               # 数据采集与数据库构建工具
 ```python
 # tensor_cast/performance_model/perf_database/data_source.py
 
-from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from enum import Enum, auto
-from typing import Optional, Dict, Any
-
 class QuerySource(Enum):
     MEASURED = auto()          # 精确匹配（置信度: 1.0）
     INTERPOLATED = auto()      # 插值估算（置信度: 0.7-0.95）
@@ -237,478 +254,164 @@ class DataSource(ABC):
 
 ### 4.2 ProfilingDataSource
 
-基于预采集 Profiling CSV 的只读数据源。内部处理 `op_mapping.yaml` 映射 + CSV 数据查询 + FRACTAL_NZ 格式转换 + dtype 匹配。
+基于预采集 Profiling CSV 的只读数据源。核心职责：`op_mapping.yaml` 映射 → CSV 查询 → FRACTAL_NZ 格式转换 → dtype 匹配。
 
-```python
-# tensor_cast/performance_model/perf_database/profiling_data_source.py
+**初始化**：加载 `op_mapping.yaml` + 按 `communication_data_ref` 加载通信数据（如有）。CSV 延迟加载并缓存。
 
-class ProfilingDataSource(DataSource):
-    """基于预采集 Profiling CSV 的数据源。"""
+**查询分派**（`lookup()` 内部）：
 
-    def __init__(self, data_dir: str, comm_grid: Optional["CommGrid"] = None):
-        self.data_dir = Path(data_dir)
-        self.op_mapping = load_yaml(self.data_dir / "op_mapping.yaml")
-        self.comm_grid = comm_grid
-        self._csv_cache: Dict[str, pd.DataFrame] = {}
-
-        # 加载通信数据（如果有）
-        comm_ref = self.op_mapping.get('communication_data_ref')
-        if comm_ref:
-            comm_dir = (self.data_dir / comm_ref).resolve()
-            if comm_dir.exists():
-                self.comm_config = load_yaml(comm_dir / "comm_config.yaml")
-                self.comm_dir = comm_dir
-            else:
-                self.comm_config = None
-        else:
-            self.comm_config = None
-
-    def lookup(self, op_invoke_info: OpInvokeInfo) -> Optional[QueryResult]:
-        func_name = str(op_invoke_info.func)
-        mapping = self.op_mapping['operator_mappings'].get(func_name)
-        if mapping is None:
-            return None
-
-        # 分派查询路径
-        if mapping.get('composite'):
-            # 复合映射（如 MLA 1:N），当前无法查询，fallback
-            return None
-
-        if mapping.get('category') == 'communication':
-            if self.comm_config is None:
-                return None  # fallback to CommAnalyticModel
-            return self._lookup_comm(op_invoke_info, mapping)
-
-        if mapping.get('query_mode') == 'attention_special':
-            return self._lookup_attention(op_invoke_info, mapping)
-
-        # 默认路径：计算算子
-        return self._lookup_compute(op_invoke_info, mapping)
-
-    def _lookup_compute(self, op_invoke_info, mapping):
-        """计算算子查询：匹配所有 input shape + dtype，output shape 验证"""
-        kernel_type = mapping['kernel_type']
-        csv_data = self._load_csv(kernel_type)
-
-        # 从 OpInvokeInfo 提取 query inputs
-        query_inputs = []
-        for arg in op_invoke_info.args:
-            if isinstance(arg, torch.Tensor):
-                query_inputs.append((tuple(arg.shape), arg.dtype))
-
-        # 提取 query outputs
-        query_outputs = []
-        if op_invoke_info.output is not None:
-            if isinstance(op_invoke_info.output, torch.Tensor):
-                query_outputs.append(tuple(op_invoke_info.output.shape))
-
-        for _, row in csv_data.iterrows():
-            if self._inputs_match(query_inputs, query_outputs, row):
-                return QueryResult(
-                    latency_us=row['Duration(us)'],
-                    confidence=1.0,
-                    source=QuerySource.MEASURED
-                )
-        return None
-
-    def _inputs_match(self, query_inputs, query_outputs, csv_row):
-        """通用匹配：恢复所有 FRACTAL_NZ → ND，然后逐 tensor 匹配 shape + dtype"""
-        csv_inputs = parse_profiling_inputs(csv_row)  # [(shape, format, dtype), ...]
-
-        if len(query_inputs) != len(csv_inputs):
-            return False
-
-        for (q_shape, q_dtype), (c_shape, c_format, c_dtype) in zip(
-            query_inputs, csv_inputs
-        ):
-            # dtype 精确匹配
-            if not dtype_matches(q_dtype, c_dtype):
-                return False
-            # shape 匹配
-            if c_format == 'FRACTAL_NZ':
-                recovered = fractal_nz_to_nd(c_shape)
-                if not shapes_close(q_shape, recovered):
-                    return False
-            elif c_format == 'ND':
-                if not shapes_close(q_shape, c_shape):
-                    return False
-
-        # Output shape 验证（可选，确认匹配正确性）
-        csv_outputs = parse_profiling_outputs(csv_row)
-        for q_out, (c_out_shape, _, _) in zip(query_outputs, csv_outputs):
-            if not shapes_close(q_out, c_out_shape):
-                return False
-
-        return True
-
-    def _lookup_comm(self, op_invoke_info, mapping):
-        """通信算子查询：message_bytes + num_devices + dtype + topology_tier"""
-        x = op_invoke_info.args[0]
-        message_bytes = x.nelement() * x.element_size()
-        dtype = x.dtype
-
-        # 提取 rank_group（位置因算子不同而不同）
-        func_name = str(op_invoke_info.func)
-        if 'all_reduce' in func_name:
-            rank_group = op_invoke_info.args[2]   # args[2] for all_reduce
-        elif 'all_gather' in func_name or 'reduce_scatter' in func_name:
-            rank_group = op_invoke_info.args[3]   # args[3] for all_gather/reduce_scatter
-        elif 'all_to_all' in func_name:
-            rank_group = op_invoke_info.args[4]   # args[4] for all_to_all
-
-        num_devices = len(rank_group)
-
-        # 从 CommGrid 推导 topology_tier
-        topology_tier = self.comm_grid._get_topology_idx_for_group(rank_group)
-
-        # 查 CSV
-        kernel_type = mapping['kernel_type']
-        csv_data = self._load_csv_comm(kernel_type)
-        candidates = csv_data[
-            (csv_data['num_devices'] == num_devices) &
-            (csv_data['topology_tier'] == topology_tier)
-        ]
-        if candidates.empty:
-            return None
-
-        # 精确匹配或插值 message_bytes
-        exact = candidates[candidates['message_bytes'] == message_bytes]
-        if not exact.empty:
-            row = exact.iloc[0]
-            return QueryResult(
-                latency_us=row['Duration(us)'],
-                confidence=1.0,
-                source=QuerySource.MEASURED
-            )
-        return None  # InterpolatingDataSource 负责插值
-
-    def _lookup_attention(self, op_invoke_info, mapping):
-        """FusedAttention 特殊查询：使用 seq_lens 维度"""
-        query = op_invoke_info.args[0]       # (num_tokens, hidden_size)
-        seq_lens = op_invoke_info.args[6]    # (batch_size,) 每个 request 的 KV 长度
-        query_lens = op_invoke_info.args[7]  # (batch_size,) 每个 request 的 query 长度
-
-        batch_size = len(seq_lens)
-        avg_seq_len = seq_lens.float().mean().item()
-
-        # 在 FusedInferAttentionScore.csv 中按 (batch_size, avg_seq_len, dtype) 查询
-        kernel_type = mapping['kernel_type']
-        csv_data = self._load_csv(kernel_type)
-        for _, row in csv_data.iterrows():
-            if (row['batch_size'] == batch_size and
-                abs(row['avg_seq_len'] - avg_seq_len) < 1.0):
-                return QueryResult(
-                    latency_us=row['Duration(us)'],
-                    confidence=1.0,
-                    source=QuerySource.MEASURED
-                )
-        return None
+```
+func_name → op_mapping.yaml 查 mapping
+  ├─ mapping 不存在 → return None
+  ├─ composite == true → _lookup_composite()
+  ├─ category == "communication" → _lookup_comm()
+  ├─ query_mode == "attention_special" → _lookup_attention()
+  └─ 默认 → _lookup_compute()
 ```
 
-**FRACTAL_NZ 通用恢复函数**：
+**计算算子匹配**（`_lookup_compute` + `_inputs_match`）：从 `OpInvokeInfo.args` 提取所有 tensor 的 `(shape, dtype)`，逐行匹配 CSV。对 FRACTAL_NZ 格式的 input 先调用 `fractal_nz_to_nd()` 恢复为 ND shape，再做精确匹配。Output shape 作为验证。
+
+**通信算子匹配**（`_lookup_comm`）：从 `args[0]` 计算 `message_bytes`，从 `rank_group`（位置因算子而异，见下表）推导 `topology_tier = comm_grid._get_topology_idx_for_group(rank_group)`，在 CSV 中精确匹配 `(num_devices, topology_tier)`。
+
+| Op | rank_group 位置 |
+|----|----------------|
+| all_reduce | args[2] |
+| all_gather / reduce_scatter | args[3] |
+| all_to_all | args[4] |
+
+**FusedAttention 匹配**（`_lookup_attention`）：从 `args[6]`（seq_lens）计算 `batch_size` 和 `avg_seq_len`，在 FusedAttention CSV 中按 `(batch_size, avg_seq_len)` 查询。
+
+**Composite 查询**（`_lookup_composite`）：针对 1:N 映射（如 MLA），ProfilingDataSource 主动分解为多个子内核查询并求和。流程：
+
+1. 根据 `func_name` 查找注册的分解函数（`COMPOSITE_DECOMPOSERS`）；未注册则 return None fallback
+2. 分解函数从 `OpInvokeInfo.args` 推导每个子内核的 `(kernel_type, shapes, dtype)`（区分 prefill/decode）
+3. 逐个子内核调用 `_lookup_compute_by_shapes()` 查询 CSV
+4. 任一子内核未命中 → 整体 return None；全部命中 → 求和 Duration 返回
+
+**MLA 分解函数**：复用 `performance_model/__init__.py` 已有的 shape 推导逻辑。MLA 按 prefill/decode 分解为不同子内核：
+
+| 阶段 | 子内核 | Shape 推导 |
+|------|--------|-----------|
+| Prefill | 1× TransposeBatchMatMul | `(num_tokens, kv_lora_rank) @ kv_b_proj` |
+| Prefill | 1× FusedInferAttentionScore | `(num_tokens, num_heads, qk_head_dim)` + decompressed KV |
+| Decode | 1× TransposeBatchMatMul (Q@W_UK_T) | `(num_tokens, num_heads, qk_nope_head_dim) @ W_UK_T` |
+| Decode | 1× FusedInferAttentionScore | compressed attention via latent space |
+| Decode | 1× TransposeBatchMatMul (AV@W_UV) | `(num_tokens, num_heads, kv_lora_rank) @ W_UV` |
+
+维度从 `OpInvokeInfo.args` 提取：`num_heads = q.size(1)`, `kv_lora_rank = W_UK_T.size(-1)`, `qk_rope_head_dim = kv_cache.size(-1) - kv_lora_rank` 等。Prefill/Decode 通过 `query_lens` 阈值判定。
+
+> 长期方案：MLA decomposition pass 完成后（见 9.1 节），每个子 op 独立生成 OpInvokeInfo，走普通 `_lookup_compute` 路径，composite 逻辑自然废弃。
+
+**关键辅助函数**：
 
 ```python
 def fractal_nz_to_nd(nz_shape):
-    """FRACTAL_NZ → ND，确定性公式。
-    已在 Qwen3-30B Prefill 268 行 FRACTAL_NZ MatMulV2 数据上零例外验证。
-
-    公式：[..., H, W, block_h, block_w] → [..., K, N]
-    其中 K = H * block_w, N = W * block_h
-
-    恢复后 shape 和 aten.mm args[1] 完全一致，无需转置。
-    原因：nn.Linear weight [N,K] dispatch 到 aten.mm 时已转置为 [K,N]，
-    NPU 的 FRACTAL_NZ 存的也是转置后的 [K,N] 形式。
-    """
+    """[..., H, W, block_h, block_w] → [..., H*block_w, W*block_h]
+    268 行零例外验证。恢复后与 aten.mm args[1] 一致，无需转置。"""
     *batch, H, W, block_h, block_w = nz_shape
-    K = H * block_w
-    N = W * block_h
-    return (*batch, K, N)
-```
+    return (*batch, H * block_w, W * block_h)
 
-> FRACTAL_NZ 布局的详细分析和验证数据见附录 B。
-
-**dtype 映射函数**：
-
-```python
-DTYPE_MAP = {
-    torch.bfloat16: "DT_BF16",
-    torch.float16: "DT_BF16",    # 昇腾硬件 BF16/FP16 Cube 算力相同
-    torch.int8: "INT8",
-    torch.int32: "INT32",
-    torch.int64: "INT64",
-    torch.float32: "FLOAT",
-    torch.bool: "BOOL",
+DTYPE_MAP = {  # torch dtype → Profiling dtype string
+    torch.bfloat16: "DT_BF16", torch.float16: "DT_BF16",
+    torch.int8: "INT8", torch.int32: "INT32", torch.int64: "INT64",
+    torch.float32: "FLOAT", torch.bool: "BOOL",
 }
-
-def dtype_matches(torch_dtype, profiling_dtype_str):
-    return DTYPE_MAP.get(torch_dtype) == profiling_dtype_str
 ```
+
+> FRACTAL_NZ 布局详细分析和验证数据见附录 B。
 
 ### 4.3 EmpiricalPerformanceModel
 
-重构后的统一性能模型入口，通过不同 `DataSource` 实现不同行为。
+重构后的统一入口：接受 `DataSource` 实例，`process_op()` 先查数据源，未命中回退至 `fallback_model`（默认 `AnalyticPerformanceModel`）。
 
 ```python
 # tensor_cast/performance_model/empirical.py
-
 class EmpiricalPerformanceModel(PerformanceModel):
-    """基于实测数据的性能模型。
-    通过 DataSource 抽象接口支持多种数据来源：
-    - ProfilingDataSource: 预采集 Profiling CSV
-    - CacheKeyDataSource: JIT benchmark 缓存（未来）
-    - InterpolatingDataSource: 带插值的 Wrapper
-    """
-
-    def __init__(
-        self,
-        device_profile: DeviceProfile,
-        data_source: DataSource,
-        fallback_model: Optional[PerformanceModel] = None,
-    ):
-        super().__init__("empirical", device_profile)
+    def __init__(self, device_profile, data_source: DataSource,
+                 fallback_model: Optional[PerformanceModel] = None):
         self.data_source = data_source
         self.fallback_model = fallback_model or AnalyticPerformanceModel(device_profile)
 
-    def process_op(self, op_invoke_info: OpInvokeInfo) -> PerformanceModel.Result:
+    def process_op(self, op_invoke_info):
         result = self.data_source.lookup(op_invoke_info)
         if result is not None:
-            return PerformanceModel.Result(
-                execution_time_s=result.latency_us * 1e-6,
-                statistics={
-                    "source": result.source.name,
-                    "confidence": result.confidence
-                }
-            )
-        # 未命中：回退至 Roofline / CommAnalytic
+            return Result(execution_time_s=result.latency_us * 1e-6, ...)
         return self.fallback_model.process_op(op_invoke_info)
-
-    def get_classifiers(self) -> List[PerformanceModel.OpClassifier]:
-        return self.fallback_model.get_classifiers()
 ```
 
 **使用示例**：
 
 ```python
 # Profiling 数据库驱动
-pm = EmpiricalPerformanceModel(
-    device_profile,
-    data_source=ProfilingDataSource(
-        "data/atlas_a3_752t_128g/vllm_ascend/v0.13.0/",
-        comm_grid=device_profile.comm_grid
-    ),
-    fallback_model=AnalyticPerformanceModel(device_profile)
-)
+pm = EmpiricalPerformanceModel(device_profile,
+    data_source=ProfilingDataSource("data/.../vllm_ascend/v0.13.0/", comm_grid=...))
 
 # Profiling + 插值
-pm = EmpiricalPerformanceModel(
-    device_profile,
-    data_source=InterpolatingDataSource(
-        ProfilingDataSource("data/atlas_a3_752t_128g/vllm_ascend/v0.13.0/")
-    )
-)
+pm = EmpiricalPerformanceModel(device_profile,
+    data_source=InterpolatingDataSource(ProfilingDataSource("data/...")))
 ```
 
 ### 4.4 InterpolatingDataSource
 
-Wrapper 模式：在底层 DataSource 的精确匹配基础上提供插值/外推能力。
+Wrapper 模式：精确匹配委托给 `base_source`，未命中时 `find_neighbors()` 查找近邻数据点，然后插值/外推。插值策略参考 AI Configurator 的 2D+1D 混合插值，对 O(n²) 的 Attention 算子做 sqrt 变换后再插值。`interpolation_policy` 配置哪些维度精确匹配、哪些可插值。
 
-```python
-# tensor_cast/performance_model/perf_database/interpolating_data_source.py
+### 4.5 op_mapping.yaml 规格
 
-class InterpolatingDataSource(DataSource):
-    """Wrapper: 在底层 DataSource 基础上添加插值/近似查询能力。
-    不直接操作底层数据，仅负责查询策略。"""
+`op_mapping.yaml` 是纯名字映射配置，不含 per-op 维度提取逻辑。完整示例见 [`docs/examples/op_mapping_example.yaml`](examples/op_mapping_example.yaml)。
 
-    def __init__(self, base_source: DataSource, interpolation_config=None):
-        self.base_source = base_source
-        self.config = interpolation_config  # 从 op_mapping.yaml 的 interpolation_policy 加载
-
-    def lookup(self, op_invoke_info: OpInvokeInfo) -> Optional[QueryResult]:
-        # 1. 先尝试精确匹配（委托给 base_source）
-        result = self.base_source.lookup(op_invoke_info)
-        if result and result.source == QuerySource.MEASURED:
-            return result
-        # 2. 模糊查找近邻数据点
-        neighbors = self.base_source.find_neighbors(op_invoke_info)
-        if not neighbors:
-            return None
-        # 3. 插值/外推
-        return self._interpolate(neighbors, op_invoke_info)
-
-    def _interpolate(self, neighbors, op_invoke_info):
-        """插值策略：参考 AI Configurator 的 2D+1D 混合插值。
-        - 对 O(n²) 的 Attention 算子，在 seq_len 维度做 sqrt 变换后再插值
-        - 置信度评分基于查询点到最近实测数据点的距离计算
-        """
-        ...
-```
-
-### 4.5 op_mapping.yaml 完整规格
-
-`op_mapping.yaml` 是纯名字映射配置，不含 per-op 维度提取逻辑。所有维度匹配和 FRACTAL_NZ 转换由 `ProfilingDataSource` 通用代码处理。
+**`op_mapping.yaml` 顶层结构**：
 
 ```yaml
-# tensor_cast/performance_model/perf_database/data/atlas_a3_752t_128g/vllm_ascend/v0.13.0/op_mapping.yaml
-
-version: "0.13.0"
+version: "0.13.0"                              # vLLM-Ascend 版本
 device: ATLAS_800_A3_752T_128G_DIE
 cann_version: "8.1.RC1"
-collection_date: "2026-03-01"
+communication_data_ref: "../../hccl/v8.1.RC1/" # 通信数据相对路径
+communication_fallback: analytic                # 通信数据不存在时 fallback
 
-# 通信数据引用（HCCL 独立于 vLLM 版本）
-communication_data_ref: "../../hccl/v8.1.RC1/"
-# 通信 fallback：如果通信数据库不存在，fallback 到 CommAnalyticModel
-communication_fallback: analytic
-
-# 插值策略（InterpolatingDataSource 使用）
 interpolation_policy:
   compute:
-    exact_match: [dtype, format]           # dtype/format 必须精确匹配
-    interpolatable: [activation_shape]     # shape 维度可以做插值
+    exact_match: [dtype, format]               # dtype/format 必须精确匹配
+    interpolatable: [activation_shape]          # shape 维度可以做插值
   communication:
     exact_match: [dtype, num_devices, topology_tier]
-    interpolatable: [message_bytes]        # message_bytes 可以插值
+    interpolatable: [message_bytes]
 
-# ========== 计算算子映射 ==========
 operator_mappings:
-  # --- 标准 aten 算子 ---
-  "aten.mm.default":
+  "aten.mm.default":                           # 标准 aten 算子
     kernel_type: MatMulV2
-  "aten.addmm.default":
-    kernel_type: MatMulV2
-  "aten.bmm.default":
-    kernel_type: TransposeBatchMatMul
-
-  # --- 量化 Matmul ---
-  "tensor_cast.static_quant_linear.default":
+  "tensor_cast.static_quant_linear.default":   # 量化 Matmul
     kernel_type: QuantBatchMatmulV3
-  "tensor_cast.fp8_linear.default":
-    kernel_type: QuantBatchMatmulV3
-  "tensor_cast.mxfp4_linear.default":
-    kernel_type: QuantBatchMatmulV3
-
-  # --- MoE ---
-  "tensor_cast.grouped_matmul.default":
-    kernel_type: GroupedMatmul
-  "tensor_cast.grouped_matmul_quant.default":
-    kernel_type: GroupedMatmul
-  "tensor_cast.permute_tokens.default":
-    kernel_type: MoeDistributeDispatchV2
-    notes: "TC 只含本地 permute，通信在 all_to_all 中单独计时"
-  "tensor_cast.unpermute_tokens.default":
-    kernel_type: MoeDistributeCombineV2
-
-  # --- Attention ---
-  "tensor_cast.attention.default":
+  "tensor_cast.attention.default":             # 特殊查询模式
     kernel_type: FusedInferAttentionScore
     query_mode: attention_special
-    notes: "Profiling KV shape 为预分配 buffer，需用 microbenchmark 数据按 seq_lens 索引"
-  "tensor_cast.attention_quant.default":
-    kernel_type: FusedInferAttentionScore
-    query_mode: attention_special
-
-  # --- Norm/Activation ---
-  "tensor_cast.add_rms_norm.default":
-    kernel_type: AddRmsNorm
-  "tensor_cast.add_rms_norm2.default":
-    kernel_type: AddRmsNorm
-  "tensor_cast.swiglu.default":
-    kernel_type: SwiGlu
-
-  # --- 量化 ---
-  "tensor_cast.quantize.default":
-    kernel_type: AscendQuantV2
-  "tensor_cast.dynamic_quantize_symmetric.default":
-    kernel_type: DynamicQuant
-
-  # --- RoPE / KV Cache ---
-  "tensor_cast.apply_rope.default":
-    kernel_type: InterleaveRope
-  "tensor_cast.reshape_and_cache.default":
-    kernel_type: ReshapeAndCacheNdKernel
-
-  # --- 通信算子（引用 hccl 数据库）---
-  "tensor_cast.all_reduce.default":
+  "tensor_cast.all_reduce.default":            # 通信算子（引用 hccl 数据库）
     kernel_type: hcom_allReduce_
     category: communication
-  "tensor_cast.all_gather.default":
-    kernel_type: HcomAllGather
-    category: communication
-  "tensor_cast.reduce_scatter.default":
-    kernel_type: hcom_reduceScatter_
-    category: communication
-  "tensor_cast.all_to_all.default":
-    kernel_type: hcom_alltoall_
-    category: communication
-
-  # --- 复合映射（1:N，需分解 pass）---
-  "tensor_cast.multihead_latent_attention.default":
+  "tensor_cast.multihead_latent_attention.default":  # 复合映射（1:N）
     composite: true
     sub_kernels: [TransposeBatchMatMul, FusedInferAttentionScore]
-    notes: "需 MLA 分解 pass 才能逐 kernel 查询，当前 fallback to analytic"
+  ...                                          # 完整列表约 25 条
 
-# ========== torch_npu 参考（microbenchmark 脚本生成用）==========
-torch_npu_reference:
+torch_npu_reference:                           # microbenchmark 脚本生成用
   MatMulV2:
-    apis:
-      - name: "torch.mm"
-        note: "标准 aten matmul"
-      - name: "torch_npu.npu_linear"
-        note: "NPU 优化版本，支持 bias"
+    apis: [{name: "torch.mm"}, {name: "torch_npu.npu_linear"}]
     microbench_api: "torch.mm"
   QuantBatchMatmulV3:
-    apis:
-      - name: "torch_npu.npu_weight_quant_batchmatmul"
+    apis: [{name: "torch_npu.npu_weight_quant_batchmatmul"}]
     microbench_api: "torch_npu.npu_weight_quant_batchmatmul"
-  FusedInferAttentionScore:
-    apis:
-      - name: "torch_npu.npu_fused_infer_attention_score"
-    microbench_api: "torch_npu.npu_fused_infer_attention_score"
-  GroupedMatmul:
-    apis:
-      - name: "torch_npu.npu_grouped_matmul"
-    microbench_api: "torch_npu.npu_grouped_matmul"
-  AddRmsNorm:
-    apis:
-      - name: "torch_npu.npu_add_rms_norm"
-    microbench_api: "torch_npu.npu_add_rms_norm"
-  SwiGlu:
-    apis:
-      - name: "torch_npu.npu_swiglu"
-    microbench_api: "torch_npu.npu_swiglu"
-  DynamicQuant:
-    apis:
-      - name: "torch_npu.npu_dynamic_quant"
-    microbench_api: "torch_npu.npu_dynamic_quant"
-  AscendQuantV2:
-    apis:
-      - name: "torch_npu.npu_quantize"
-    microbench_api: "torch_npu.npu_quantize"
-  hcom_allReduce_:
-    apis:
-      - name: "torch.distributed.all_reduce"
-    microbench_api: "torch.distributed.all_reduce"
-  HcomAllGather:
-    apis:
-      - name: "torch.distributed.all_gather"
-    microbench_api: "torch.distributed.all_gather"
-  hcom_alltoall_:
-    apis:
-      - name: "torch.distributed.all_to_all"
-    microbench_api: "torch.distributed.all_to_all"
+  ...                                          # 完整列表约 11 条
 ```
 
-**通信算子的 `comm_config.yaml`**（位于 `hccl/{cann_version}/` 目录）：
+> 完整示例见 [`docs/examples/op_mapping_example.yaml`](examples/op_mapping_example.yaml)。
+
+**`comm_config.yaml` 顶层结构**（位于 `hccl/{cann_version}/` 目录）：
 
 ```yaml
-# tensor_cast/performance_model/perf_database/data/atlas_a3_752t_128g/hccl/v8.1.RC1/comm_config.yaml
-
 device: ATLAS_800_A3_752T_128G_DIE
 cann_version: "8.1.RC1"
-collection_date: "2026-03-01"
 
 topology:
-  grid_shape: [48, 8, 2]
+  grid_shape: [48, 8, 2]                       # 三维拓扑网格
   tiers:
     0: {name: "inter_pod", bandwidth_gbps: 196, latency_us: 5.5, type: "CLOS"}
     1: {name: "intra_pod", bandwidth_gbps: 196, latency_us: 0.5, type: "CLOS"}
@@ -717,122 +420,39 @@ topology:
 comm_operator_mappings:
   "tensor_cast.all_reduce.default": hcom_allReduce_
   "tensor_cast.all_gather.default": HcomAllGather
-  "tensor_cast.reduce_scatter.default": hcom_reduceScatter_
-  "tensor_cast.all_to_all.default": hcom_alltoall_
+  ...
 ```
 
-### 4.6 计算算子查询流程
+> 完整示例见 [`docs/examples/comm_config_example.yaml`](examples/comm_config_example.yaml)。
 
-**完整流程（含所有 corner case）**：
+**`operator_mappings` 每条记录支持的字段**：
 
-```
-EmpiricalPerformanceModel.process_op(op_invoke_info)
-│
-├─ ProfilingDataSource.lookup(op_invoke_info)
-│   │
-│   ├─ 1. 查 op_mapping.yaml: func → mapping
-│   │      未找到 → return None
-│   │
-│   ├─ 2. 分派查询路径:
-│   │   │
-│   │   ├─ [composite == true]
-│   │   │   └─ return None (需 MLA 分解 pass，当前 fallback to analytic)
-│   │   │
-│   │   ├─ [category == "communication"]
-│   │   │   └─ → 4.7 节通信算子查询流程
-│   │   │
-│   │   ├─ [query_mode == "attention_special"]
-│   │   │   └─ → 4.8 节 FusedAttention 特殊处理
-│   │   │
-│   │   └─ [普通计算算子] (默认路径)
-│   │       └─ _lookup_compute()
-│   │           ├─ 提取 query_inputs: [(shape, dtype), ...] 从 OpInvokeInfo.args
-│   │           ├─ 加载 {kernel_type}.csv
-│   │           └─ 逐行匹配 _inputs_match():
-│   │               │
-│   │               ├─ 遍历 CSV 每个 input:
-│   │               │   ├─ dtype 精确匹配 (torch.bfloat16 ↔ DT_BF16)
-│   │               │   ├─ 如果 format == ND: shape 精确匹配
-│   │               │   └─ 如果 format == FRACTAL_NZ:
-│   │               │       └─ fractal_nz_to_nd(nz_shape) → recovered_shape
-│   │               │          (通用公式: [...,H,W,bh,bw] → [..., H*bw, W*bh])
-│   │               │          shape 精确匹配 recovered_shape
-│   │               │
-│   │               └─ Output shape 验证（确认匹配正确性）
-│   │
-│   ├─ 3. 命中 → return QueryResult(latency_us, source=MEASURED)
-│   └─ 4. 未命中 → return None
-│
-├─ [命中] → 返回 Result(execution_time_s = latency_us * 1e-6)
-│
-├─ [未命中] → InterpolatingDataSource (如果配置了)
-│   ├─ find_neighbors(): 精确匹配 exact_match 维度, 找 interpolatable 维度的邻近点
-│   └─ _interpolate(): 线性/双线性插值
-│
-└─ [仍未命中] → fallback_model.process_op()
-    (AnalyticPerformanceModel / CommAnalyticModel)
-```
+| 字段 | 说明 | 示例 |
+|-----|------|------|
+| `kernel_type` | Profiling Type 列名 | `MatMulV2` |
+| `category` | 算子类别（驱动查询分派） | `communication` |
+| `query_mode` | 特殊查询模式 | `attention_special` |
+| `composite` | 复合映射（1:N） | `true` |
+| `sub_kernels` | 复合映射子内核 | `[TransposeBatchMatMul, ...]` |
+| `notes` | 文档说明 | |
 
-**查询示例 1: MatMulV2 (BF16, FRACTAL_NZ weight)**
+### 4.6 查询示例
 
+**MatMulV2 (BF16, FRACTAL_NZ weight)**：
 1. Runtime 拦截 `aten.mm.default(A[136,5120], B[5120,768])`
-2. `OpInvokeInfo`: func=aten.mm.default, args[0].shape=(136,5120), args[1].shape=(5120,768)
-3. → `ProfilingDataSource.lookup(op_invoke_info)`
-4. → op_mapping.yaml: `aten.mm.default` → kernel_type=`MatMulV2`
-5. → 提取 query_inputs: `[(shape=(136,5120), dtype=bf16), (shape=(5120,768), dtype=bf16)]`
-6. → 加载 MatMulV2.csv, 逐行匹配:
-   - CSV 行: Input Shapes=`"136,5120;320,48,16,16"`, Formats=`"ND;FRACTAL_NZ"`
-   - input[0]: ND, shape=(136,5120) vs query (136,5120) → match ✓
-   - input[1]: FRACTAL_NZ, shape=(320,48,16,16) → `fractal_nz_to_nd` → (320×16, 48×16) = (5120, 768) vs query (5120,768) → match ✓
-   - dtype: DT_BF16 vs torch.bfloat16 → match ✓
-7. → Duration=45.3μs → `QueryResult(latency_us=45.3)`
+2. op_mapping.yaml: `aten.mm.default` → `MatMulV2`
+3. 加载 MatMulV2.csv, 逐行匹配:
+   - CSV: Input Shapes=`"136,5120;320,48,16,16"`, Formats=`"ND;FRACTAL_NZ"`
+   - input[0]: ND (136,5120) → match ✓
+   - input[1]: FRACTAL_NZ (320,48,16,16) → `fractal_nz_to_nd` → (5120, 768) → match ✓
+   - dtype: DT_BF16 ↔ torch.bfloat16 → match ✓
+4. Duration=45.3μs → `QueryResult(latency_us=45.3)`
 
-**查询示例 2: QuantBatchMatmulV3 (INT8)**
+### 4.7 通信算子数据格式
 
-1. Runtime 拦截 `tensor_cast.static_quant_linear(x[42,7168], w[7168,1536], ...)`
-2. query_inputs: `[(shape=(42,7168), dtype=int8), (shape=(7168,1536), dtype=int8)]`
-3. 查 QuantBatchMatmulV3.csv:
-   - CSV: Input Shapes=`"42,7168;48,448,16,32"` (FRACTAL_NZ)
-   - input[1]: (48,448,16,32) → `fractal_nz_to_nd` → (448×32, 48×16) = (7168×? ...) — 按 INT8 tile 16×32 恢复: K=448×32? 不对, 用通用公式 K=H×block_w=448×32=14336? 实际验证: K=448×16=7168, N=48×32=1536 ✓
-4. 精确匹配 → Duration=X μs
+通信数据来源是 HCCL Test / `torch.distributed` microbenchmark（非全模型 Profiling）。
 
-### 4.7 通信算子查询流程
-
-通信算子的数据构建不依赖全模型 Profiling（Profiling 中通信算子无 Input Shapes），数据来源是 HCCL Test / `torch.distributed` microbenchmark。
-
-**查询路径**：
-
-```
-_lookup_comm(op_invoke_info, mapping):
-  │
-  ├─ 1. 提取通信参数
-  │   ├─ x = args[0] → message_bytes = x.nelement() * x.element_size()
-  │   ├─ rank_group = args[2] (all_reduce) / args[3] (all_gather/reduce_scatter) / args[4] (all_to_all)
-  │   └─ num_devices = len(rank_group), dtype = x.dtype
-  │
-  ├─ 2. 从 CommGrid 推导 topology_tier
-  │   └─ topology_tier = comm_grid._get_topology_idx_for_group(rank_group)
-  │      对于 ATLAS_800_A3 [48, 8, 2] 三维网格：
-  │        tier 2: die 级 SIO（224 GB/s, 0.2µs）
-  │        tier 1: pod 内 CLOS（196 GB/s, 0.5µs）
-  │        tier 0: pod 间 CLOS（196 GB/s, 5.5µs）
-  │
-  ├─ 3. 查 CSV: 精确匹配 num_devices + dtype + topology_tier
-  │   └─ 插值 message_bytes (由 InterpolatingDataSource 负责)
-  │
-  └─ 未命中 → return None → fallback to CommAnalyticModel
-```
-
-**通信算子 OpInvokeInfo args 位置**：
-
-| Op | args[0] | args[1] | args[2] | args[3] | args[4] |
-|----|---------|---------|---------|---------|---------|
-| all_reduce | Tensor x | int rank | List[int] rank_group | | |
-| all_gather | Tensor x | int dim | int rank | List[int] rank_group | |
-| reduce_scatter | Tensor x | int dim | int rank | List[int] rank_group | |
-| all_to_all | Tensor x | List out_splits | List in_splits | int rank | List rank_group |
-
-**通信 CSV 格式**（microbenchmark 构建）：
+**通信 CSV 格式**：
 
 ```csv
 message_bytes,num_devices,dtype,topology_tier,Duration(us),bandwidth_gbps
@@ -841,64 +461,40 @@ message_bytes,num_devices,dtype,topology_tier,Duration(us),bandwidth_gbps
 1204224,16,DT_BF16,0,342.1,1.7
 ```
 
+**topology_tier 含义**（ATLAS_800_A3 [48,8,2] 三维网格）：tier 2 = die 级 SIO（224 GB/s），tier 1 = pod 内 CLOS（196 GB/s），tier 0 = pod 间 CLOS（196 GB/s, 5.5µs latency）。
+
+**通信算子 OpInvokeInfo args 完整布局**：
+
+| Op | args[0] | args[1] | args[2] | args[3] | args[4] |
+|----|---------|---------|---------|---------|---------|
+| all_reduce | Tensor x | int rank | List rank_group | | |
+| all_gather | Tensor x | int dim | int rank | List rank_group | |
+| reduce_scatter | Tensor x | int dim | int rank | List rank_group | |
+| all_to_all | Tensor x | List out_splits | List in_splits | int rank | List rank_group |
+
 ### 4.8 FusedAttention 特殊处理
 
-FusedAttention 是唯一需要特殊处理的算子：Profiling 中 `FusedInferAttentionScore` 的 Input Shapes 包含预分配的 KV Cache buffer shape（如 `10873,128,128`），不是当前 batch 的实际 KV 长度。TensorCast 的理论建模基于实际 `context_length`，两者无法直接匹配。
+Profiling 中 `FusedInferAttentionScore` 的 KV Input Shapes 是预分配 buffer shape，不是实际 KV 长度，无法直接匹配。
 
-**当前方案**：通过 microbenchmark 构建独立的 FusedAttention 数据，以 `(batch_size, avg_seq_len, num_heads, head_dim, dtype)` 为索引。Microbenchmark 使用 `actual_seq_lengths_kv` 参数控制实际 KV 长度。
+**为什么用 `avg_seq_len` 而非逐 request 的 `actual_seq_lengths_kv`**：一次 FusedAttention kernel 调用处理整个 batch，每个 request 的 KV 长度不同（`actual_seq_lengths_kv = [seq_len_0, seq_len_1, ...]`），但 kernel 只产生一个 `Duration(us)`。无法按单个 request 拆分耗时，只能用 batch 级别的统计量作为索引。`avg_seq_len = mean(actual_seq_lengths_kv)` 是最简单的聚合方式，在 batch 内 seq_len 分布较均匀时足够准确。
 
-在 `op_mapping.yaml` 中标记 `query_mode: attention_special`。
+**当前方案**：通过 microbenchmark 构建独立数据，以 `(batch_size, avg_seq_len, num_heads, head_dim, dtype)` 为索引。Microbenchmark 时通过 `actual_seq_lengths_kv`（= `OpInvokeInfo.args[6]`）设置每个 request 相同的 KV 长度来控制 avg_seq_len。在 `op_mapping.yaml` 中标记 `query_mode: attention_special`。
 
-**FusedAttention CSV 格式**（microbenchmark 构建，非 Profiling 直接导入）：
+**FusedAttention CSV 格式**（microbenchmark 构建）：
 
 ```csv
 batch_size,avg_seq_len,num_heads,head_dim,dtype,Duration(us)
 1,4096,64,128,DT_BF16,1250.3
 16,512,64,128,DT_BF16,890.7
-64,128,64,128,DT_BF16,432.1
 ```
 
-**Microbenchmark 脚本示例**：
-
-```python
-output = torch_npu.npu_fused_infer_attention_score(
-    query, key, value,
-    block_table=block_table,
-    actual_seq_lengths_kv=seq_lens,  # 控制实际 KV 长度
-    ...
-)
-```
-
-> FusedAttention KV Cache 维度的详细分析见附录 C；长期方案见第 10.2 节。
+> 详细分析见附录 C；长期方案见第 10.2 节。
 
 ### 4.9 FRACTAL_NZ 通用处理
 
-FRACTAL_NZ 是昇腾 NPU 的 weight 存储格式，将 ND 矩阵按固定 tile 大小进行分块重排。
+恢复公式 `[..., H, W, block_h, block_w] → [..., H*block_w, W*block_h]` 见 4.2 节。Tile 大小从 CSV shape 最后两维直接读取（BF16: 16×16, INT8: 16×32）。恢复后与 `aten.mm args[1]` 一致。
 
-**确定性恢复公式**：
-
-```
-FRACTAL_NZ shape: [..., H, W, block_h, block_w]
-恢复 ND shape:    [..., K, N]
-其中 K = H * block_w, N = W * block_h
-```
-
-**Tile 大小（固定，由 Da Vinci 架构硬件决定）**：
-
-| dtype | tile 尺寸 (block_h × block_w) | 备注 |
-|-------|------|------|
-| BF16/FP16 | 16×16 | 固定 |
-| INT8 | 16×32 | 固定 |
-| FP32/INT32 | 16×16 | clamp to 2 bytes |
-
-从 `torch_npu` 源码 `FormatHelper.cpp` 确认：`BLOCKSIZE = 16`（行 tile），`BLOCKBYTES = 32`（tile 行字节数），`N0 = BLOCKBYTES / min(itemsize, 2)`。
-
-**关键特性**：
-- Tile 尺寸不需要硬编码，直接从 CSV 的 FRACTAL_NZ shape 的最后两维读取（它们就是 block_h 和 block_w）
-- 恢复后 shape 和 `aten.mm` 的 `args[1]` 完全一致，无需转置
-- 在 Qwen3-30B Prefill 的 268 行 FRACTAL_NZ MatMulV2 数据上，使用此公式零例外验证通过
-
-> 详细的布局分析和验证数据见附录 B。
+> 详细的布局分析、源码溯源和验证数据见附录 B。
 
 ---
 
@@ -938,34 +534,7 @@ parser.add_argument("--perf-database", type=str, default=None,
 
 ### 5.3 数据流
 
-```
-text_generate.py
-  --performance-model profiling
-  --perf-database ./perf_database/data/atlas_a3_752t_128g/vllm_ascend/v0.13.0/
-       │
-       ▼
-  创建 EmpiricalPerformanceModel + ProfilingDataSource(data_dir)
-       │  ProfilingDataSource 内部：
-       │  ├─ 加载 op_mapping.yaml（算子映射 + 元数据 + 插值策略）
-       │  └─ 按 communication_data_ref 加载通信数据（如有）
-       │
-       ▼
-  Runtime.__torch_dispatch__ → 拦截算子 → OpInvokeInfo
-       │
-       ▼
-  EmpiricalPerformanceModel.process_op()
-       ├──▶ data_source.lookup(op_invoke_info)
-       │    ├─ 查 op_mapping.yaml: func → mapping
-       │    ├─ 分派: compute / communication / attention_special / composite
-       │    ├─ 计算算子: 提取 inputs, 匹配 CSV (含 FRACTAL_NZ 恢复)
-       │    ├─ 通信算子: message_bytes + num_devices + topology_tier
-       │    └─ 返回 QueryResult 或 None
-       │
-       ├──▶ [命中] → Result(execution_time_s = latency_us * 1e-6)
-       │
-       └──▶ [未命中] → fallback_model.process_op()
-            (AnalyticPerformanceModel / CommAnalyticModel)
-```
+`--performance-model profiling` → 创建 `EmpiricalPerformanceModel(ProfilingDataSource(data_dir))` → Runtime 拦截算子生成 `OpInvokeInfo` → `data_source.lookup()` 查询（分派逻辑见 4.2 节）→ 命中返回实测耗时，未命中 fallback 至 Roofline/CommAnalytic。
 
 ---
 
@@ -975,8 +544,8 @@ text_generate.py
 
 | 步骤 | 内容 | 输出 |
 |-----|------|------|
-| **步骤一**：单次 vLLM Profiling | 拉起一次 vLLM 实例（EP=1 即可），采集 kernel_details.csv | 按 Type 列拆分的 `{KernelType}.csv` + `op_mapping.yaml` 初版 |
-| **步骤二**：Microbenchmark 网格遍历 | 针对每个算子，通过 `torch_npu` API 遍历 shape 网格，用 `msprof` 采集 device 侧数据 | 扩充后的 CSV 数据库 |
+| **步骤一**：单次 vLLM Profiling | 拉起一次 vLLM 实例，采集 kernel_details.csv | 按 Type 列拆分的 `{KernelType}.csv` + `op_mapping.yaml` 初版 |
+| **步骤二**：Microbenchmark 网格遍历 | 针对每个算子，通过 `torch_npu` 和 `torch.distributed` API 遍历 shape 网格，用 `msprof` 采集 device 侧数据 | 扩充后的 CSV 数据库 |
 | **步骤三**：（可选）端到端验证 | 跑几次典型 vLLM 配置，对比 microbenchmark 预测 vs Profiling 实测 | 精度报告 + 不稳定算子标记 |
 
 **步骤一详细流程**：
@@ -1018,26 +587,9 @@ text_generate.py
 
 ```python
 # tools/perf_data_collection/generate_comm_microbench.py
-import torch
-import torch.distributed as dist
-
-# 初始化 HCCL backend
-dist.init_process_group("hccl")
-
-for size in [8192, 65536, 262144, 1048576, ...]:
-    tensor = torch.randn(size, dtype=torch.float16, device='npu')
-    # warmup + measure
-    for _ in range(5):
-        dist.all_reduce(tensor)
-    torch.npu.synchronize()
-    start = torch.npu.Event(enable_timing=True)
-    end = torch.npu.Event(enable_timing=True)
-    start.record()
-    for _ in range(20):
-        dist.all_reduce(tensor)
-    end.record()
-    torch.npu.synchronize()
-    latency_us = start.elapsed_time(end) / 20 * 1000
+# 初始化 HCCL backend，遍历 message_size 网格，
+# 用 torch.npu.Event 计时 warmup + N 次重复的 dist.all_reduce/all_gather/all_to_all，
+# 通过 rank_group 控制测试各 topology_tier
 ```
 
 **MC2 microbenchmark**：MC2（`npu_mm_all_reduce_base`）将 MatMul+AllReduce 融合，无法分开测试。用 Python 脚本直接调用 `torch_npu.npu_mm_all_reduce_base` 遍历不同 M/N/K + num_devices。MC2 数据存储在 `vllm_ascend/{version}/` 下（和框架实现绑定）。
@@ -1054,21 +606,7 @@ mpirun -n 8 ./bin/all_to_all_test -b 8K -e 256M -f 2 -d fp16 -p 8
 
 ### 6.4 FusedAttention Microbenchmark
 
-FusedAttention 的 microbenchmark 需要构造合法的 paged KV cache 输入：
-
-1. 预分配 KV cache buffer：`kv_cache = torch.empty([num_blocks, block_size, num_kv_heads, head_dim], device='npu')`
-2. 构造合法的 `block_table`：`block_table[i] = [0, 1, 2, ...]`（每个 batch 元素分配连续的 block）
-3. 设置 `actual_seq_lengths_kv` 控制实际 KV 长度
-4. 遍历 `(batch_size, seq_len, num_heads, head_dim)` 组合
-
-```python
-output = torch_npu.npu_fused_infer_attention_score(
-    query, key, value,
-    block_table=block_table,
-    actual_seq_lengths_kv=seq_lens,
-    ...
-)
-```
+FusedAttention 需构造合法的 paged KV cache 输入：预分配 KV buffer + `block_table` + `actual_seq_lengths_kv` 控制实际 KV 长度。遍历 `(batch_size, seq_len, num_heads, head_dim)` 组合，调用 `torch_npu.npu_fused_infer_attention_score`。详见附录 C 的 args 布局。
 
 ### 6.5 Profiling 输出解析器
 
@@ -1172,8 +710,8 @@ def discover_operators(profiling_output: Path, op_mapping_yaml: Path) -> Dict:
 
 | 六壬团队 | 小巧灵团队 |
 |---------|-----------|
-| `EmpiricalPerformanceModel` 重构 + DataSource 接口 | `ProfilingDataSource` 实现（CSV 查询 + FRACTAL_NZ） |
-| `op_mapping.yaml` 规格定义 + CLI 集成 | Profiling 解析器（`parse_kernel_details.py`） |
+| `EmpiricalPerformanceModel` 重构 + DataSource 接口 | `op_mapping.yaml` 规格定义 + CLI 集成 |
+| `ProfilingDataSource` 实现（CSV 查询 + FRACTAL_NZ） | Profiling 解析器（`parse_kernel_details.py`） |
 | 基于示例数据库穿刺端到端仿真 | 穿刺数据采集（单次 Profiling + 初始 CSV） |
 
 **Phase 1 交付物**：Profiling CSV 导入 + ProfilingDataSource + 端到端查询验证（计算算子）
@@ -1218,7 +756,7 @@ def discover_operators(profiling_output: Path, op_mapping_yaml: Path) -> Dict:
 | GroupedMatmul+SwiGlu 融合 | **已关闭** ✓ | `freezing_passes/grouped_matmul_swiglu_pass.py`，5 种量化变体 | DSV3 含在 GroupedMatmul 中 |
 | split_qkv_rmsnorm_rope | 仍开放 | 无对应 pass/op | Qwen3 0.5% (64 次调用) |
 | KvRmsNormRopeCache | 仍开放 | 无对应 pass/op | DSV3 0.8% (2501 次调用) |
-| MLA 分解 | 仍开放 | MLA 仍为单一 dispatch 节点 | DSV3 相关 |
+| MLA 分解 | 仍开放 | MLA 仍为单一 dispatch 节点。Q1 通过 `composite: true` + `_lookup_composite()` 分解查询兜底（见 4.2 节）；长期需 decomposition pass 将 MLA 拆为独立子 op | DSV3 相关 |
 | aten.topk / MoeGatingTopK | 仍开放 | 无区分机制 | DSV3 (2378 次调用) |
 | MC2 融合 | 仍开放 | 无对应 pass/op | — |
 
@@ -1226,19 +764,12 @@ def discover_operators(profiling_output: Path, op_mapping_yaml: Path) -> Dict:
 
 ### 9.2 融合算子语义一致性分析
 
-TensorCast op → Profiling kernel Type 的完整映射和语义分析：
+大部分 TensorCast op → Profiling kernel Type 映射 shape 一致（如 MatMul、RmsNorm、SwiGlu、通信算子）。需要特殊处理的有：
+- **FusedAttention**：TC 用 `(num_tokens, hidden_size)`，Profiling 用 `(batch, num_heads, q_len, head_dim)`，通过 `attention_special` 模式处理
+- **MLA**：1:N 映射（一个 TC op 对应 TransposeBatchMatMul + FIA），需 MLA 分解 pass，当前 fallback to analytic
+- **permute_tokens**：TC 只含本地 permute，Profiling 的 MoeDistributeDispatchV2 含通信，通信由 all_to_all 分开计时
 
-| TensorCast Op | Profiling Kernel | Shape 一致? | 说明 |
-|--------------|-----------------|------------|------|
-| tensor_cast.static_quant_linear | QuantBatchMatmulV3 | ✓ M/K/N 对齐 | INT4 变体 w=[K/2,N]，需注意 K 恢复 |
-| tensor_cast.attention | FusedInferAttentionScore | 需转换 | TC 用 (num_tokens, hidden_size)，Profiling 用 (batch, num_heads, q_len, head_dim)。通过 `attention_special` 查询模式处理 |
-| tensor_cast.multihead_latent_attention | 1:N 映射 | MISMATCH | 一个 TC op 对应多个 kernel (TransposeBatchMatMul + FIA)，需 MLA 分解 pass |
-| tensor_cast.permute_tokens | MoeDistributeDispatchV2 | 部分 | TC 只含本地 permute，Profiling 含通信；TC 的通信由 all_to_all 分开计时 |
-| tensor_cast.add_rms_norm | AddRmsNorm / InplaceAddRmsNorm | ✓ | |
-| tensor_cast.swiglu | SwiGlu | ✓ | DequantSwigluQuant 是更大的融合，需单独 pass |
-| 所有 comm ops | hcom_allReduce_ 等 | ✓ | message_bytes + num_devices 对齐 |
-
-> 详细的一致性分析见附录 H。
+> 完整映射表和已发现的 bug 见附录 H。
 
 ### 9.3 CompositePerformanceModel
 
@@ -1302,12 +833,15 @@ Phase 2 实施通信算子 microbenchmark 数据库：
 ## 12. 参考资料
 
 - [vLLM Ascend GitHub](https://github.com/vllm-project/vllm-ascend)
+- [vLLM Ascend Profiling 指南](https://docs.vllm.ai/projects/ascend/en/latest/developer_guide/performance_and_debug/service_profiling_guide.html)
 - [vLLM CustomOp Replacement Tracker](https://github.com/vllm-project/vllm/issues/32676)
 - [torch_npu Operator Inventory](https://github.com/vllm-project/vllm-ascend/issues/1511)
 - [vLLM torch_bindings.cpp](https://github.com/vllm-project/vllm/blob/main/csrc/torch_bindings.cpp)
 - [op-plugin (torch_npu op mapping)](https://github.com/Ascend/op-plugin)
+- [华为昇腾 Profiler 文档](https://support.huaweicloud.com/intl/en-us/bestpractice-modelarts/modelarts_llm_infer_5906034.html)
 - [HCCL Test 文档](https://www.hiascend.com/document/detail/zh/mindstudio/70RC1/mscommandtoolug/mscommandug/auxiliarydevtool_0017.html)
 - [AI Configurator](https://github.com/ai-dynamo/aiconfigurator)
+- [Intel NPU Cost Model](https://github.com/intel/npu-nn-cost-model)
 - [msModeling Wiki](https://deepwiki.com/Horacehxw/msModeling)
 - MC2 参考: [vllm-ascend#6092](https://github.com/vllm-project/vllm-ascend/issues/6092), [vllm-ascend#5743](https://github.com/vllm-project/vllm-ascend/issues/5743)
 
@@ -1357,18 +891,15 @@ Phase 2 实施通信算子 microbenchmark 数据库：
 
 ## 附录 C：FusedAttention KV Cache 维度分析
 
-**问题**：Profiling 中 `FusedInferAttentionScore` 的 Input Shapes 第二个 input 是预分配的 KV cache buffer shape（如 `10873,128,128`），是总的预留 KV Cache Block 数 × block_size × head_dim，不是当前 batch 的实际 KV 长度。
+问题描述和解决方案见第 4.8 节。此处补充 TensorCast `OpInvokeInfo` 中 FusedAttention 的 args 布局：
 
-**TensorCast OpInvokeInfo 中的信息**：
-- `args[0]`: query tensor
-- `args[1]`: key tensor
-- `args[2]`: value tensor
-- `args[6]`: `seq_lens` — 每个 request 的 KV cache 长度（即有效 context length）
-- `args[7]`: `query_lens` — 每个 request 的新 query token 数
-
-所以 `actual_seq_lengths_kv` 不是额外参数，就是 `args[6]`（seq_lens）。
-
-**解决方案**：通过 microbenchmark 构建独立数据，以 `(batch_size, avg_seq_len, num_heads, head_dim, dtype)` 为索引。
+| 位置 | 含义 | 备注 |
+|-----|------|------|
+| `args[0]` | query tensor | (num_tokens, hidden_size) |
+| `args[1]` | key tensor | |
+| `args[2]` | value tensor | |
+| `args[6]` | `seq_lens` | 每个 request 的 KV cache 长度，对应 `actual_seq_lengths_kv` |
+| `args[7]` | `query_lens` | 每个 request 的新 query token 数 |
 
 ## 附录 D：vLLM 自定义算子覆盖分析
 
@@ -1408,6 +939,22 @@ op-plugin 库（https://github.com/Ascend/op-plugin）的 `op_plugin/config/op_p
 | InterleaveRope | npu_interleave_rope | ✓ | |
 | hcom_allReduce_ | torch.distributed.all_reduce | ✗ (HCCL 通信库) | |
 | split_qkv_rmsnorm_rope_kernel | 无公开 API | ✗ (vLLM-Ascend 自定义 kernel) | |
+
+**Microbenchmark 默认 API**（`op_mapping.yaml` 中 `torch_npu_reference.{type}.microbench_api`）：
+
+| Profiling Type | microbench_api |
+|---------------|---------------|
+| MatMulV2 | `torch.mm` |
+| QuantBatchMatmulV3 | `torch_npu.npu_weight_quant_batchmatmul` |
+| FusedInferAttentionScore | `torch_npu.npu_fused_infer_attention_score` |
+| GroupedMatmul | `torch_npu.npu_grouped_matmul` |
+| AddRmsNorm | `torch_npu.npu_add_rms_norm` |
+| SwiGlu | `torch_npu.npu_swiglu` |
+| DynamicQuant | `torch_npu.npu_dynamic_quant` |
+| AscendQuantV2 | `torch_npu.npu_quantize` |
+| hcom_allReduce\_ | `torch.distributed.all_reduce` |
+| HcomAllGather | `torch.distributed.all_gather` |
+| hcom_alltoall\_ | `torch.distributed.all_to_all` |
 
 **关键发现**：
 - 13/15 个核心 kernel Type 可通过 op-plugin 追溯到 torch_npu API
@@ -1449,7 +996,7 @@ op-plugin 库（https://github.com/Ascend/op-plugin）的 `op_plugin/config/op_p
 |--------------|-----------------|------------|------|
 | tensor_cast.static_quant_linear | QuantBatchMatmulV3 | ✓ M/K/N 对齐 | INT4 变体 w=[K/2,N]，需注意 K 恢复 |
 | tensor_cast.attention | FusedInferAttentionScore | 需转换 | TC 用 (num_tokens, hidden_size)，Profiling 用 (batch, num_heads, q_len, head_dim)。通过 `attention_special` 查询模式处理 |
-| tensor_cast.multihead_latent_attention | 1:N 映射 | MISMATCH | 一个 TC op 对应多个 kernel (TransposeBatchMatMul + FIA)，需 MLA 分解 pass。在 op_mapping.yaml 中标记 `composite: true` |
+| tensor_cast.multihead_latent_attention | 1:N 映射 | MISMATCH | 一个 TC op 对应多个 kernel (TransposeBatchMatMul + FIA)。Q1 通过 `composite: true` + `_lookup_composite()` 分解查询子内核并求和；长期需 MLA decomposition pass |
 | tensor_cast.mlapo | 无直接对应 | N/A | Qwen3 对应 split_qkv_rmsnorm_rope_kernel，DSV3 对应多个分立 kernel |
 | tensor_cast.permute_tokens | MoeDistributeDispatchV2 | 部分 | TC 只含本地 permute，Profiling 含通信；TC 的通信由 all_to_all 分开计时 |
 | tensor_cast.add_rms_norm | AddRmsNorm / InplaceAddRmsNorm | ✓ | |
@@ -1493,30 +1040,48 @@ op-plugin 库（https://github.com/Ascend/op-plugin）的 `op_plugin/config/op_p
 18. 匹配策略：匹配所有 input shape + dtype，output shape 作为验证
 19. 通信查询：`rank_group → CommGrid._get_topology_idx_for_group() → topology_tier`
 20. FusedAttention：`query_mode: attention_special`，使用 `args[6]`（seq_lens）
+21. Composite 查询：`composite: true` 时主动分解为多个子内核查询并求和（MLA 分解函数复用 analytic model shape 推导），不再 fallback to analytic
 
 **存储结构变更**：
-21. 计算数据：`data/{device}/vllm_ascend/{version}/`
-22. 通信数据：`data/{device}/hccl/{cann_version}/`（跨 vLLM 版本复用）
-23. 工具：`tools/perf_data_collection/`
+22. 计算数据：`data/{device}/vllm_ascend/{version}/`
+23. 通信数据：`data/{device}/hccl/{cann_version}/`（跨 vLLM 版本复用）
+24. 工具：`tools/perf_data_collection/`
 
 **内容变更**：
-24. 2.1 节：修正"内核启动开销"为"tiling/利用率"，删除无来源的"实测44-95%"数据
-25. 数据库构建：两级策略 → 三步走（Profiling → microbenchmark 网格 → 验证）
-26. 通信 microbenchmark：Python 脚本统一计算+通信，HCCL Test 作为交叉验证
-27. 9.1 节：更新融合 Gap 已关闭/仍开放状态（基于 gitcode/develop 分析）
-28. 遗留问题 1：中期方案（融合 Pass 对齐）为正式方案，长期方案（FX graph + 侵入式 DispatchMode）移至 Future Work
-29. 遗留问题 2：FusedAttention microbenchmark 为当前方案，两条长期路径在 Future Work
+25. 2.1 节：修正"内核启动开销"为"tiling/利用率"，删除无来源的"实测44-95%"数据
+26. 数据库构建：两级策略 → 三步走（Profiling → microbenchmark 网格 → 验证）
+27. 通信 microbenchmark：Python 脚本统一计算+通信，HCCL Test 作为交叉验证
+28. 9.1 节：更新融合 Gap 已关闭/仍开放状态（基于 gitcode/develop 分析）
+29. 遗留问题 1：中期方案（融合 Pass 对齐）为正式方案，长期方案（FX graph + 侵入式 DispatchMode）移至 Future Work
+30. 遗留问题 2：FusedAttention microbenchmark 为当前方案，两条长期路径在 Future Work
+
+**新增示例文件**：
+31. `docs/examples/op_mapping_example.yaml`：完整 op_mapping.yaml 示例（~25 条算子映射 + torch_npu_reference）
+32. `docs/examples/comm_config_example.yaml`：完整 comm_config.yaml 示例（拓扑描述 + 通信算子映射）
 
 **新增附录**：
-30. 附录 A：小 Batch 场景 Roofline 偏差分析
-31. 附录 B：FRACTAL_NZ 布局分析与验证数据
-32. 附录 C：FusedAttention KV Cache 维度分析
-33. 附录 D：vLLM 自定义算子覆盖分析
-34. 附录 E：op-plugin Type → torch_npu 映射分析
-35. 附录 F：AIConfigurator 通信方案对比
-36. 附录 G：AI 辅助开发实践建议
-37. 附录 H：融合算子语义一致性详细分析
+33. 附录 A：小 Batch 场景 Roofline 偏差分析
+34. 附录 B：FRACTAL_NZ 布局分析与验证数据
+35. 附录 C：FusedAttention KV Cache 维度分析
+36. 附录 D：vLLM 自定义算子覆盖分析
+37. 附录 E：op-plugin Type → torch_npu 映射分析
+38. 附录 F：AIConfigurator 通信方案对比
+39. 附录 G：AI 辅助开发实践建议
+40. 附录 H：融合算子语义一致性详细分析
 
 **开发计划**：
-38. 两团队结构保持，目标更新为 3.23
-39. 三阶段：Phase 1 计算算子穿刺（→3.14）→ Phase 2 通信算子接入+插值（→3.20）→ Phase 3 集成验证（→3.23）
+41. 两团队结构保持，目标更新为 3.23
+42. 三阶段：Phase 1 计算算子穿刺（→3.14）→ Phase 2 通信算子接入+插值（→3.20）→ Phase 3 集成验证（→3.23）
+
+### v1.0 → v1.1
+
+1. 从单一 `ProfilingPerformanceModel`（内含 Roofline 兜底）重构为三个独立 PerformanceModel 并列，Roofline 兜底上移至 Model 层 `fallback_model`
+2. `PerfDatabase` 从 Profiling 专用包提升为共享数据层，同时为 Profiling（只读）和 Empirical（读写持久化缓存）服务
+3. 新增 `OperatorKey` 共享抽象，封装 `OpInvokeInfo → 查询 key` 转换逻辑
+4. `PerfDatabase` API 从 `(system, backend, version)` 三元组改为 `data_path` 路径直传，删除 `VersionManager`
+5. Schema 粒度从按抽象算子类型分组（~6 类）改为按 kernel_details.csv 硬件内核一一对齐（~17 个）
+6. YAML 映射格式从按 Schema 分组改为扁平的 `tensorcast_op_to_schema`（1:1）
+7. QueryEngine 从 4 级降级（含 Roofline）精简为 3 级（精确→插值→外推）
+8. 存储格式从 Parquet 为主改为 CSV 为主；数据采集扩展为三种可选方案
+9. 基于 DeepSeekV3/Qwen3 实测 Profiling 数据修正了多项算子映射
+10. 数据采集流水线从 TensorCast 包内移至仓库顶层独立子系统；开发计划从 5 阶段单团队改为 3 阶段双团队分工

@@ -1,0 +1,150 @@
+# op_mapping.yaml 完整示例
+# 路径: tensor_cast/performance_model/perf_database/data/{device}/vllm_ascend/{version}/op_mapping.yaml
+
+version: "0.13.0"
+device: ATLAS_800_A3_752T_128G_DIE
+cann_version: "8.1.RC1"
+collection_date: "2026-03-01"
+
+# 通信数据引用（HCCL 独立于 vLLM 版本）
+communication_data_ref: "../../hccl/v8.1.RC1/"
+# 通信 fallback：如果通信数据库不存在，fallback 到 CommAnalyticModel
+communication_fallback: analytic
+
+# 插值策略（InterpolatingDataSource 使用）
+interpolation_policy:
+  compute:
+    exact_match: [dtype, format]           # dtype/format 必须精确匹配
+    interpolatable: [activation_shape]     # shape 维度可以做插值
+  communication:
+    exact_match: [dtype, num_devices, topology_tier]
+    interpolatable: [message_bytes]        # message_bytes 可以插值
+
+# ========== 计算算子映射 ==========
+operator_mappings:
+  # --- 标准 aten 算子 ---
+  "aten.mm.default":
+    kernel_type: MatMulV2
+  "aten.addmm.default":
+    kernel_type: MatMulV2
+  "aten.bmm.default":
+    kernel_type: TransposeBatchMatMul
+
+  # --- 量化 Matmul ---
+  "tensor_cast.static_quant_linear.default":
+    kernel_type: QuantBatchMatmulV3
+  "tensor_cast.fp8_linear.default":
+    kernel_type: QuantBatchMatmulV3
+  "tensor_cast.mxfp4_linear.default":
+    kernel_type: QuantBatchMatmulV3
+
+  # --- MoE ---
+  "tensor_cast.grouped_matmul.default":
+    kernel_type: GroupedMatmul
+  "tensor_cast.grouped_matmul_quant.default":
+    kernel_type: GroupedMatmul
+  "tensor_cast.permute_tokens.default":
+    kernel_type: MoeDistributeDispatchV2
+    notes: "TC 只含本地 permute，通信在 all_to_all 中单独计时"
+  "tensor_cast.unpermute_tokens.default":
+    kernel_type: MoeDistributeCombineV2
+
+  # --- Attention ---
+  "tensor_cast.attention.default":
+    kernel_type: FusedInferAttentionScore
+    query_mode: attention_special
+    notes: "Profiling KV shape 为预分配 buffer，需用 microbenchmark 数据按 seq_lens 索引"
+  "tensor_cast.attention_quant.default":
+    kernel_type: FusedInferAttentionScore
+    query_mode: attention_special
+
+  # --- Norm/Activation ---
+  "tensor_cast.add_rms_norm.default":
+    kernel_type: AddRmsNorm
+  "tensor_cast.add_rms_norm2.default":
+    kernel_type: AddRmsNorm
+  "tensor_cast.swiglu.default":
+    kernel_type: SwiGlu
+
+  # --- 量化 ---
+  "tensor_cast.quantize.default":
+    kernel_type: AscendQuantV2
+  "tensor_cast.dynamic_quantize_symmetric.default":
+    kernel_type: DynamicQuant
+
+  # --- RoPE / KV Cache ---
+  "tensor_cast.apply_rope.default":
+    kernel_type: InterleaveRope
+  "tensor_cast.reshape_and_cache.default":
+    kernel_type: ReshapeAndCacheNdKernel
+
+  # --- 通信算子（引用 hccl 数据库）---
+  "tensor_cast.all_reduce.default":
+    kernel_type: hcom_allReduce_
+    category: communication
+  "tensor_cast.all_gather.default":
+    kernel_type: HcomAllGather
+    category: communication
+  "tensor_cast.reduce_scatter.default":
+    kernel_type: hcom_reduceScatter_
+    category: communication
+  "tensor_cast.all_to_all.default":
+    kernel_type: hcom_alltoall_
+    category: communication
+
+  # --- 复合映射（1:N，需分解 pass）---
+  "tensor_cast.multihead_latent_attention.default":
+    composite: true
+    sub_kernels: [TransposeBatchMatMul, FusedInferAttentionScore]
+    notes: "需 MLA 分解 pass 才能逐 kernel 查询，当前 fallback to analytic"
+
+# ========== torch_npu 参考（microbenchmark 脚本生成用）==========
+# 每个 kernel_type 对应 apis（可能多个 torch_npu API）+ microbench_api（默认脚本用）
+torch_npu_reference:
+  MatMulV2:
+    apis:
+      - name: "torch.mm"
+        note: "标准 aten matmul"
+      - name: "torch_npu.npu_linear"
+        note: "NPU 优化版本，支持 bias"
+    microbench_api: "torch.mm"
+  QuantBatchMatmulV3:
+    apis:
+      - name: "torch_npu.npu_weight_quant_batchmatmul"
+    microbench_api: "torch_npu.npu_weight_quant_batchmatmul"
+  FusedInferAttentionScore:
+    apis:
+      - name: "torch_npu.npu_fused_infer_attention_score"
+    microbench_api: "torch_npu.npu_fused_infer_attention_score"
+  GroupedMatmul:
+    apis:
+      - name: "torch_npu.npu_grouped_matmul"
+    microbench_api: "torch_npu.npu_grouped_matmul"
+  AddRmsNorm:
+    apis:
+      - name: "torch_npu.npu_add_rms_norm"
+    microbench_api: "torch_npu.npu_add_rms_norm"
+  SwiGlu:
+    apis:
+      - name: "torch_npu.npu_swiglu"
+    microbench_api: "torch_npu.npu_swiglu"
+  DynamicQuant:
+    apis:
+      - name: "torch_npu.npu_dynamic_quant"
+    microbench_api: "torch_npu.npu_dynamic_quant"
+  AscendQuantV2:
+    apis:
+      - name: "torch_npu.npu_quantize"
+    microbench_api: "torch_npu.npu_quantize"
+  hcom_allReduce_:
+    apis:
+      - name: "torch.distributed.all_reduce"
+    microbench_api: "torch.distributed.all_reduce"
+  HcomAllGather:
+    apis:
+      - name: "torch.distributed.all_gather"
+    microbench_api: "torch.distributed.all_gather"
+  hcom_alltoall_:
+    apis:
+      - name: "torch.distributed.all_to_all"
+    microbench_api: "torch.distributed.all_to_all"

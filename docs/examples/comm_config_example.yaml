@@ -1,0 +1,19 @@
+# comm_config.yaml 示例
+# 路径: tensor_cast/performance_model/perf_database/data/{device}/hccl/{cann_version}/comm_config.yaml
+
+device: ATLAS_800_A3_752T_128G_DIE
+cann_version: "8.1.RC1"
+collection_date: "2026-03-01"
+
+topology:
+  grid_shape: [48, 8, 2]
+  tiers:
+    0: {name: "inter_pod", bandwidth_gbps: 196, latency_us: 5.5, type: "CLOS"}
+    1: {name: "intra_pod", bandwidth_gbps: 196, latency_us: 0.5, type: "CLOS"}
+    2: {name: "die_level", bandwidth_gbps: 224, latency_us: 0.2, type: "SIO"}
+
+comm_operator_mappings:
+  "tensor_cast.all_reduce.default": hcom_allReduce_
+  "tensor_cast.all_gather.default": HcomAllGather
+  "tensor_cast.reduce_scatter.default": hcom_reduceScatter_
+  "tensor_cast.all_to_all.default": hcom_alltoall_

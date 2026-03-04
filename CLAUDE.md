@@ -347,9 +347,9 @@ if tensor.device.type != 'meta':
 
 ## Design Principles
 
-### ProfilingPerformanceModel
+### EmpiricalPerformanceModel + DataSource 模式
 
-ProfilingPerformanceModel 的设计应尽量贴合实测的 Profiling 算子，需要能和实际的 NPU Kernel 对齐算子和 Shape，不应为了迁就 TensorCast 当前的算子抽象而妥协。未来最好直接从 VLLM 实跑抓取算子图（而非依赖 TensorCast 的 dispatch trace）。
+EmpiricalPerformanceModel 接受通用的 DataSource 抽象接口（如 ProfilingDataSource），基于实测数据估算算子性能。设计应尽量贴合实测的 Profiling 算子，需要能和实际的 NPU Kernel 对齐算子和 Shape，不应为了迁就 TensorCast 当前的算子抽象而妥协。未来最好直接从 VLLM 实跑抓取算子图（而非依赖 TensorCast 的 dispatch trace）。详见 `docs/OPERATOR_PERF_DATABASE_DESIGN_zh_v1.2.md`。
 
 ## Python Version
 
