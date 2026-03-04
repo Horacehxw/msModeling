@@ -69,12 +69,7 @@ def check_version(value: str) -> str:
 
 
 def normalize_device_name(device: str) -> str:
-    name = device.strip().lower()
-    if name.startswith("atlas_800_"):
-        name = name[len("atlas_800_") :]
-    if name.endswith("_die"):
-        name = name[: -len("_die")]
-    return name
+    return device.strip().lower()
 
 
 def normalize_vllm_ascend_version(version: str) -> str:
