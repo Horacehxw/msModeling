@@ -1,17 +1,36 @@
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import Any, Mapping
+from dataclasses import dataclass, field
+from enum import Enum, auto
+from typing import Any, Dict, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..op_invoke_info import OpInvokeInfo
 
 
-@dataclass(frozen=True)
+class QuerySource(Enum):
+    MEASURED = auto()
+    INTERPOLATED = auto()
+    EXTRAPOLATED = auto()
+
+
+@dataclass
 class QueryResult:
-    kernel_type: str
     latency_us: float
-    source: str
-    metadata: Mapping[str, Any] | None = None
+    confidence: float
+    source: QuerySource
+    details: Dict[str, Any] = field(default_factory=dict)
 
 
 class DataSource(ABC):
+    """Abstract base class for performance data sources.
+    TensorCast queries via OpInvokeInfo only, unaware of underlying data format.
+    (Design doc §4.1)"""
+
     @abstractmethod
-    def query(self, kernel_type: str, features: Mapping[str, Any]) -> QueryResult | None:
-        """Query perf data by kernel type and input features."""
+    def lookup(self, op_invoke_info: "OpInvokeInfo") -> Optional[QueryResult]:
+        """Query operator performance from OpInvokeInfo."""
+        ...
+
+    def store(self, op_invoke_info: "OpInvokeInfo", result: QueryResult) -> None:
+        """Store performance data (optional). Default: read-only."""
+        raise NotImplementedError("This DataSource is read-only")
