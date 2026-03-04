@@ -3,8 +3,10 @@
 ### Documentation
 - AI Configurator: local `/home/horacehxw/Projects/aiconfigurator`, GitHub: https://github.com/ai-dynamo/aiconfigurator
 - op-plugin (torch_npu op mapping): `/home/horacehxw/Projects/op-plugin/`, master mapping: `op_plugin/config/op_plugin_functions.yaml` (7148 lines, 1200+ ops)
-- Design doc: `docs/OPERATOR_PERF_DATABASE_DESIGN_zh_v1.2.md` (current version)
-- Design doc examples: `docs/examples/op_mapping_example.yaml`, `docs/examples/comm_config_example.yaml`
+- Design doc: `docs/perf_database/OPERATOR_PERF_DATABASE_DESIGN_zh_v1.2.md` (current version)
+- Design doc archive: `docs/perf_database/archive/` (v1.0, v1.1 etc.)
+- Design doc examples: `docs/perf_database/examples/op_mapping_example.yaml`, `docs/perf_database/examples/comm_config_example.yaml`
+- Op-plugin mapping tutorial: `docs/perf_database/tutorial/OP_PLUGIN_MAPPING_TUTORIAL.md`
 - Wiki: https://deepwiki.com/Horacehxw/msModeling
 - gitcode remote: `https://gitcode.com/Ascend/msmodeling.git` (develop branch has latest fused ops)
 - HCCL Test tool doc: https://www.hiascend.com/document/detail/zh/mindstudio/70RC1/mscommandtoolug/mscommandug/auxiliarydevtool_0017.html

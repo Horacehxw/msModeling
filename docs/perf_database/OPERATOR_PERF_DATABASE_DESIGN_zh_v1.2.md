@@ -1056,8 +1056,8 @@ op-plugin 库（https://github.com/Ascend/op-plugin）的 `op_plugin/config/op_p
 30. 遗留问题 2：FusedAttention microbenchmark 为当前方案，两条长期路径在 Future Work
 
 **新增示例文件**：
-31. `docs/examples/op_mapping_example.yaml`：完整 op_mapping.yaml 示例（~25 条算子映射 + torch_npu_reference）
-32. `docs/examples/comm_config_example.yaml`：完整 comm_config.yaml 示例（拓扑描述 + 通信算子映射）
+31. `docs/perf_database/examples/op_mapping_example.yaml`：完整 op_mapping.yaml 示例（~25 条算子映射 + torch_npu_reference）
+32. `docs/perf_database/examples/comm_config_example.yaml`：完整 comm_config.yaml 示例（拓扑描述 + 通信算子映射）
 
 **新增附录**：
 33. 附录 A：小 Batch 场景 Roofline 偏差分析
