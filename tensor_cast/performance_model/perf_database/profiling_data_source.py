@@ -1,35 +1,215 @@
-import csv
-from pathlib import Path
-from typing import Any, Mapping
+"""ProfilingDataSource: CSV-backed data source with op_mapping + FRACTAL_NZ.
 
-from .data_source import DataSource, QueryResult
+Design doc reference: S4.2 (ProfilingDataSource), S4.9 (FRACTAL_NZ)
+"""
+
+import logging
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
+
+import pandas as pd
+import torch
+import yaml
+
+from .data_source import DataSource, QueryResult, QuerySource
+
+if TYPE_CHECKING:
+    from ..op_invoke_info import OpInvokeInfo
+
+logger = logging.getLogger(__name__)
+
+# torch dtype -> Profiling dtype string (design doc S4.2)
+DTYPE_MAP = {
+    torch.bfloat16: "DT_BF16",
+    torch.float16: "DT_BF16",  # FP16 treated as BF16 on Ascend
+    torch.int8: "INT8",
+    torch.int32: "INT32",
+    torch.int64: "INT64",
+    torch.float32: "FLOAT",
+    torch.bool: "BOOL",
+}
+
+
+def fractal_nz_to_nd(nz_shape: Tuple[int, ...]) -> Tuple[int, ...]:
+    """Restore FRACTAL_NZ tiled shape to ND shape.
+    [..., H, W, block_h, block_w] -> [..., H*block_w, W*block_h]
+
+    Design doc S4.9, Appendix B:
+    - BF16: [K/16, N/16, 16, 16] -> (K, N)
+    - INT8: [N/32, K/16, 16, 32] -> (K, N) after H*block_w, W*block_h
+    - Batched: [E, N/32, K/16, 16, 32] -> (E, K, N)
+    """
+    *batch, H, W, block_h, block_w = nz_shape
+    return (*batch, H * block_w, W * block_h)
+
+
+def _normalize_func_name(func) -> str:
+    """Convert torch op to string matching op_mapping.yaml keys.
+    e.g. torch.ops.aten.mm.default -> 'aten.mm.default'
+         torch.ops.tensor_cast.attention.default -> 'tensor_cast.attention.default'
+    """
+    s = str(func)
+    return s.removeprefix("torch.ops.")
+
+
+def _parse_shape_str(s: str) -> List[Tuple[int, ...]]:
+    """Parse CSV shape string -> list of tuples.
+    e.g. '"136,5120;320,48,16,16"' -> [(136,5120), (320,48,16,16)]
+    """
+    s = s.strip().strip('"')
+    shapes = []
+    for part in s.split(";"):
+        part = part.strip()
+        if part:
+            shapes.append(tuple(int(x) for x in part.split(",")))
+    return shapes
+
+
+def _parse_str_list(s: str) -> List[str]:
+    """Parse 'A;B;C' -> ['A', 'B', 'C']"""
+    s = s.strip().strip('"')
+    return [x.strip() for x in s.split(";") if x.strip()]
 
 
 class ProfilingDataSource(DataSource):
-    """CSV-backed datasource with exact-match query on input/output shapes."""
+    """CSV-backed data source with op_mapping.yaml + FRACTAL_NZ.
 
-    def __init__(self, root: str | Path):
-        self.root = Path(root)
+    Design doc S4.2: internally handles all mapping, shape extraction,
+    format conversion. The caller (EmpiricalPerformanceModel) only calls
+    lookup(OpInvokeInfo).
 
-    def query(self, kernel_type: str, features: Mapping[str, Any]) -> QueryResult | None:
-        csv_path = self.root / f"{kernel_type}.csv"
+    Init args:
+        data_dir: path containing op_mapping.yaml + {KernelType}.csv files
+        comm_grid: optional CommGrid for topology_tier resolution (Phase 2)
+    """
+
+    def __init__(self, data_dir: str | Path, comm_grid=None):
+        self.data_dir = Path(data_dir)
+        self.comm_grid = comm_grid
+        self._op_mapping = self._load_op_mapping()
+        self._csv_cache: Dict[str, Optional[pd.DataFrame]] = {}
+
+    def _load_op_mapping(self) -> dict:
+        yaml_path = self.data_dir / "op_mapping.yaml"
+        if not yaml_path.exists():
+            logger.warning("op_mapping.yaml not found at %s", yaml_path)
+            return {}
+        with open(yaml_path) as f:
+            return yaml.safe_load(f)
+
+    def _load_csv(self, kernel_type: str) -> Optional[pd.DataFrame]:
+        if kernel_type in self._csv_cache:
+            return self._csv_cache[kernel_type]
+        csv_path = self.data_dir / f"{kernel_type}.csv"
         if not csv_path.exists():
+            logger.debug("CSV not found: %s", csv_path)
+            self._csv_cache[kernel_type] = None
+            return None
+        df = pd.read_csv(csv_path)
+        self._csv_cache[kernel_type] = df
+        return df
+
+    # ---- Main lookup (design doc S4.2 dispatch logic) ----
+
+    def lookup(self, op_invoke_info: "OpInvokeInfo") -> Optional[QueryResult]:
+        """Query perf data for an op.
+
+        Dispatch logic (design doc S4.2):
+          func_name -> op_mapping.yaml
+            - not found -> return None
+            - composite == true -> return None (spike: fallback to analytic)
+            - category == "communication" -> return None (spike: fallback)
+            - query_mode == "attention_special" -> return None (spike: fallback)
+            - default -> _lookup_compute()
+        """
+        func_str = _normalize_func_name(op_invoke_info.func)
+        mappings = self._op_mapping.get("operator_mappings", {})
+        mapping = mappings.get(func_str)
+        if mapping is None:
             return None
 
-        input_shapes = str(features.get("input_shapes", ""))
-        output_shapes = str(features.get("output_shapes", ""))
-        with csv_path.open("r", encoding="utf-8-sig", newline="") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                if (
-                    row.get("Input Shapes", "") == input_shapes
-                    and row.get("Output Shapes", "") == output_shapes
-                ):
-                    latency = float(row.get("Average Duration(us)", "0") or 0.0)
-                    return QueryResult(
-                        kernel_type=kernel_type,
-                        latency_us=latency,
-                        source="profiling_csv",
-                        metadata={"csv_path": str(csv_path)},
-                    )
+        # Spike: skip composite, communication, attention_special
+        if mapping.get("composite"):
+            return None
+        if mapping.get("category") == "communication":
+            return None
+        if mapping.get("query_mode") == "attention_special":
+            return None
+
+        return self._lookup_compute(op_invoke_info, mapping)
+
+    # ---- Compute op lookup (design doc S4.2 _lookup_compute) ----
+
+    def _lookup_compute(
+        self, op_invoke_info: "OpInvokeInfo", mapping: dict
+    ) -> Optional[QueryResult]:
+        kernel_type = mapping["kernel_type"]
+        df = self._load_csv(kernel_type)
+        if df is None:
+            return None
+
+        # Extract tensor shapes and dtypes from OpInvokeInfo.args
+        tc_inputs = self._extract_tensor_inputs(op_invoke_info)
+
+        # Match against CSV rows
+        for _, row in df.iterrows():
+            if self._inputs_match(tc_inputs, row):
+                # Use "Average Duration(us)" if available, else "Duration(us)"
+                latency_col = (
+                    "Average Duration(us)"
+                    if "Average Duration(us)" in df.columns
+                    else "Duration(us)"
+                )
+                return QueryResult(
+                    latency_us=float(row[latency_col]),
+                    confidence=1.0,
+                    source=QuerySource.MEASURED,
+                    details={"kernel_type": kernel_type},
+                )
         return None
+
+    def _extract_tensor_inputs(
+        self, op_invoke_info: "OpInvokeInfo"
+    ) -> List[Tuple[Tuple[int, ...], torch.dtype]]:
+        """Extract (shape, dtype) for each tensor arg."""
+        inputs = []
+        for arg in op_invoke_info.args:
+            if isinstance(arg, torch.Tensor):
+                inputs.append((tuple(arg.shape), arg.dtype))
+            elif isinstance(arg, (list, tuple)):
+                for item in arg:
+                    if isinstance(item, torch.Tensor):
+                        inputs.append((tuple(item.shape), item.dtype))
+        return inputs
+
+    def _inputs_match(
+        self,
+        tc_inputs: List[Tuple[Tuple[int, ...], torch.dtype]],
+        csv_row: pd.Series,
+    ) -> bool:
+        """Match TensorCast input shapes/dtypes against a CSV row.
+        Handles FRACTAL_NZ restoration (design doc S4.9)."""
+        csv_shapes = _parse_shape_str(str(csv_row.get("Input Shapes", "")))
+        csv_dtypes = _parse_str_list(str(csv_row.get("Input Data Types", "")))
+        csv_formats = _parse_str_list(str(csv_row.get("Input Formats", "")))
+
+        if len(tc_inputs) != len(csv_shapes):
+            return False
+
+        for i, (tc_shape, tc_dtype) in enumerate(tc_inputs):
+            # Check dtype
+            expected_dtype = DTYPE_MAP.get(tc_dtype)
+            if expected_dtype is None or i >= len(csv_dtypes):
+                return False
+            if expected_dtype != csv_dtypes[i]:
+                return False
+
+            # Get CSV shape, restore FRACTAL_NZ if needed
+            csv_shape = csv_shapes[i]
+            if i < len(csv_formats) and csv_formats[i] == "FRACTAL_NZ":
+                csv_shape = fractal_nz_to_nd(csv_shape)
+
+            if tc_shape != csv_shape:
+                return False
+
+        return True
