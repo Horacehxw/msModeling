@@ -68,21 +68,40 @@ def check_version(value: str) -> str:
     return version
 
 
+def normalize_device_name(device: str) -> str:
+    name = device.strip().lower()
+    if name.startswith("atlas_800_"):
+        name = name[len("atlas_800_") :]
+    if name.endswith("_die"):
+        name = name[: -len("_die")]
+    return name
+
+
+def normalize_vllm_ascend_version(version: str) -> str:
+    normalized = version.strip()
+    if not normalized.startswith("v"):
+        normalized = f"v{normalized}"
+    return normalized
+
+
 class KernelDetailsParser:
     """Parse kernel_details.csv and export averaged op duration by op type."""
 
     def __init__(self, device: str, kernel_details_path: str, vllm_ascend_version: str):
         self.device = device
         self.kernel_details_path = Path(kernel_details_path)
-        self.vllm_ascend_version = vllm_ascend_version
+        self.vllm_ascend_version = normalize_vllm_ascend_version(vllm_ascend_version)
+        self.device_dir = normalize_device_name(device)
         self.repo_root = Path(__file__).resolve().parents[2]
         self.output_dir = (
             self.repo_root
+            / "tensor_cast"
+            / "performance_model"
             / "perf_database"
             / "data"
-            / device
+            / self.device_dir
             / "vllm_ascend"
-            / vllm_ascend_version
+            / self.vllm_ascend_version
         )
 
     @staticmethod
@@ -289,7 +308,7 @@ def build_argparser() -> argparse.ArgumentParser:
         choices=SUPPORTED_DEVICES,
         help=(
             "Target device name used as output folder: "
-            "perf_database/data/{device}/vllm_ascend/{version}/"
+            "tensor_cast/performance_model/perf_database/data/{device}/vllm_ascend/{version}/"
         ),
     )
     parser.add_argument(
