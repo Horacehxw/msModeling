@@ -2,11 +2,11 @@ import argparse
 import logging
 
 from tensor_cast import config, device_profiles  # noqa: F401
-from tensor_cast.model_config import WordEmbeddingTPMode
 from tensor_cast.core.quantization.datatypes import (
     QuantizeAttentionAction,
     QuantizeLinearAction,
 )
+from tensor_cast.model_config import WordEmbeddingTPMode
 from ..utils import check_positive_integer, get_common_argparser, LOG_FORMAT, LOG_LEVELS
 
 
