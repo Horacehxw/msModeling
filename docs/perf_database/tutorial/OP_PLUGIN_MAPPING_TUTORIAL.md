@@ -323,6 +323,69 @@ for f in $(grep -r "${KERNEL_NAME}" "${OP_PLUGIN_DIR}/op_plugin/ops/opapi/" --in
 done
 ```
 
+## 7.5 替代映射路径：vLLM-ascend
+
+部分 Profiling 算子并非来自 PyTorch ATen → op-plugin 路径，而是来自 vLLM-ascend 的直接 `torch_npu` pybind 调用或 Triton/Graph fusion。本节介绍如何通过 vLLM-ascend 建立映射。
+
+### 三条映射路径概述
+
+```
+路径 A (op-plugin):     PyTorch aten → op-plugin YAML → C++ EXEC_NPU_CMD(aclnn*) → Profiling Type
+路径 B (vLLM pybind):   vLLM-ascend Python → torch_npu.npu_* → op-plugin → aclnn* → Profiling Type
+路径 C (vLLM Triton/Graph Fusion): vLLM-ascend fusion pass → custom kernel → Profiling Type
+```
+
+- **路径 A** 适用于标准 aten 算子（§6-7 已覆盖）
+- **路径 B** 适用于 vLLM-ascend 直接调用 `torch_npu.npu_*` API 的算子，最终仍经过 op-plugin
+- **路径 C** 适用于 vLLM-ascend 自定义的 Triton kernel 或 graph fusion pass 生成的算子
+
+### 路径 B 示例: MoeGatingTopK
+
+**映射链**：
+1. **vLLM-ascend**: `vllm_ascend/ops/experts_selector.py` → `torch_npu.npu_moe_gating_top_k()`
+2. **op-plugin**: YAML:~6190 → `MoeGatingTopKKernelNpuOpApi.cpp` → `EXEC_NPU_CMD(aclnnMoeGatingTopK)`
+3. **Profiling**: Type = `MoeGatingTopK`
+
+**背景**：TensorCast 当前用 `aten.topk` 实现 MoE 路由选择，但 NPU 有专用融合 kernel `MoeGatingTopK`，将 gating score 计算和 top-k 选择合并。vLLM-ascend 直接调用 `torch_npu.npu_moe_gating_top_k()` 绕过 aten dispatcher。
+
+### 路径 B 示例: KvRmsNormRopeCache
+
+**映射链**：
+1. **vLLM-ascend**: `vllm_ascend/ops/mla_v1.py` → `torch_npu.npu_kv_rmsnorm_rope_cache()`
+2. **op-plugin**: YAML:~5669 → `EXEC_NPU_CMD(aclnnKvRmsNormRopeCache)`
+3. **Profiling**: Type = `KvRmsNormRopeCache`
+
+**背景**：TensorCast 分解为 `rms_norm` + `apply_rope` + `reshape_and_cache` 三个独立算子，但 NPU 将这三步融合为单个 kernel。之前标记为"未在 op-plugin 中找到"，实际 op-plugin 有 `npu_kv_rmsnorm_rope_cache` 条目。
+
+### 路径 C 示例: split_qkv_rmsnorm_rope_kernel
+
+**映射链**：
+1. **vLLM-ascend**: `vllm_ascend/ops/attention.py` 中 `QKNormRopeFusionPass` graph fusion pass
+2. 这是 vLLM-ascend 的 **Triton 自定义 kernel**，**不在 op-plugin 中**
+3. **Profiling**: Type = `split_qkv_rmsnorm_rope_kernel`
+
+**背景**：Qwen3 等有 `qk_norm` 的模型，vLLM-ascend 将 split QKV + RmsNorm + RoPE 融合为单个 Triton kernel。TensorCast 分别使用 `linear` + `rms_norm` + `apply_rope`。
+
+### 何时使用 vLLM-ascend 路径
+
+1. Profiling Type 在 op-plugin `EXEC_NPU_CMD` 中搜不到时
+2. 算子名带 `_kernel` 后缀（通常为 Triton/自定义 kernel）
+3. vLLM-ascend 特有的融合优化（MC2, graph fusion passes）
+4. `torch_npu.npu_*` API 调用不经过 aten dispatcher
+
+### vLLM-ascend 搜索方法
+
+```bash
+# 在 vLLM-ascend 中搜索 torch_npu API 调用
+grep -r "torch_npu\." vllm_ascend/ --include="*.py" | grep "<kernel_name>"
+
+# 搜索 graph fusion passes
+grep -r "FusionPass\|fusion_pass" vllm_ascend/ --include="*.py"
+
+# 搜索 Triton kernels
+find vllm_ascend/ -name "*.py" -exec grep -l "triton\|tl\." {} \;
+```
+
 ## 8. 常见算子映射速查表
 
 下表列出 LLM 推理中常见的算子映射关系，来源于实际 Profiling 分析：
@@ -343,6 +406,14 @@ done
 | `torch.distributed.all_gather` | HCCL | — | `HcomAllGather` |
 | `torch.distributed.all_to_all` | HCCL | — | `hcom_alltoall_` |
 
+### vLLM-ascend 专有映射
+
+| PyTorch / TensorCast 算子 | 来源 | aclnn 内核 | Profiling Type |
+|---|---|---|---|
+| `torch_npu.npu_moe_gating_top_k` | vLLM-ascend + op-plugin | `aclnnMoeGatingTopK` | `MoeGatingTopK` |
+| `torch_npu.npu_kv_rmsnorm_rope_cache` | vLLM-ascend + op-plugin | `aclnnKvRmsNormRopeCache` | `KvRmsNormRopeCache` |
+| vLLM Triton kernel | vLLM-ascend graph fusion | — | `split_qkv_rmsnorm_rope_kernel` |
+
 ## 9. 与 TensorCast op_mapping.yaml 的关系
 
 `op_mapping.yaml`（见 [`examples/op_mapping_example.yaml`](../examples/op_mapping_example.yaml)）是 TensorCast 用于匹配 Profiling 数据的配置文件，其核心是将 TensorCast 虚拟算子映射到 Profiling 的 **Type 列值**：
@@ -361,9 +432,10 @@ operator_mappings:
 **编写流程**：
 
 1. 确定 TensorCast 算子名（如 `tensor_cast.static_quant_linear.default`）
-2. 分析该算子在实际 vLLM 推理中对应的 NPU 操作（参考第 8 节速查表）
-3. 从 Profiling 数据确认 Type 列值
-4. 写入 `op_mapping.yaml`
+2. 在 op-plugin 中查找映射（路径 A，参考第 6-7 节）
+3. 若 op-plugin 未找到，在 vLLM-ascend 中查找（路径 B/C，参考第 7.5 节）
+4. 从 Profiling 数据确认 Type 列值（参考第 8 节速查表）
+5. 写入 `op_mapping.yaml`
 
 ## 10. 进阶：处理融合算子
 
