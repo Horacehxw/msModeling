@@ -68,16 +68,21 @@ def check_version(value: str) -> str:
     return version
 
 
-class AscendProfilerParser:
-    """Parse Ascend kernel_details.csv and export averaged op duration by op type."""
+class KernelDetailsParser:
+    """Parse kernel_details.csv and export averaged op duration by op type."""
 
     def __init__(self, device: str, kernel_details_path: str, vllm_ascend_version: str):
         self.device = device
         self.kernel_details_path = Path(kernel_details_path)
         self.vllm_ascend_version = vllm_ascend_version
-        self.base_dir = Path(__file__).resolve().parents[1]
+        self.repo_root = Path(__file__).resolve().parents[2]
         self.output_dir = (
-            self.base_dir / "data" / device / "vllm_ascend" / vllm_ascend_version
+            self.repo_root
+            / "perf_database"
+            / "data"
+            / device
+            / "vllm_ascend"
+            / vllm_ascend_version
         )
 
     @staticmethod
@@ -274,7 +279,7 @@ class AscendProfilerParser:
 def build_argparser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Parse Ascend profiler kernel_details.csv and split by operator type "
+            "Parse kernel_details.csv and split by operator type "
             "with averaged duration grouped by input/output shapes."
         )
     )
@@ -303,7 +308,7 @@ def build_argparser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_argparser().parse_args()
-    parser = AscendProfilerParser(
+    parser = KernelDetailsParser(
         device=args.device,
         kernel_details_path=args.kernel_details_path,
         vllm_ascend_version=args.vllm_ascend_version,
@@ -317,3 +322,7 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+# Backward-compatible alias for external imports from older naming.
+AscendProfilerParser = KernelDetailsParser
