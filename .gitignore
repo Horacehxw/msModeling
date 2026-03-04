@@ -10,6 +10,9 @@
 .venv/
 .claude/
 
-# generated profiling data
+# generated profiling data (tools/perf_data_collection output)
 perf_database/data/
 temp/
+
+# perf_database YAML tracked by git, CSV tracked by git-lfs (see .gitattributes)
+# Do NOT ignore tensor_cast/performance_model/perf_database/data/
