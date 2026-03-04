@@ -66,6 +66,8 @@ class UserInputConfig:
     image_batch_size: Optional[int] = None
     image_height: Optional[int] = None
     image_width: Optional[int] = None
+    performance_model: str = "analytic"
+    perf_database: Optional[str] = None
 
     def __post_init__(self):
         self._validate_device()

@@ -57,7 +57,26 @@ class ModelRunner:
         logger.debug("Device profile loaded: %s", self.device_profile)
 
         logger.info("Initializing performance model")
-        self.perf_model = AnalyticPerformanceModel(self.device_profile)
+        if getattr(user_input, "performance_model", "analytic") == "profiling":
+            perf_db_path = getattr(user_input, "perf_database", None)
+            if perf_db_path is None:
+                raise ValueError(
+                    "--perf-database is required when using --performance-model profiling"
+                )
+            from pathlib import Path
+
+            from ..performance_model.empirical import EmpiricalPerformanceModel
+            from ..performance_model.perf_database import ProfilingDataSource
+
+            db_path = Path(perf_db_path)
+            data_source = ProfilingDataSource(
+                db_path, comm_grid=self.device_profile.comm_grid
+            )
+            self.perf_model = EmpiricalPerformanceModel(
+                self.device_profile, data_source=data_source
+            )
+        else:
+            self.perf_model = AnalyticPerformanceModel(self.device_profile)
         logger.debug("Performance model initialized: %s", self.perf_model)
 
         #  ---------- 2. generate default request from user config----------

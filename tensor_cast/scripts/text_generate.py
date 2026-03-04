@@ -262,6 +262,21 @@ def main():
         help="Width of the input images",
     )
 
+    # Performance model selection (design doc §5.2)
+    parser.add_argument(
+        "--performance-model",
+        choices=["analytic", "profiling"],
+        default="analytic",
+        help="Performance model type: analytic (roofline) or profiling (CSV database)",
+    )
+    parser.add_argument(
+        "--perf-database",
+        type=str,
+        default=None,
+        help="Path to performance database directory containing op_mapping.yaml + CSV files "
+        "(required for --performance-model profiling)",
+    )
+
     args = parser.parse_args()
     logging.basicConfig(level=LOG_LEVELS[args.log_level.lower()])
 
