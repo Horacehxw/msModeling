@@ -1,23 +1,10 @@
-# op_mapping.yaml — Production-ready 算子映射表
+# op_mapping.yaml 完整示例
 # 路径: tensor_cast/performance_model/perf_database/data/{device}/vllm_ascend/{version}/op_mapping.yaml
-#
-# 数据来源:
-#   - TensorCast 注册算子: register_tensor_cast_op (45 ops, tensor_cast/ops/*.py)
-#   - DSV3 Decode Profiling: 32 卡 W8A8, 86840 kernel invocations, 45 unique Types
-#   - Qwen3-30B Prefill Profiling: 16 卡 BF16, 1505 kernel invocations, 45 unique Types
-#   - op-plugin 映射: op_plugin/config/op_plugin_functions.yaml
-#
-# 映射规则:
-#   - *_quant_* 量化变体 → 与基础版本相同 kernel_type（量化部分性能影响次要）
-#   - *_swiglu 融合 → DequantSwigluQuant（DSV3 Profiling 实证）
-#   - MLA composite → TransposeBatchMatMul + FusedInferAttentionScore
-#   - 通信 → 1:1 映射到 hcom_* kernel
-#   - placeholder → status: not_implemented，记录 Profiling 出处
 
 version: "0.13.0"
 device: ATLAS_800_A3_752T_128G_DIE
 cann_version: "8.1.RC1"
-collection_date: "2026-03-04"
+collection_date: "2026-03-01"
 
 # 通信数据引用（HCCL 独立于 vLLM 版本）
 communication_data_ref: "../../hccl/v8.1.RC1/"
@@ -33,632 +20,131 @@ interpolation_policy:
     exact_match: [dtype, num_devices, topology_tier]
     interpolatable: [message_bytes]        # message_bytes 可以插值
 
-
-# ============================================================================
-#                         计算算子映射 (operator_mappings)
-# ============================================================================
-# 覆盖范围:
-#   - 标准 aten 算子: 7 个
-#   - 量化线性: 4 个
-#   - GroupedMatmul (MoE): 5 个
-#   - GroupedMatmul+SwiGlu 融合 (develop branch): 5 个
-#   - MoE 路由: 2 个
-#   - Attention: 2 个
-#   - MLA: 4 个 (含 composite 和 planned)
-#   - KV Cache: 2 个
-#   - Norm/Activation 基础: 4 个
-#   - Norm + Static Quant 变体: 3 个
-#   - Norm + Dynamic Quant 变体: 9 个 (symmetric/asymmetric/mxfp4)
-#   - 量化: 4 个
-#   - RoPE: 1 个
-#   - 通信: 4 个
-#   - 工具算子: 1 个
-#   - Profiling-only placeholder: 8 个
-# ============================================================================
-
+# ========== 计算算子映射 ==========
 operator_mappings:
-
-  # ========== 1. 标准 aten 算子 ==========
-  # 来源: TensorCast 通过 TorchDispatchMode 拦截的 PyTorch 原生算子
-
+  # --- 标准 aten 算子 ---
   "aten.mm.default":
     kernel_type: MatMulV2
-    # Qwen3 Prefill: MatMulV2 (275x)
-
   "aten.addmm.default":
     kernel_type: MatMulV2
-
   "aten.bmm.default":
     kernel_type: TransposeBatchMatMul
-    # DSV3 Decode: TransposeBatchMatMul (5002x)
 
-  "aten.embedding.default":
-    kernel_type: GatherV2
-    notes: "embedding lookup → GatherV2 on NPU"
-    # DSV3: GatherV2 (123x), Qwen3: GatherV2 (4x)
-
-  "aten.index_select.default":
-    kernel_type: GatherV2
-
-  "aten.convolution.default":
-    kernel_type: Conv2D
-    notes: "1D/2D convolution; rarely used in LLM inference, common in video/image models"
-
-  "aten.cat.default":
-    kernel_type: ConcatD
-    # DSV3: ConcatD (246x), Qwen3: ConcatD (3x)
-
-
-  # ========== 2. 量化线性 (Quantized Linear) ==========
-  # 来源: tensor_cast/ops/linear.py (4 ops)
-  # Profiling: DSV3 Decode QuantBatchMatmulV3 (15006x) — 最高频算子
-
+  # --- 量化 Matmul ---
   "tensor_cast.static_quant_linear.default":
     kernel_type: QuantBatchMatmulV3
-    notes: "W8A8 static quantized linear"
-
-  "tensor_cast.static_quant_linear_int4.default":
-    kernel_type: QuantBatchMatmulV3
-    notes: "W4A8 INT4 weight variant; same QuantBatchMatmulV3 kernel with different weight format"
-
   "tensor_cast.fp8_linear.default":
     kernel_type: QuantBatchMatmulV3
-
   "tensor_cast.mxfp4_linear.default":
     kernel_type: QuantBatchMatmulV3
 
-
-  # ========== 3. GroupedMatmul (MoE) ==========
-  # 来源: tensor_cast/ops/gmm.py (5 ops)
-  # Profiling: DSV3 Decode GroupedMatmul (4756x)
-
+  # --- MoE ---
   "tensor_cast.grouped_matmul.default":
     kernel_type: GroupedMatmul
-
   "tensor_cast.grouped_matmul_quant.default":
     kernel_type: GroupedMatmul
-    notes: "W8A8 quantized MoE expert matmul"
-
-  "tensor_cast.grouped_matmul_quant_int4.default":
-    kernel_type: GroupedMatmul
-    notes: "W4A8 INT4 weight MoE expert matmul"
-
-  "tensor_cast.grouped_matmul_fp8.default":
-    kernel_type: GroupedMatmul
-
-  "tensor_cast.grouped_matmul_mxfp4.default":
-    kernel_type: GroupedMatmul
-
-
-  # ========== 4. GroupedMatmul+SwiGlu 融合 (develop branch) ==========
-  # 来源: gitcode/develop branch — freezing_passes/grouped_matmul_swiglu_pass.py
-  # Profiling 对应: DSV3 Decode DequantSwigluQuant (4879x)
-  # 说明: GMM gate_proj + up_proj → SwiGlu 融合为一个算子，减少中间张量 + 内核启动开销
-
-  "tensor_cast.grouped_matmul_swiglu.default":
-    kernel_type: DequantSwigluQuant
-    status: develop_branch
-    notes: "BF16 GMM+SwiGlu fused; DSV3 profiling shows DequantSwigluQuant (4879x)"
-
-  "tensor_cast.grouped_matmul_quant_swiglu.default":
-    kernel_type: DequantSwigluQuant
-    status: develop_branch
-    notes: "W8A8 GMM+SwiGlu fused"
-
-  "tensor_cast.grouped_matmul_quant_int4_swiglu.default":
-    kernel_type: DequantSwigluQuant
-    status: develop_branch
-    notes: "W4A8 INT4 GMM+SwiGlu fused"
-
-  "tensor_cast.grouped_matmul_fp8_swiglu.default":
-    kernel_type: DequantSwigluQuant
-    status: develop_branch
-
-  "tensor_cast.grouped_matmul_mxfp4_swiglu.default":
-    kernel_type: DequantSwigluQuant
-    status: develop_branch
-
-
-  # ========== 5. MoE 路由 (Token Routing) ==========
-  # 来源: tensor_cast/ops/fused_moe.py (2 ops)
-  # Profiling: DSV3 Decode MoeDistributeDispatchV2 (2378x), MoeDistributeCombineV2 (2378x)
-
   "tensor_cast.permute_tokens.default":
     kernel_type: MoeDistributeDispatchV2
-    notes: "TC 只含本地 permute；通信在 all_to_all 中单独计时"
-
+    notes: "TC 只含本地 permute，通信在 all_to_all 中单独计时"
   "tensor_cast.unpermute_tokens.default":
     kernel_type: MoeDistributeCombineV2
 
-
-  # ========== 6. Attention ==========
-  # 来源: tensor_cast/ops/attention.py (2 ops)
-  # Profiling: DSV3 Decode FusedInferAttentionScore (2501x), Qwen3 Prefill (67x)
-
+  # --- Attention ---
   "tensor_cast.attention.default":
     kernel_type: FusedInferAttentionScore
     query_mode: attention_special
     notes: "Profiling KV shape 为预分配 buffer，需用 microbenchmark 数据按 seq_lens 索引"
-
   "tensor_cast.attention_quant.default":
     kernel_type: FusedInferAttentionScore
     query_mode: attention_special
-    notes: "INT8 KV cache quantized attention"
 
+  # --- Norm/Activation ---
+  "tensor_cast.add_rms_norm.default":
+    kernel_type: AddRmsNorm
+  "tensor_cast.add_rms_norm2.default":
+    kernel_type: AddRmsNorm
+  "tensor_cast.swiglu.default":
+    kernel_type: SwiGlu
 
-  # ========== 7. MLA (Multihead Latent Attention) ==========
-  # 来源: tensor_cast/ops/mla.py (2 registered) + tensor_cast/ops/attention.py (2 registered)
-  # Profiling: DSV3 Decode TransposeBatchMatMul (5002x) + FusedInferAttentionScore (2501x)
-  # MLA 在 NPU 上分解为 latent projection (BMM) + attention score 两个 kernel
+  # --- 量化 ---
+  "tensor_cast.quantize.default":
+    kernel_type: AscendQuantV2
+  "tensor_cast.dynamic_quantize_symmetric.default":
+    kernel_type: DynamicQuant
 
-  "tensor_cast.multihead_latent_attention.default":
-    composite: true
-    sub_kernels: [TransposeBatchMatMul, FusedInferAttentionScore]
-    notes: "需 MLA 分解 pass 才能逐 kernel 查询；当前 fallback to analytic"
-
-  "tensor_cast.multihead_latent_attention_quant.default":
-    composite: true
-    sub_kernels: [TransposeBatchMatMul, FusedInferAttentionScore]
-    notes: "Quantized MLA variant; same decomposition as non-quant version"
-
-  "tensor_cast.mlapo.default":
-    composite: true
-    sub_kernels: [TransposeBatchMatMul, FusedInferAttentionScore]
-    status: planned
-    notes: "MLA with absorbed projection optimization (MLAPO); not yet registered in TC"
-
-  "tensor_cast.mlapo_quant.default":
-    composite: true
-    sub_kernels: [TransposeBatchMatMul, FusedInferAttentionScore]
-    status: planned
-    notes: "Quantized MLAPO variant; not yet registered in TC"
-
-
-  # ========== 8. KV Cache ==========
-  # 来源: tensor_cast/ops/attention.py (2 ops)
-  # Profiling: Qwen3 Prefill ReshapeAndCacheNdKernel (67x)
-
+  # --- RoPE / KV Cache ---
+  "tensor_cast.apply_rope.default":
+    kernel_type: InterleaveRope
   "tensor_cast.reshape_and_cache.default":
     kernel_type: ReshapeAndCacheNdKernel
 
-  "tensor_cast.concat_and_cache_mla.default":
-    kernel_type: ReshapeAndCacheNdKernel
-    notes: "MLA-specific KV cache concat; maps to same cache kernel on NPU"
-
-
-  # ========== 9. Norm / Activation 基础 ==========
-  # 来源: tensor_cast/ops/layernorm.py (rms_norm, add_rms_norm, add_rms_norm2), tensor_cast/ops/activation (swiglu)
-  # Profiling: Qwen3 AddRmsNorm (131x), DSV3 InplaceAddRmsNorm (5002x), DSV3 RmsNorm (2542x)
-
-  "tensor_cast.rms_norm.default":
-    kernel_type: RmsNorm
-    # DSV3: RmsNorm (2542x), Qwen3: RmsNorm (7x)
-
-  "tensor_cast.add_rms_norm.default":
-    kernel_type: AddRmsNorm
-    # Qwen3: AddRmsNorm (131x); DSV3 uses InplaceAddRmsNorm variant
-
-  "tensor_cast.add_rms_norm2.default":
-    kernel_type: AddRmsNorm
-    notes: "Dual-residual variant (two residual add); same NPU kernel"
-
-  "tensor_cast.swiglu.default":
-    kernel_type: SwiGlu
-    # Qwen3 Prefill: SwiGlu (67x)
-
-
-  # ========== 10. Norm + Static Quant 变体 ==========
-  # 来源: tensor_cast/ops/layernorm.py (3 ops)
-  # 映射规则: 量化变体与基础版本映射到相同 kernel_type
-
-  "tensor_cast.rms_norm_quant.default":
-    kernel_type: RmsNorm
-    notes: "RmsNorm + static quantize fused in TC; NPU maps to base RmsNorm kernel"
-
-  "tensor_cast.add_rms_norm_quant.default":
-    kernel_type: AddRmsNorm
-    notes: "AddRmsNorm + static quantize fused"
-
-  "tensor_cast.add_rms_norm_quant2.default":
-    kernel_type: AddRmsNorm
-    notes: "Dual-residual AddRmsNorm + static quantize fused"
-
-
-  # ========== 11. Norm + Dynamic Quant Symmetric 变体 ==========
-  # 来源: tensor_cast/ops/layernorm.py (3 ops)
-
-  "tensor_cast.rms_norm_dynamic_quant_symmetric.default":
-    kernel_type: RmsNorm
-
-  "tensor_cast.add_rms_norm_dynamic_quant_symmetric.default":
-    kernel_type: AddRmsNorm
-
-  "tensor_cast.add_rms_norm_dynamic_quant2_symmetric.default":
-    kernel_type: AddRmsNorm
-
-
-  # ========== 12. Norm + Dynamic Quant Asymmetric 变体 ==========
-  # 来源: tensor_cast/ops/layernorm.py (3 ops)
-
-  "tensor_cast.rms_norm_dynamic_quant_asymmetric.default":
-    kernel_type: RmsNorm
-
-  "tensor_cast.add_rms_norm_dynamic_quant_asymmetric.default":
-    kernel_type: AddRmsNorm
-
-  "tensor_cast.add_rms_norm_dynamic_quant2_asymmetric.default":
-    kernel_type: AddRmsNorm
-
-
-  # ========== 13. Norm + Dynamic Quant MXFP4 变体 ==========
-  # 来源: tensor_cast/ops/layernorm.py (3 ops)
-
-  "tensor_cast.rms_norm_dynamic_quant_mxfp4.default":
-    kernel_type: RmsNorm
-
-  "tensor_cast.add_rms_norm_dynamic_quant_mxfp4.default":
-    kernel_type: AddRmsNorm
-
-  "tensor_cast.add_rms_norm_dynamic_quant2_mxfp4.default":
-    kernel_type: AddRmsNorm
-
-
-  # ========== 14. 量化 (Quantization) ==========
-  # 来源: tensor_cast/ops/quantization.py (4 ops)
-  # Profiling: DSV3 AscendQuantV2 (10004x), DynamicQuant (2501x)
-
-  "tensor_cast.quantize.default":
-    kernel_type: AscendQuantV2
-    # DSV3 Decode: AscendQuantV2 (10004x) — 第 2 高频算子
-
-  "tensor_cast.dynamic_quantize_symmetric.default":
-    kernel_type: DynamicQuant
-    # DSV3 Decode: DynamicQuant (2501x)
-
-  "tensor_cast.dynamic_quantize_asymmetric.default":
-    kernel_type: DynamicQuant
-    notes: "Asymmetric variant with zero-point; same DynamicQuant kernel"
-
-  "tensor_cast.dynamic_quantize_mxfp4.default":
-    kernel_type: DynamicQuant
-    notes: "MXFP4 microscaling dynamic quantization"
-
-
-  # ========== 15. RoPE ==========
-  # 来源: tensor_cast/ops/rotary_embedding.py (1 op)
-  # Profiling: DSV3 InterleaveRope (2501x), Qwen3 ApplyRotaryPosEmb (3x)
-
-  "tensor_cast.apply_rope.default":
-    kernel_type: InterleaveRope
-
-
-  # ========== 16. 通信 (Communication) ==========
-  # 来源: tensor_cast/ops/communication.py (4 ops)
-  # 映射基于 Profiling 实际观察到的 HCCL kernel name
-
+  # --- 通信算子（引用 hccl 数据库）---
   "tensor_cast.all_reduce.default":
     kernel_type: hcom_allReduce_
     category: communication
-    # DSV3: hcom_allReduce_ (82x), Qwen3: hcom_allReduce_ (276x)
-
   "tensor_cast.all_gather.default":
     kernel_type: HcomAllGather
     category: communication
-    # DSV3: HcomAllGather (164x)
-    notes: "Profiling 中也见 hcom_allGather_ (41x) 和 allgatherAicpuKernel (41x) 变体"
-
   "tensor_cast.reduce_scatter.default":
-    kernel_type: HcomReduceScatter
+    kernel_type: hcom_reduceScatter_
     category: communication
-    # DSV3: HcomReduceScatter (82x)
-
   "tensor_cast.all_to_all.default":
-    kernel_type: hcom_alltoallv_
+    kernel_type: hcom_alltoall_
     category: communication
-    # DSV3: hcom_alltoallv_ (82x) — variable-length all-to-all for EP MoE routing
-    notes: "DSV3 MoE 使用 variable-length all-to-all (alltoallv)，非固定 alltoall"
 
+  # --- 复合映射（1:N，需分解 pass）---
+  "tensor_cast.multihead_latent_attention.default":
+    composite: true
+    sub_kernels: [TransposeBatchMatMul, FusedInferAttentionScore]
+    notes: "需 MLA 分解 pass 才能逐 kernel 查询，当前 fallback to analytic"
 
-  # ========== 17. 工具算子 (Utility) ==========
-  # 来源: tensor_cast/ops/mtp.py (1 op)
-
-  "tensor_cast.shift_and_update_input_ids.default":
-    kernel_type: TensorMove
-    notes: "Multi-token prediction input shift; primarily data movement"
-
-
-  # ========== 18. Profiling-only Placeholder ==========
-  # NPU 融合算子：在 Profiling 中出现但 TensorCast 当前无对应实现
-  # 用途: 记录 Profiling 融合算子的存在，便于未来实现时查询映射关系
-
-  "profiling.DequantSwigluQuant":
-    kernel_type: DequantSwigluQuant
-    status: not_implemented
-    profiling_source: "DSV3 Decode (4879x)"
-    notes: >
-      Dequant + SwiGlu + Quant 三合一融合；TC 当前使用 grouped_matmul + swiglu 分开模拟。
-      develop branch 已有 grouped_matmul_*_swiglu 融合算子映射到此 kernel。
-
-  "profiling.KvRmsNormRopeCache":
-    kernel_type: KvRmsNormRopeCache
-    status: not_implemented
-    profiling_source: "DSV3 Decode (2501x)"
-    notes: >
-      KV RmsNorm + RoPE + Cache 写入三合一融合；
-      TC 当前分解为 rms_norm + apply_rope + reshape_and_cache 三个算子。
-
-  "profiling.InplaceAddRmsNorm":
-    kernel_type: InplaceAddRmsNorm
-    status: not_implemented
-    profiling_source: "DSV3 Decode (5002x)"
-    notes: >
-      AddRmsNorm 的 in-place 变体；TC add_rms_norm 映射到 AddRmsNorm，
-      但 DSV3 Profiling 实际使用 InplaceAddRmsNorm。性能可能略有差异。
-
-  "profiling.MoeGatingTopK":
-    kernel_type: MoeGatingTopK
-    status: not_implemented
-    profiling_source: "DSV3 Decode (2378x)"
-    notes: >
-      MoE gating top-k 选择专用 kernel；TC 当前通过 aten.topk 实现，
-      NPU 使用 MoeGatingTopK 专用算子。
-
-  "profiling.AutomaticBufferFusionOp":
-    kernel_type: AutomaticBufferFusionOp
-    status: not_implemented
-    profiling_source: "DSV3 Decode (2419x)"
-    notes: "NPU 编译器自动融合的 buffer 操作；无直接 TC 等价物"
-
-  "profiling.split_qkv_rmsnorm_rope_kernel":
-    kernel_type: split_qkv_rmsnorm_rope_kernel
-    status: not_implemented
-    profiling_source: "Qwen3-30B Prefill (64x)"
-    notes: >
-      Split QKV + RmsNorm + RoPE 融合 kernel；
-      TC 当前分别使用 linear + rms_norm + apply_rope。
-
-  "profiling.PagedCacheLoadNdKernel":
-    kernel_type: PagedCacheLoadNdKernel
-    status: not_implemented
-    profiling_source: "DSV3 Decode (61x)"
-    notes: "Paged KV cache 加载 kernel；TC reshape_and_cache 只处理写入"
-
-  "profiling.ScatterPaKvCache":
-    kernel_type: ScatterPaKvCache
-    status: not_implemented
-    profiling_source: "DSV3 Decode (61x)"
-    notes: "Scatter-based paged KV cache 写入；ReshapeAndCacheNdKernel 的替代实现"
-
-
-# ============================================================================
-#                  torch_npu 参考 (microbenchmark 脚本生成用)
-# ============================================================================
-# 每个 kernel_type 对应:
-#   - apis: 可能的 torch_npu API（可能多个）
-#   - microbench_api: 默认 microbenchmark 脚本使用的 API
-#
-# 覆盖范围: 全部 Profiling 中出现的 kernel_type + TC 映射涉及的 kernel_type
-
+# ========== torch_npu 参考（microbenchmark 脚本生成用）==========
+# 每个 kernel_type 对应 apis（可能多个 torch_npu API）+ microbench_api（默认脚本用）
 torch_npu_reference:
-
-  # --- Matmul ---
   MatMulV2:
     apis:
       - name: "torch.mm"
-        note: "标准 aten matmul → aclnnMatmul → MatMulV2"
+        note: "标准 aten matmul"
       - name: "torch_npu.npu_linear"
         note: "NPU 优化版本，支持 bias"
     microbench_api: "torch.mm"
-
-  MatMul:
-    apis:
-      - name: "torch.matmul"
-        note: "通用 matmul（含 batch）；DSV3 Decode 中 2378 次"
-    microbench_api: "torch.matmul"
-
-  TransposeBatchMatMul:
-    apis:
-      - name: "torch.bmm"
-        note: "batch matmul → TransposeBatchMatMul"
-    microbench_api: "torch.bmm"
-
   QuantBatchMatmulV3:
     apis:
       - name: "torch_npu.npu_weight_quant_batchmatmul"
-        note: "INT8/FP8/MXFP4 quantized matmul"
     microbench_api: "torch_npu.npu_weight_quant_batchmatmul"
-
-  # --- Attention ---
   FusedInferAttentionScore:
     apis:
       - name: "torch_npu.npu_fused_infer_attention_score"
     microbench_api: "torch_npu.npu_fused_infer_attention_score"
-
-  # --- MoE ---
   GroupedMatmul:
     apis:
       - name: "torch_npu.npu_grouped_matmul"
     microbench_api: "torch_npu.npu_grouped_matmul"
-
-  MoeDistributeDispatchV2:
-    apis:
-      - name: "torch_npu.npu_moe_distribute_dispatch"
-    microbench_api: "torch_npu.npu_moe_distribute_dispatch"
-
-  MoeDistributeCombineV2:
-    apis:
-      - name: "torch_npu.npu_moe_distribute_combine"
-    microbench_api: "torch_npu.npu_moe_distribute_combine"
-
-  MoeGatingTopK:
-    apis:
-      - name: "torch_npu.npu_moe_gating_topk"
-        note: "MoE gating top-k 选择；DSV3 Decode (2378x)"
-    microbench_api: "torch_npu.npu_moe_gating_topk"
-
-  DequantSwigluQuant:
-    apis:
-      - name: "torch_npu.npu_dequant_swiglu_quant"
-        note: "Fused dequant+swiglu+quant；MoE decode W8A8 场景 (4879x)"
-    microbench_api: "torch_npu.npu_dequant_swiglu_quant"
-
-  # --- Norm ---
   AddRmsNorm:
     apis:
       - name: "torch_npu.npu_add_rms_norm"
     microbench_api: "torch_npu.npu_add_rms_norm"
-
-  RmsNorm:
-    apis:
-      - name: "torch_npu.npu_rms_norm"
-    microbench_api: "torch_npu.npu_rms_norm"
-
-  InplaceAddRmsNorm:
-    apis:
-      - name: "torch_npu.npu_add_rms_norm"
-        note: "Same API; NPU may select in-place variant based on input layout"
-    microbench_api: "torch_npu.npu_add_rms_norm"
-
-  # --- Activation ---
   SwiGlu:
     apis:
       - name: "torch_npu.npu_swiglu"
     microbench_api: "torch_npu.npu_swiglu"
-
-  # --- Quantization ---
   DynamicQuant:
     apis:
       - name: "torch_npu.npu_dynamic_quant"
     microbench_api: "torch_npu.npu_dynamic_quant"
-
   AscendQuantV2:
     apis:
       - name: "torch_npu.npu_quantize"
     microbench_api: "torch_npu.npu_quantize"
-
-  # --- RoPE ---
-  InterleaveRope:
-    apis:
-      - name: "torch_npu.npu_apply_rotary_pos_emb"
-        note: "Interleaved RoPE implementation"
-    microbench_api: "torch_npu.npu_apply_rotary_pos_emb"
-
-  ApplyRotaryPosEmb:
-    apis:
-      - name: "torch_npu.npu_apply_rotary_pos_emb"
-        note: "Alternative RoPE kernel；Qwen3 Prefill (3x)"
-    microbench_api: "torch_npu.npu_apply_rotary_pos_emb"
-
-  KvRmsNormRopeCache:
-    apis:
-      - name: "torch_npu.npu_kv_rmsnorm_rope_cache"
-        note: "Fused KV norm+rope+cache；DSV3 Decode (2501x)"
-    microbench_api: "torch_npu.npu_kv_rmsnorm_rope_cache"
-
-  # --- KV Cache ---
-  ReshapeAndCacheNdKernel:
-    apis:
-      - name: "torch_npu.npu_reshape_and_cache"
-        note: "Paged attention KV cache write"
-    microbench_api: "torch_npu.npu_reshape_and_cache"
-
-  # --- Data Movement / Utility ---
-  GatherV2:
-    apis:
-      - name: "torch.index_select"
-        note: "Used for embedding lookup and index operations"
-    microbench_api: "torch.index_select"
-
-  ConcatD:
-    apis:
-      - name: "torch.cat"
-    microbench_api: "torch.cat"
-
-  TensorMove:
-    apis:
-      - name: "torch.Tensor.contiguous"
-        note: "Data layout conversion / contiguous copy；Qwen3 Prefill (386x) — 最高频"
-    microbench_api: "torch.Tensor.contiguous"
-
-  # --- Element-wise / Data Movement (aten ops, analytic model handles directly) ---
-  Add:
-    apis:
-      - name: "torch.add"
-    microbench_api: "torch.add"
-    notes: "Element-wise add；DSV3 (7545x) — 高频但 memory-bound，analytic model 可直接估算"
-
-  Cast:
-    apis:
-      - name: "torch.Tensor.to"
-        note: "dtype cast (e.g., BF16→FP32)"
-    microbench_api: "torch.Tensor.to"
-    notes: "DSV3 (2788x), Qwen3 (38x)"
-
-  Mul:
-    apis:
-      - name: "torch.mul"
-    microbench_api: "torch.mul"
-
-  SplitVD:
-    apis:
-      - name: "torch.split"
-    microbench_api: "torch.split"
-    notes: "Tensor split；DSV3 (2501x)，用于 QKV split 等"
-
-  Transpose:
-    apis:
-      - name: "torch.transpose"
-    microbench_api: "torch.transpose"
-    notes: "DSV3 (2501x)；通常 zero-copy（view 操作）"
-
-  Fill:
-    apis:
-      - name: "torch.fill_"
-    microbench_api: "torch.fill_"
-    notes: "DSV3 (410x), Qwen3 (4x)；初始化操作"
-
-  # --- Communication ---
   hcom_allReduce_:
     apis:
       - name: "torch.distributed.all_reduce"
     microbench_api: "torch.distributed.all_reduce"
-
   HcomAllGather:
     apis:
       - name: "torch.distributed.all_gather"
     microbench_api: "torch.distributed.all_gather"
-
-  hcom_allGather_:
-    apis:
-      - name: "torch.distributed.all_gather"
-        note: "Alternative all-gather kernel variant；DSV3 (41x)"
-    microbench_api: "torch.distributed.all_gather"
-
-  allgatherAicpuKernel:
-    apis:
-      - name: "torch.distributed.all_gather"
-        note: "AICPU path all-gather，fallback for small tensors；DSV3 (41x)"
-    microbench_api: "torch.distributed.all_gather"
-
-  HcomReduceScatter:
-    apis:
-      - name: "torch.distributed.reduce_scatter"
-    microbench_api: "torch.distributed.reduce_scatter"
-
-  hcom_reduceScatter_:
-    apis:
-      - name: "torch.distributed.reduce_scatter"
-        note: "Alternative reduce-scatter kernel variant"
-    microbench_api: "torch.distributed.reduce_scatter"
-
-  hcom_alltoallv_:
-    apis:
-      - name: "torch.distributed.all_to_all"
-        note: "Variable-length all-to-all；EP MoE routing (82x)"
-    microbench_api: "torch.distributed.all_to_all"
-
   hcom_alltoall_:
     apis:
       - name: "torch.distributed.all_to_all"
-        note: "Fixed-length all-to-all variant"
     microbench_api: "torch.distributed.all_to_all"
