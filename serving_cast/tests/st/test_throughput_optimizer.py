@@ -73,7 +73,7 @@ class TestThroughputOptimizer(TestCase):
         args = [
             "--input-length=3500",
             "--output-length=1500",
-            "--model-id=Qwen/Qwen3-32B",
+            "Qwen/Qwen3-32B",
             "--device=TEST_DEVICE",
             "--num-devices=8",
             "--tpot-limits=50",
@@ -104,7 +104,7 @@ class TestThroughputOptimizer(TestCase):
         args = [
             "--input-length=1024",
             "--output-length=1024",
-            "--model-id=Qwen/Qwen3-32B",
+            "Qwen/Qwen3-32B",
             "--device=TEST_DEVICE",
             "--num-devices=8",
             "--ttft-limits=1000",
@@ -134,7 +134,7 @@ class TestThroughputOptimizer(TestCase):
         args = [
             "--input-length=1024",
             "--output-length=1024",
-            "--model-id=Qwen/Qwen3-32B",
+            "Qwen/Qwen3-32B",
             "--device=TEST_DEVICE",
             "--num-devices=8",
             "--tpot-limits=50",
@@ -163,4 +163,134 @@ class TestThroughputOptimizer(TestCase):
         local_columns = SHOW_COLUMNS.copy()
         local_columns.remove("TTFT (ms)")
         table_start_pattern = r"Top \d Disaggregation \(Decode\) Configurations:"
+        self._validate_table_structure(full_output, local_columns, table_start_pattern)
+
+    def test_vl_model_aggregation_with_output_validation(self):
+        """Test VL model aggregation functionality with comprehensive output validation"""
+        args = [
+            "--input-length=1024",
+            "--output-length=1024",
+            "Qwen/Qwen3-VL-30B-A3B-Instruct",
+            "--device=TEST_DEVICE",
+            "--num-devices=4",
+            "--tpot-limits=100",
+            "--image-height=512",
+            "--image-width=512",
+        ]
+
+        # Execute command
+        result = self._run_throughput_optimizer(args)
+
+        # Basic execution check
+        if result.returncode != 0:
+            self.fail(
+                f"Script execution failed with return code {result.returncode}: {result.stderr}"
+            )
+
+        # Combine stdout and stderr for analysis
+        full_output = result.stdout + result.stderr
+        # Validate table structure
+        local_columns = SHOW_COLUMNS.copy()
+        table_start_pattern = r"Top \d Aggregation Configurations:"
+        self._validate_table_structure(full_output, local_columns, table_start_pattern)
+
+    def test_vl_model_disaggregation_prefill_with_output_validation(self):
+        """Test VL model disaggregation prefill only functionality with comprehensive output validation"""
+        args = [
+            "--input-length=1024",
+            "--output-length=1024",
+            "Qwen/Qwen3-VL-30B-A3B-Instruct",
+            "--device=TEST_DEVICE",
+            "--num-devices=8",
+            "--ttft-limits=2000",
+            "--image-height=512",
+            "--image-width=512",
+            "--disagg",
+            "--batch-range",
+            "1",
+            "8",
+        ]
+
+        # Execute command
+        result = self._run_throughput_optimizer(args)
+
+        # Basic execution check
+        if result.returncode != 0:
+            self.fail(
+                f"Script execution failed with return code {result.returncode}: {result.stderr}"
+            )
+
+        # Combine stdout and stderr for analysis
+        full_output = result.stdout + result.stderr
+        # Validate table structure
+        local_columns = SHOW_COLUMNS.copy()
+        local_columns.remove("TPOT (ms)")
+        table_start_pattern = r"Top \d Disaggregation \(Prefill\) Configurations:"
+        self._validate_table_structure(full_output, local_columns, table_start_pattern)
+
+    def test_vl_model_disaggregation_decode_with_output_validation(self):
+        """Test VL model disaggregation decode only functionality with comprehensive output validation"""
+        args = [
+            "--input-length=1024",
+            "--output-length=1024",
+            "zai-org/GLM-4.5V",
+            "--device=TEST_DEVICE",
+            "--num-devices=8",
+            "--tpot-limits=100",
+            "--image-height=512",
+            "--image-width=512",
+            "--disagg",
+        ]
+
+        # Execute command
+        result = self._run_throughput_optimizer(args)
+
+        # Basic execution check
+        if result.returncode != 0:
+            self.fail(
+                f"Script execution failed with return code {result.returncode}: {result.stderr}"
+            )
+
+        # Combine stdout and stderr for analysis
+        full_output = result.stdout + result.stderr
+        # Validate table structure
+        local_columns = SHOW_COLUMNS.copy()
+        local_columns.remove("TTFT (ms)")
+        table_start_pattern = r"Top \d Disaggregation \(Decode\) Configurations:"
+        self._validate_table_structure(full_output, local_columns, table_start_pattern)
+
+    def test_VL_MOE_model_aggregation_with_output_validation(self):
+        """Test VL MOE model aggregation functionality with comprehensive output validation"""
+        args = [
+            "--input-length=20",
+            "--output-length=128",
+            "Qwen/Qwen3-VL-235B-A22B-Instruct",
+            "--device=TEST_DEVICE",
+            "--num-devices=8",
+            "--tpot-limits=50",
+            "--image-height=1080",
+            "--image-width=1920",
+            "--compile",
+            "--quantize-linear-action=W8A8_DYNAMIC",
+            "--quantize-attention-action=INT8",
+            "--batch-range",
+            "1",
+            "4",
+            "--max-prefill-tokens=100",
+        ]
+
+        # Execute command
+        result = self._run_throughput_optimizer(args)
+
+        # Basic execution check
+        if result.returncode != 0:
+            self.fail(
+                f"Script execution failed with return code {result.returncode}: {result.stderr}"
+            )
+
+        # Combine stdout and stderr for analysis
+        full_output = result.stdout + result.stderr
+        # Validate table structure
+        local_columns = SHOW_COLUMNS.copy()
+        table_start_pattern = r"Top \d Aggregation Configurations:"
         self._validate_table_structure(full_output, local_columns, table_start_pattern)
