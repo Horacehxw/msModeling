@@ -132,6 +132,10 @@ class AscendProfilerParser:
 
             return list(reader)
 
+    @staticmethod
+    def _shape_key(row: Dict[str, object]) -> Tuple[str, str]:
+        return (str(row.get(INPUT_SHAPES, "")), str(row.get(OUTPUT_SHAPES, "")))
+
     def parse_and_export(self) -> List[Path]:
         rows = self._load_rows()
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -232,13 +236,36 @@ class AscendProfilerParser:
         ordered_columns.extend([f"Average {col}" for col in EXTRA_NUMERIC_COLUMNS])
         for op_type, type_rows in rows_by_type.items():
             output_path = self.output_dir / f"{self._sanitize_filename(op_type)}.csv"
-            # Stable ordering for reproducible output
-            type_rows.sort(key=lambda r: (str(r[INPUT_SHAPES]), str(r[OUTPUT_SHAPES])))
+            existing_rows: List[Dict[str, str]] = []
+            existing_shape_keys = set()
+            if output_path.exists():
+                with output_path.open("r", encoding="utf-8-sig", newline="") as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        existing_rows.append(row)
+                        existing_shape_keys.add(self._shape_key(row))
+
+            new_rows = []
+            for row in type_rows:
+                if self._shape_key(row) in existing_shape_keys:
+                    continue
+                new_rows.append(row)
+                existing_shape_keys.add(self._shape_key(row))
+
+            # No new shape data for this op type.
+            if not new_rows and output_path.exists():
+                continue
+
+            # Keep existing rows untouched and append new rows.
+            merged_rows = existing_rows + new_rows
+            normalized_rows = []
+            for row in merged_rows:
+                normalized_rows.append({col: row.get(col, "") for col in ordered_columns})
 
             with output_path.open("w", encoding="utf-8", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=ordered_columns)
                 writer.writeheader()
-                writer.writerows(type_rows)
+                writer.writerows(normalized_rows)
             output_files.append(output_path)
 
         return sorted(output_files)
