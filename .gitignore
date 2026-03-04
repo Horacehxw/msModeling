@@ -8,5 +8,4 @@
 
 # generated profiling data
 perf_database/data/
-tensor_cast/performance_model/perf_database/data/
 temp/
