@@ -1,19 +1,80 @@
+"""EmpiricalPerformanceModel: measurement-based performance model.
+
+Design doc reference: §4.3
+"""
+
+import logging
+from typing import Optional
+
 from overrides import override
 
 from ..device import DeviceProfile
 from .base import PerformanceModel
-from .op_benchmark import OpBenchmark
 from .op_invoke_info import OpInvokeInfo
+from .perf_database.data_source import DataSource
+
+logger = logging.getLogger(__name__)
 
 
 class EmpiricalPerformanceModel(PerformanceModel):
-    """Performance model based on measured data"""
+    """Performance model based on measured data from a DataSource.
 
-    def __init__(self, device_profile: DeviceProfile):
-        # TODO(jgong5): add a mode so that we can do JIT or offline benchmarks
+    Design doc §4.3: accepts DataSource instance, process_op() queries
+    data source first, falls back to fallback_model on miss.
+
+    Usage (design doc §5.1):
+        data_source = ProfilingDataSource(data_dir, comm_grid=...)
+        pm = EmpiricalPerformanceModel(device_profile, data_source)
+    """
+
+    def __init__(
+        self,
+        device_profile: DeviceProfile,
+        data_source: DataSource,
+        fallback_model: Optional[PerformanceModel] = None,
+    ):
         super().__init__("empirical", device_profile)
-        self.op_benchmark = OpBenchmark(device_profile)
+        self.data_source = data_source
+        self._fallback_model = fallback_model
+        self._stats = {"hit": 0, "miss": 0}
+
+    @property
+    def fallback_model(self) -> PerformanceModel:
+        if self._fallback_model is None:
+            from .analytic import AnalyticPerformanceModel
+
+            self._fallback_model = AnalyticPerformanceModel(self.device_profile)
+        return self._fallback_model
 
     @override
     def process_op(self, op_invoke_info: OpInvokeInfo) -> PerformanceModel.Result:
-        return self.op_benchmark.benchmark(op_invoke_info)
+        result = self.data_source.lookup(op_invoke_info)
+        if result is not None:
+            self._stats["hit"] += 1
+            return PerformanceModel.Result(
+                execution_time_s=result.latency_us * 1e-6,
+                statistics={
+                    "source": result.source.name,
+                    "confidence": result.confidence,
+                    **result.details,
+                },
+            )
+        self._stats["miss"] += 1
+        return self.fallback_model.process_op(op_invoke_info)
+
+    def get_stats(self) -> dict:
+        total = self._stats["hit"] + self._stats["miss"]
+        return {
+            **self._stats,
+            "total": total,
+            "hit_rate": self._stats["hit"] / total if total > 0 else 0,
+        }
+
+    def log_stats(self):
+        stats = self.get_stats()
+        logger.info(
+            "EmpiricalPerformanceModel: %d/%d ops matched (%.1f%%)",
+            stats["hit"],
+            stats["total"],
+            stats["hit_rate"] * 100,
+        )
