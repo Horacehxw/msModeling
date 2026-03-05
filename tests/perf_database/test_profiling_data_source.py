@@ -442,3 +442,63 @@ def test_attention_special_returns_none(spike_data_dir):
     )
     result = ds.lookup(op)
     assert result is None
+
+
+# --- RoPE shape normalization tests ---
+
+ROPE_CSV = """\
+Input Shapes,Input Data Types,Input Formats,Output Shapes,Output Data Types,Output Formats,Average Duration(us)
+"1,136,4,128;1,136,1,128;1,136,1,128;1,136,1,128","DT_BF16;DT_BF16;DT_BF16;DT_BF16","ND;ND;ND;ND","1,136,4,128;1,136,1,128","DT_BF16;DT_BF16","ND;ND",12.500000
+"""
+
+
+@pytest.fixture
+def rope_data_dir(tmp_path):
+    data_dir = tmp_path / "rope"
+    data_dir.mkdir()
+    op_mapping = (
+        'version: "test"\n'
+        "operator_mappings:\n"
+        '  "tensor_cast.apply_rope.default":\n'
+        "    kernel_type: InterleaveRope\n"
+        "    alternate_kernel_types: [ApplyRotaryPosEmb]\n"
+    )
+    (data_dir / "op_mapping.yaml").write_text(op_mapping)
+    (data_dir / "ApplyRotaryPosEmb.csv").write_text(ROPE_CSV.strip())
+    return data_dir
+
+
+def test_rope_shape_normalization(rope_data_dir):
+    """TC RoPE sends [Q(1,1,144,128), K(1,4,144,128), cos(1,144,128), sin(1,144,128)]
+    CSV expects [K(1,136,4,128), Q(1,136,1,128), cos(1,136,1,128), sin(1,136,1,128)].
+    Should match after: reorder Q/K, transpose (B,H,S,D)->(B,S,H,D), insert head dim in cos/sin."""
+    ds = ProfilingDataSource(rope_data_dir)
+    op = _make_op_info(
+        torch.ops.tensor_cast.apply_rope.default,
+        [
+            torch.empty(1, 1, 144, 128, device="meta", dtype=torch.bfloat16),  # Q
+            torch.empty(1, 4, 144, 128, device="meta", dtype=torch.bfloat16),  # K
+            torch.empty(1, 144, 128, device="meta", dtype=torch.bfloat16),     # cos
+            torch.empty(1, 144, 128, device="meta", dtype=torch.bfloat16),     # sin
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is not None, "Should match RoPE after shape normalization + padding"
+    assert abs(result.latency_us - 12.5) < 0.01
+    assert result.details.get("kernel_type") == "ApplyRotaryPosEmb"
+
+
+def test_rope_no_false_positive(rope_data_dir):
+    """Wrong head count should not match."""
+    ds = ProfilingDataSource(rope_data_dir)
+    op = _make_op_info(
+        torch.ops.tensor_cast.apply_rope.default,
+        [
+            torch.empty(1, 8, 144, 128, device="meta", dtype=torch.bfloat16),  # Q with wrong heads
+            torch.empty(1, 8, 144, 128, device="meta", dtype=torch.bfloat16),  # K with wrong heads
+            torch.empty(1, 144, 128, device="meta", dtype=torch.bfloat16),
+            torch.empty(1, 144, 128, device="meta", dtype=torch.bfloat16),
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is None, "Wrong head count should not match"

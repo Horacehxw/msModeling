@@ -679,6 +679,10 @@ operator_mappings:
     zero_cost: true
     notes: "In-place copy, typically fused into subsequent ops on NPU"
 
+  "aten.slice.Tensor":
+    zero_cost: true
+    notes: "Contiguous slice returns a view, no data movement"
+
 
   # ========== 19. Profiling-only Placeholder ==========
   # NPU 融合算子: Profiling 中出现但 TensorCast 无对应实现

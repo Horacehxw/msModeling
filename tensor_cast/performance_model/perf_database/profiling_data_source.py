@@ -80,9 +80,53 @@ _MATMUL_KERNELS = frozenset({"MatMulV2", "MatMul", "TransposeBatchMatMul"})
 # but profiling CSVs store 1 concatenated input along last dim.
 _SWIGLU_KERNELS = frozenset({"SwiGlu"})
 
+# RoPE kernel types: TC dispatches (B,H,S,D) layout with [Q, K, cos, sin],
+# but profiling CSVs store (B,S,H,D) layout with [K, Q, cos, sin] and
+# cos/sin have an extra head dim (1).
+_ROPE_KERNELS = frozenset({"ApplyRotaryPosEmb"})
+
 # Common NPU tile alignment sizes (Da Vinci Cube unit)
 # BF16: 16x16, INT8: 16x32
 _BLOCK_SIZES = (16, 32, 64)
+
+
+def _normalize_rope_inputs(
+    tc_inputs: List[Tuple[Tuple[int, ...], torch.dtype]],
+) -> List[Tuple[Tuple[int, ...], torch.dtype]]:
+    """Normalize RoPE inputs from TC layout to profiling CSV layout.
+
+    TC dispatches: [Q(B,Hq,S,D), K(B,Hk,S,D), cos(1,S,D), sin(1,S,D)]
+    CSV expects:   [K(B,S,Hk,D), Q(B,S,Hq,D), cos(B,S,1,D), sin(B,S,1,D)]
+
+    Transformations:
+    1. Swap Q and K (TC: [Q,K,...] → CSV: [K,Q,...])
+    2. Transpose H,S dims in Q and K: (B,H,S,D) → (B,S,H,D)
+    3. Insert head dim=1 at position 2 for cos/sin: (1,S,D) → (1,S,1,D)
+    """
+    q_shape, q_dtype = tc_inputs[0]
+    k_shape, k_dtype = tc_inputs[1]
+    cos_shape, cos_dtype = tc_inputs[2]
+    sin_shape, sin_dtype = tc_inputs[3]
+
+    # Transpose Q and K: (B,H,S,D) → (B,S,H,D)
+    if len(q_shape) == 4:
+        q_shape = (q_shape[0], q_shape[2], q_shape[1], q_shape[3])
+    if len(k_shape) == 4:
+        k_shape = (k_shape[0], k_shape[2], k_shape[1], k_shape[3])
+
+    # Insert head dim=1 for cos/sin: (1,S,D) → (1,S,1,D)
+    if len(cos_shape) == 3:
+        cos_shape = (cos_shape[0], cos_shape[1], 1, cos_shape[2])
+    if len(sin_shape) == 3:
+        sin_shape = (sin_shape[0], sin_shape[1], 1, sin_shape[2])
+
+    # Reorder: [Q, K, cos, sin] → [K, Q, cos, sin]
+    return [
+        (k_shape, k_dtype),
+        (q_shape, q_dtype),
+        (cos_shape, cos_dtype),
+        (sin_shape, sin_dtype),
+    ]
 
 
 def _strip_batch_dim(shape: Tuple[int, ...]) -> Tuple[int, ...]:
@@ -271,9 +315,18 @@ class ProfilingDataSource(DataSource):
         csv_dtypes = _parse_str_list(str(csv_row.get("Input Data Types", "")))
         csv_formats = _parse_str_list(str(csv_row.get("Input Formats", "")))
 
+        # RoPE input normalization: TC sends [Q(B,H,S,D), K(B,H,S,D), cos(1,S,D), sin(1,S,D)]
+        # CSV expects [K(B,S,H,D), Q(B,S,H,D), cos(B,S,1,D), sin(B,S,1,D)]
+        tc_inputs_normalized = tc_inputs
+        if (
+            kernel_type in _ROPE_KERNELS
+            and len(tc_inputs) == 4
+            and len(csv_shapes) == 4
+        ):
+            tc_inputs_normalized = _normalize_rope_inputs(tc_inputs)
+
         # SwiGlu input normalization: TC sends 2 inputs (gate, up),
         # profiling CSV has 1 fused input concatenated along last dim.
-        tc_inputs_normalized = tc_inputs
         if (
             kernel_type in _SWIGLU_KERNELS
             and len(tc_inputs) == 2
@@ -313,6 +366,9 @@ class ProfilingDataSource(DataSource):
 
             # Strip leading batch dim=1: TC keeps (1, seq, dim), profiling has (seq, dim)
             tc_shape_stripped = _strip_batch_dim(tc_shape)
+            csv_shape_stripped = _strip_batch_dim(csv_shape)
+            if tc_shape_stripped == csv_shape_stripped:
+                continue
             if tc_shape_stripped == csv_shape:
                 continue
 
@@ -330,6 +386,9 @@ class ProfilingDataSource(DataSource):
 
             # Block-padding tolerance: TC pads to NPU tile alignment
             if self._shapes_match_with_padding(tc_shape_stripped, csv_shape):
+                continue
+            # Also try with both batch dims stripped
+            if self._shapes_match_with_padding(tc_shape_stripped, csv_shape_stripped):
                 continue
 
             return False
