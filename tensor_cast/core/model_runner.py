@@ -150,6 +150,11 @@ class ModelRunner:
             if with_sampler:
                 _ = self.sampler(logits, input_kwargs["sampling_metadata"])
         run_end = time.perf_counter()
+
+        # Log empirical model stats if using profiling mode
+        if hasattr(self.perf_model, "log_stats"):
+            self.perf_model.log_stats()
+
         execution_time_s = runtime.total_execution_time_s()[self.perf_model.name]
         run_time_s = run_end - run_start
 

@@ -160,6 +160,279 @@ def test_communication_returns_none(spike_data_dir):
     assert result is None
 
 
+# --- Weight transpose matching tests ---
+
+LMHEAD_CSV = """\
+Input Shapes,Input Data Types,Input Formats,Output Shapes,Output Data Types,Output Formats,Average Duration(us)
+"1,5120;9496,5120","DT_BF16;DT_BF16","ND;ND","1,9496","DT_BF16","ND",91.753
+"""
+
+
+@pytest.fixture
+def lmhead_data_dir(tmp_path):
+    data_dir = tmp_path / "lmhead"
+    data_dir.mkdir()
+    op_mapping = (
+        'version: "test"\n'
+        "operator_mappings:\n"
+        '  "aten.mm.default":\n'
+        "    kernel_type: MatMulV2\n"
+    )
+    (data_dir / "op_mapping.yaml").write_text(op_mapping)
+    (data_dir / "MatMulV2.csv").write_text(LMHEAD_CSV.strip())
+    return data_dir
+
+
+def test_nd_weight_transpose_match(lmhead_data_dir):
+    """ND-format matmul weight stored as (N,K) should match TC's (K,N).
+    CSV has weight (9496,5120) = (N,K). TC mm receives (5120,9496) = (K,N)
+    because F.linear transposes before dispatch."""
+    ds = ProfilingDataSource(lmhead_data_dir)
+    op = _make_op_info(
+        torch.ops.aten.mm.default,
+        [
+            torch.empty(1, 5120, device="meta", dtype=torch.bfloat16),
+            torch.empty(5120, 9496, device="meta", dtype=torch.bfloat16),
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is not None, "Should match with ND weight transpose"
+    assert abs(result.latency_us - 91.753) < 0.01
+
+
+def test_nd_weight_no_false_positive(lmhead_data_dir):
+    """Non-transpose shape mismatches should NOT match."""
+    ds = ProfilingDataSource(lmhead_data_dir)
+    op = _make_op_info(
+        torch.ops.aten.mm.default,
+        [
+            torch.empty(1, 5120, device="meta", dtype=torch.bfloat16),
+            torch.empty(5120, 1234, device="meta", dtype=torch.bfloat16),
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is None, "Completely different N should not match"
+
+
+# --- Block-padding tolerance tests ---
+
+ADD_CSV = """\
+Input Shapes,Input Data Types,Input Formats,Output Shapes,Output Data Types,Output Formats,Average Duration(us)
+"136,5120;136,5120","DT_BF16;DT_BF16","ND;ND","136,5120","DT_BF16","ND",16.238
+"""
+
+
+@pytest.fixture
+def add_data_dir(tmp_path):
+    data_dir = tmp_path / "add"
+    data_dir.mkdir()
+    op_mapping = (
+        'version: "test"\n'
+        "operator_mappings:\n"
+        '  "aten.add.Tensor":\n'
+        "    kernel_type: Add\n"
+    )
+    (data_dir / "op_mapping.yaml").write_text(op_mapping)
+    (data_dir / "Add.csv").write_text(ADD_CSV.strip())
+    return data_dir
+
+
+def test_block_padding_tolerance(add_data_dir):
+    """TC seq=144 (padded from 136 via ceil(136/16)*16) should match CSV seq=136."""
+    ds = ProfilingDataSource(add_data_dir)
+    op = _make_op_info(
+        torch.ops.aten.add.Tensor,
+        [
+            torch.empty(144, 5120, device="meta", dtype=torch.bfloat16),
+            torch.empty(144, 5120, device="meta", dtype=torch.bfloat16),
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is not None, "Should match with block-padding tolerance (144 ≈ 136)"
+    assert abs(result.latency_us - 16.238) < 0.01
+
+
+def test_block_padding_no_false_positive(add_data_dir):
+    """Shapes that aren't block-padding should NOT match."""
+    ds = ProfilingDataSource(add_data_dir)
+    op = _make_op_info(
+        torch.ops.aten.add.Tensor,
+        [
+            torch.empty(256, 5120, device="meta", dtype=torch.bfloat16),
+            torch.empty(256, 5120, device="meta", dtype=torch.bfloat16),
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is None, "256 is not a block-padding of 136"
+
+
+def test_block_padding_32_alignment(add_data_dir):
+    """INT8 uses 32-alignment: ceil(136/32)*32=160 should also match."""
+    ds = ProfilingDataSource(add_data_dir)
+    op = _make_op_info(
+        torch.ops.aten.add.Tensor,
+        [
+            torch.empty(160, 5120, device="meta", dtype=torch.bfloat16),
+            torch.empty(160, 5120, device="meta", dtype=torch.bfloat16),
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is not None, "Should match with 32-alignment padding (160 ≈ 136)"
+
+
+# --- Batch-dim stripping tests ---
+
+RMSNORM_CSV = """\
+Input Shapes,Input Data Types,Input Formats,Output Shapes,Output Data Types,Output Formats,Average Duration(us)
+"136,5120;5120","DT_BF16;DT_BF16","ND;ND","136,5120;136,1","DT_BF16;FLOAT","ND;ND",21.660000
+"""
+
+ADD_RMSNORM_CSV = """\
+Input Shapes,Input Data Types,Input Formats,Output Shapes,Output Data Types,Output Formats,Average Duration(us)
+"136,5120;136,5120;5120","DT_BF16;DT_BF16;DT_BF16","ND;ND;ND","136,5120;136,1;136,5120","DT_BF16;FLOAT;DT_BF16","ND;ND;ND",33.150000
+"""
+
+
+@pytest.fixture
+def rmsnorm_data_dir(tmp_path):
+    data_dir = tmp_path / "rmsnorm"
+    data_dir.mkdir()
+    op_mapping = (
+        'version: "test"\n'
+        "operator_mappings:\n"
+        '  "tensor_cast.rms_norm.default":\n'
+        "    kernel_type: RmsNorm\n"
+    )
+    (data_dir / "op_mapping.yaml").write_text(op_mapping)
+    (data_dir / "RmsNorm.csv").write_text(RMSNORM_CSV.strip())
+    return data_dir
+
+
+@pytest.fixture
+def add_rmsnorm_data_dir(tmp_path):
+    data_dir = tmp_path / "add_rmsnorm"
+    data_dir.mkdir()
+    op_mapping = (
+        'version: "test"\n'
+        "operator_mappings:\n"
+        '  "tensor_cast.add_rms_norm2.default":\n'
+        "    kernel_type: AddRmsNorm\n"
+    )
+    (data_dir / "op_mapping.yaml").write_text(op_mapping)
+    (data_dir / "AddRmsNorm.csv").write_text(ADD_RMSNORM_CSV.strip())
+    return data_dir
+
+
+def test_batch_dim_stripping_rmsnorm(rmsnorm_data_dir):
+    """TC RmsNorm sends (1,144,5120),(5120,) — match CSV (136,5120),(5120) after batch strip + padding."""
+    ds = ProfilingDataSource(rmsnorm_data_dir)
+    op = _make_op_info(
+        torch.ops.tensor_cast.rms_norm.default,
+        [
+            torch.empty(1, 144, 5120, device="meta", dtype=torch.bfloat16),
+            torch.empty(5120, device="meta", dtype=torch.bfloat16),
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is not None, "Should match after stripping batch dim=1 + padding tolerance"
+    assert abs(result.latency_us - 21.66) < 0.01
+
+
+def test_batch_dim_stripping_add(add_data_dir):
+    """TC Add sends (1,144,5120),(1,144,5120) — match CSV (136,5120),(136,5120)."""
+    ds = ProfilingDataSource(add_data_dir)
+    op = _make_op_info(
+        torch.ops.aten.add.Tensor,
+        [
+            torch.empty(1, 144, 5120, device="meta", dtype=torch.bfloat16),
+            torch.empty(1, 144, 5120, device="meta", dtype=torch.bfloat16),
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is not None, "Should match after stripping batch dim=1 + padding"
+
+
+def test_batch_dim_stripping_add_rmsnorm(add_rmsnorm_data_dir):
+    """TC AddRmsNorm sends (1,144,5120),(144,5120),(5120,) — match CSV (136,5120),(136,5120),(5120)."""
+    ds = ProfilingDataSource(add_rmsnorm_data_dir)
+    op = _make_op_info(
+        torch.ops.tensor_cast.add_rms_norm2.default,
+        [
+            torch.empty(1, 144, 5120, device="meta", dtype=torch.bfloat16),
+            torch.empty(144, 5120, device="meta", dtype=torch.bfloat16),
+            torch.empty(5120, device="meta", dtype=torch.bfloat16),
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is not None, "Should match after stripping batch dim + padding"
+
+
+def test_batch_dim_no_false_positive(add_data_dir):
+    """Batch dim > 1 should NOT be stripped."""
+    ds = ProfilingDataSource(add_data_dir)
+    op = _make_op_info(
+        torch.ops.aten.add.Tensor,
+        [
+            torch.empty(2, 144, 5120, device="meta", dtype=torch.bfloat16),
+            torch.empty(2, 144, 5120, device="meta", dtype=torch.bfloat16),
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is None, "Batch dim > 1 should not match"
+
+
+# --- SwiGlu input concatenation tests ---
+
+SWIGLU_CSV = """\
+Input Shapes,Input Data Types,Input Formats,Output Shapes,Output Data Types,Output Formats,Average Duration(us)
+"136,3200","DT_BF16","ND","136,1600","DT_BF16","ND",14.871969
+"""
+
+
+@pytest.fixture
+def swiglu_data_dir(tmp_path):
+    data_dir = tmp_path / "swiglu"
+    data_dir.mkdir()
+    op_mapping = (
+        'version: "test"\n'
+        "operator_mappings:\n"
+        '  "tensor_cast.swiglu.default":\n'
+        "    kernel_type: SwiGlu\n"
+    )
+    (data_dir / "op_mapping.yaml").write_text(op_mapping)
+    (data_dir / "SwiGlu.csv").write_text(SWIGLU_CSV.strip())
+    return data_dir
+
+
+def test_swiglu_input_concat(swiglu_data_dir):
+    """TC SwiGlu sends 2 inputs (1,144,1600),(1,144,1600) -> CSV has 1 input (136,3200)."""
+    ds = ProfilingDataSource(swiglu_data_dir)
+    op = _make_op_info(
+        torch.ops.tensor_cast.swiglu.default,
+        [
+            torch.empty(1, 144, 1600, device="meta", dtype=torch.bfloat16),
+            torch.empty(1, 144, 1600, device="meta", dtype=torch.bfloat16),
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is not None, "Should match SwiGlu after concatenating 2 inputs into 1"
+    assert abs(result.latency_us - 14.871969) < 0.01
+
+
+def test_swiglu_no_false_positive(swiglu_data_dir):
+    """Wrong shape should not match."""
+    ds = ProfilingDataSource(swiglu_data_dir)
+    op = _make_op_info(
+        torch.ops.tensor_cast.swiglu.default,
+        [
+            torch.empty(1, 256, 1600, device="meta", dtype=torch.bfloat16),
+            torch.empty(1, 256, 1600, device="meta", dtype=torch.bfloat16),
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is None, "Wrong seq dim should not match"
+
+
 def test_attention_special_returns_none(spike_data_dir):
     """attention_special ops return None in spike, fallback to analytic."""
     ds = ProfilingDataSource(spike_data_dir)
