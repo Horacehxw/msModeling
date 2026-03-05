@@ -173,6 +173,15 @@ class ProfilingDataSource(DataSource):
         if mapping.get("query_mode") == "attention_special":
             return None
 
+        # Zero-cost ops: shape-only operations with no kernel execution
+        if mapping.get("zero_cost"):
+            return QueryResult(
+                latency_us=0.0,
+                confidence=1.0,
+                source=QuerySource.MEASURED,
+                details={"kernel_type": "zero_cost", "zero_cost": True},
+            )
+
         return self._lookup_compute(op_invoke_info, mapping)
 
     # ---- Compute op lookup (design doc S4.2 _lookup_compute) ----
@@ -180,44 +189,52 @@ class ProfilingDataSource(DataSource):
     def _lookup_compute(
         self, op_invoke_info: "OpInvokeInfo", mapping: dict
     ) -> Optional[QueryResult]:
-        kernel_type = mapping["kernel_type"]
-        df = self._load_csv(kernel_type)
-        if df is None:
-            return None
+        # Build list of kernel_types to try: primary + alternates
+        kernel_types = [mapping["kernel_type"]]
+        for alt in mapping.get("alternate_kernel_types", []):
+            if alt not in kernel_types:
+                kernel_types.append(alt)
 
         # Extract tensor shapes and dtypes from OpInvokeInfo.args
         tc_inputs = self._extract_tensor_inputs(op_invoke_info)
 
-        # Match against CSV rows
-        for _, row in df.iterrows():
-            if self._inputs_match(tc_inputs, row, kernel_type=kernel_type):
-                # Use "Average Duration(us)" if available, else "Duration(us)"
-                latency_col = (
-                    "Average Duration(us)"
-                    if "Average Duration(us)" in df.columns
-                    else "Duration(us)"
-                )
-                logger.debug(
-                    "HIT %s: tc_shapes=%s -> %s (%.1f us)",
-                    kernel_type,
-                    [s for s, _ in tc_inputs],
-                    row.get("Input Shapes", ""),
-                    float(row[latency_col]),
-                )
-                return QueryResult(
-                    latency_us=float(row[latency_col]),
-                    confidence=1.0,
-                    source=QuerySource.MEASURED,
-                    details={"kernel_type": kernel_type},
-                )
+        # Try each kernel_type until one matches
+        for kernel_type in kernel_types:
+            df = self._load_csv(kernel_type)
+            if df is None:
+                continue
 
-        # Log miss with shape details for debugging
+            for _, row in df.iterrows():
+                if self._inputs_match(tc_inputs, row, kernel_type=kernel_type):
+                    latency_col = (
+                        "Average Duration(us)"
+                        if "Average Duration(us)" in df.columns
+                        else "Duration(us)"
+                    )
+                    logger.debug(
+                        "HIT %s: tc_shapes=%s -> %s (%.1f us)",
+                        kernel_type,
+                        [s for s, _ in tc_inputs],
+                        row.get("Input Shapes", ""),
+                        float(row[latency_col]),
+                    )
+                    return QueryResult(
+                        latency_us=float(row[latency_col]),
+                        confidence=1.0,
+                        source=QuerySource.MEASURED,
+                        details={"kernel_type": kernel_type},
+                    )
+
+        # Log miss with shape details for debugging (use primary kernel_type)
+        primary_kernel = kernel_types[0]
+        df = self._load_csv(primary_kernel)
         csv_shapes_list = []
-        for _, row in df.iterrows():
-            csv_shapes_list.append(str(row.get("Input Shapes", "")))
+        if df is not None:
+            for _, row in df.iterrows():
+                csv_shapes_list.append(str(row.get("Input Shapes", "")))
         logger.debug(
             "MISS %s: tc_shapes=%s, csv_shapes=%s",
-            kernel_type,
+            primary_kernel,
             [s for s, _ in tc_inputs],
             csv_shapes_list,
         )

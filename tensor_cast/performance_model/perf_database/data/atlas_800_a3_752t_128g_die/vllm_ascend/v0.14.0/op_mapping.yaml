@@ -523,12 +523,14 @@ operator_mappings:
 
   "tensor_cast.apply_rope.default":
     kernel_type: InterleaveRope
+    alternate_kernel_types: [ApplyRotaryPosEmb]
     notes: >
       [HIGH] op-plugin: YAML:5666 (npu_apply_rotary_pos_emb) + YAML:6025 (npu_interleave_rope).
       aclnn: aclnnApplyRotaryPosEmbV2 (neox mode), aclnnInterleaveRope (interleave mode).
       is_neox=True → ApplyRotaryPosEmb (Qwen3 3x); is_neox=False → InterleaveRope (DSV3 2501x).
       默认映射 InterleaveRope (DeepSeek interleave 模式更常见于 MLA).
       neox 模式 kernel_type: ApplyRotaryPosEmb (op-plugin: YAML:5666).
+      alternate_kernel_types 支持两种模式自动回退匹配.
 
 
   # ========== 16. 通信 (Communication) ==========
@@ -620,6 +622,62 @@ operator_mappings:
     notes: >
       [LOW] 无 NPU 专用 API; MTP 工具 op, 分解为基础 aten ops (slice, index_put, scatter).
       Profiling 中表现为 TensorMove / Copy / ScatterElements 等基础数据搬移 kernel.
+
+
+  # ========== 20. Zero-cost (shape-only) ops ==========
+  # NPU 上不产生 kernel 执行的 reshape/view/permute 类算子
+
+  "aten.view.default":
+    zero_cost: true
+    notes: "Shape-only view, no kernel execution on NPU"
+
+  "aten.permute.default":
+    zero_cost: true
+    notes: "Shape-only permute, no kernel execution on NPU"
+
+  "aten.t.default":
+    zero_cost: true
+    notes: "Shape-only transpose, no kernel execution on NPU"
+
+  "aten.transpose.int":
+    zero_cost: true
+    notes: "Shape-only transpose, no kernel execution on NPU"
+
+  "aten._unsafe_view.default":
+    zero_cost: true
+    notes: "Shape-only unsafe view, no kernel execution on NPU"
+
+  "aten.unsqueeze.default":
+    zero_cost: true
+    notes: "Shape-only unsqueeze, no kernel execution on NPU"
+
+  "aten.split.Tensor":
+    zero_cost: true
+    notes: "Shape-only split, no kernel execution on NPU"
+
+  "aten.split_with_sizes.default":
+    zero_cost: true
+    notes: "Shape-only split, no kernel execution on NPU"
+
+  "aten.select.int":
+    zero_cost: true
+    notes: "Shape-only select, no kernel execution on NPU"
+
+  "aten.detach.default":
+    zero_cost: true
+    notes: "No-op detach, no kernel execution"
+
+  "aten.alias.default":
+    zero_cost: true
+    notes: "No-op alias, no kernel execution"
+
+  "aten.arange.start":
+    zero_cost: true
+    notes: "Index generation, negligible cost"
+
+  "aten.copy_.default":
+    zero_cost: true
+    notes: "In-place copy, typically fused into subsequent ops on NPU"
 
 
   # ========== 19. Profiling-only Placeholder ==========
