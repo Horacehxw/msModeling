@@ -176,7 +176,7 @@ tensor_cast/perf_database/              # 新增包
 │   ├── v0.12.yaml
 │   └── v0.14.yaml
 ├── data/systems/                       # Profiling 数据存储（gitignore）
-│   └── atlas_a3_752t_128g/
+│   └── ATLAS_800_A3_752T_128G_DIE/
 │       └── vllm_ascend/{version}/
 │           ├── metadata.yaml
 │           ├── gemm.parquet
@@ -284,7 +284,7 @@ class PerfDatabase:
 
     def __init__(
         self,
-        system: str = "atlas_a3_752t_128g",
+        system: str = "ATLAS_800_A3_752T_128G_DIE",
         backend: str = "vllm_ascend",
         version: str = "latest",
         data_root: Optional[Path] = None,

@@ -233,7 +233,7 @@ perf_database/                         # 独立子系统：数据采集流水线
 │       ├── v0.12.yaml
 │       └── v0.13.yaml
 └── data/                              # 性能数据存储（.gitignore）
-    └── atlas_a3_752t_128g/
+    └── ATLAS_800_A3_752T_128G_DIE/
         └── vllm_ascend/{version}/
             ├── metadata.yaml          # 采集环境信息
             ├── matmul.csv
@@ -686,7 +686,7 @@ class QueryEngine:
 
 ```python
 # 方式 1: ProfilingPerformanceModel（查预构建数据库，无需物理设备）
-db = PerfDatabase("perf_database/data/atlas_a3_752t_128g/vllm_ascend/v0.13.0")
+db = PerfDatabase("perf_database/data/ATLAS_800_A3_752T_128G_DIE/vllm_ascend/v0.13.0")
 perf_model = ProfilingPerformanceModel(device_profile, database=db)
 
 # 方式 2: EmpiricalPerformanceModel + 持久化缓存（有物理设备）

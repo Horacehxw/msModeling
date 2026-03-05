@@ -185,7 +185,7 @@ tensor_cast/performance_model/
     ├── profiling_data_source.py          # ProfilingDataSource（CSV 查询 + FRACTAL_NZ）
     ├── interpolating_data_source.py      # InterpolatingDataSource（Wrapper 插值）
     └── data/                             # 性能数据存储（Git LFS 管理 .csv）
-        └── atlas_a3_752t_128g/
+        └── ATLAS_800_A3_752T_128G_DIE/
             ├── vllm_ascend/v0.13.0/      # 计算算子（和 vLLM 版本绑定）
             │   ├── op_mapping.yaml
             │   └── {KernelType}.csv      # MatMulV2.csv, GroupedMatmul.csv, ... (~14 个)
@@ -507,7 +507,7 @@ batch_size,avg_seq_len,num_heads,head_dim,dtype,Duration(us)
 ```python
 # 使用 ProfilingDataSource
 data_source = ProfilingDataSource(
-    "perf_database/data/atlas_a3_752t_128g/vllm_ascend/v0.13.0",
+    "perf_database/data/ATLAS_800_A3_752T_128G_DIE/vllm_ascend/v0.13.0",
     comm_grid=device_profile.comm_grid
 )
 perf_model = EmpiricalPerformanceModel(device_profile, data_source)
