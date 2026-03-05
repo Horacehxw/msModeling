@@ -20,7 +20,7 @@ TensorCast 当前采用**基于 Roofline 的解析模型**（`AnalyticPerformanc
 | **版本相关优化** | VLLM-Ascend 各版本引入不同的融合内核 | 模型在版本迭代中失效 |
 
 
-### 1.2 Profiling 数据分析 （TODO：根据最新的自动分析刷一遍数据 02月06日[@贺骁武](https://www.yuque.com/hxw02477402)）
+### 1.2 Profiling 数据分析 （TODO：根据最新的自动分析刷一遍数据 02月06日[@HXW](https://www.yuque.com/hxw02477402)）
 基于实际昇腾 Profiler 输出（`kernel_details.csv`、`op_statistic.csv`）：
 
 **Qwen3-32B（共 41 个独立算子）**：

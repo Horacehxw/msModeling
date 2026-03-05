@@ -5,8 +5,8 @@
 **范围**: 面向 LLM 仿真的可扩展 Profiling Cost Model，不绑定具体算力卡，支持基于实测 Profiling 数据的算子性能估算。
 **初期目标模型**: DeepSeek-V3、Qwen3-32B
 
-作者：贺骁武
-审核人：龚炯
+作者：HXW
+审核人：GJ
 
 ---
 
