@@ -79,7 +79,7 @@ develop (稳定主线)
 |------|------|------|-----------|
 | **ZH** | 全职 | ProfilingDataSource 扩展（Attention/通信/插值/MoE/MLA）+ 集成验证 | `perf_database/*.py` |
 | **TCX** | 全职 | 数据采集工具链（6 个 stub → 完整实现）+ 集群数据采集 | `tools/perf_data_collection/` |
-| **ZZY** | **全职** | op_mapping 系统化验证 + DSV3 Decode 映射 + 自动化方案 + Profiling 数据分析 | `op_mapping.yaml` + 验证报告 |
+| **ZZY** | 全职 | op_mapping 系统化验证 + DSV3 Decode 映射 + 自动化方案 + Profiling 数据分析 | `op_mapping.yaml` + 验证报告 |
 | **HDY** | 全职 | 通信 HCCL 数据采集 + 端到端验证 | HCCL 数据 |
 | **XJT** | 全职 | CLI 集成 + 融合 Pass（MC2, KvRmsNormRopeCache） | `empirical.py`, CLI, Pass |
 | **HXW** | SE | 出 spec → review PR → 新方向 spike → 进展管理 | 不 own 产品代码 |
