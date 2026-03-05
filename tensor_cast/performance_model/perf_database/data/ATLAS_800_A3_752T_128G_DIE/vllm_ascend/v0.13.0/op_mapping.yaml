@@ -31,12 +31,10 @@ communication_data_ref: "../../hccl/v8.1.RC1/"
 communication_fallback: analytic
 
 interpolation_policy:
-  compute:
-    exact_match: [dtype, format]
-    interpolatable: [activation_shape]
-  communication:
-    exact_match: [dtype, num_devices, topology_tier]
-    interpolatable: [message_bytes]
+  default_method: linear    # 所有算子默认: dtype+format 精确匹配, shape 维度线性插值
+  kernel_overrides:         # 仅列出需要特殊处理的 kernel_type
+    FusedInferAttentionScore:
+      shape_transform: sqrt # O(seq²) → 在 sqrt(seq) 空间插值
 
 
 # ============================================================================

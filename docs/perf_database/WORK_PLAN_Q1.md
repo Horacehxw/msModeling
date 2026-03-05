@@ -38,7 +38,7 @@
 | CommAnalytic 在 Qwen3 Prefill 上精度可接受 | Phase 1 mini 端到端验证 | 通信查询路径优先级需提前 |
 | DSV3 W8A8 op_mapping 可增量完成 | C3/C4 映射验证 | 映射工作量翻倍 |
 | MC2 在 compile pass 中已正确融合 | XJT验证 | 需调整 composite fallback |
-| 基础线性插值 + sqrt 变换可满足多数场景 | TCX插值精度测试 | 需更复杂的插值策略 |
+| 通用 shape 线性插值 + FIA sqrt 变换可满足所有场景（不需要 per-operator 维度声明） | TCX插值精度测试 + ZZY/HDY override 标注 | 需新增 kernel_overrides |
 
 ### 1.3 交付标准
 
@@ -291,6 +291,8 @@ HDY |C6+MC2查 |--- C9 --|--- C7 DSV3映射 ----|C8+C10-|
 | C8 | W8A8 量化场景映射验证 | 3.13 | 验证报告 |
 | C10 | HCCL 集群数据采集（4 种通信算子 x 各 topology_tier） | 3.13 | CSV 产出 |
 
+**插值 override 标注**：分析 op_mapping 时顺便确认各 kernel_type 是否需要插值特殊处理（`interpolation_policy.kernel_overrides`）。预期结果：仅 FusedInferAttentionScore 需要 sqrt 变换，其余算子均适用默认线性插值。
+
 **双人交叉验证**：ZZY review HDY的 DSV3 映射，HDY review ZZY的 Qwen3 映射。
 
 ---
@@ -324,11 +326,10 @@ HDY |C6+MC2查 |--- C9 --|--- C7 DSV3映射 ----|C8+C10-|
 - 区分 PA（PagedAttention, decode, seq_lens 长）和 FA（FlashAttention, prefill, query_lens 长）
 - 提交 PR 后由ZH review 并合入 `profiling_data_source.py`
 
-**D3 插值实现要点**（参考 AI Configurator）：
+**D3 插值实现要点**（参考 AI Configurator + 设计文档 §4.4）：
 - Wrapper 模式包装 ProfilingDataSource：精确命中 → 直接返回，未命中 → 插值
-- 计算算子：对 seq/batch 等可变维度做线性插值（`scipy.interpolate.griddata` 或 numpy 手写）
-- 权重维度（hidden_size, num_heads 等）保持精确匹配
-- `op_mapping.yaml` 的 `interpolation_policy` 声明哪些维度可插值（设计文档 §4.5）
+- **通用插值逻辑（不需要 per-operator 维度声明）**：dtype+format 精确匹配（已在 ProfilingDataSource 实现），shape 维度做最近邻搜索 + 线性插值
+- 读取 `op_mapping.yaml` 的 `interpolation_policy.kernel_overrides` 应用特殊变换（当前仅 FIA 需要 sqrt）
 - 提交 PR 后由ZH review 并合入 `perf_database/`
 
 ---
@@ -376,7 +377,7 @@ HDY |C6+MC2查 |--- C9 --|--- C7 DSV3映射 ----|C8+C10-|
 
 | # | 检查点 | 完成日期 | 验收标准 |
 |---|-------|---------|---------|
-| E1 | `generate_shape_grid.py`：从 HuggingFace 模型配置提取维度 + 2 的幂次网格 | 3.16 | Qwen3 + DSV3 shape 网格覆盖实际维度 |
+| E1 | `generate_shape_grid.py`：按 kernel_type 分派生成逻辑（GEMM: 模型 N/K + M 网格; Attention: 模型 heads + batch×seq 网格; Elementwise: 模型 hidden + num_tokens 网格）+ powers-of-2 补充 | 3.16 | Qwen3 + DSV3 shape 网格覆盖实际维度 |
 | E2 | `generate_microbench.py`：读 op_mapping.yaml 的 torch_npu_reference 生成脚本 | 3.17 | 生成的脚本语法正确 |
 | E3 | 集群 Microbenchmark 采集 + `build_database.py` | 3.19 | 每个 kernel_type CSV 行数 > Profiling 原始 |
 | E4 | FusedAttention Microbenchmark（构造 paged KV cache 输入） | 3.20 | FIA CSV 覆盖多种 (batch_size, seq_len) 组合 |

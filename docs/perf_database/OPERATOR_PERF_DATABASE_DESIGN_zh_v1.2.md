@@ -353,7 +353,16 @@ pm = EmpiricalPerformanceModel(device_profile,
 
 ### 4.4 InterpolatingDataSource
 
-Wrapper 模式：精确匹配委托给 `base_source`，未命中时 `find_neighbors()` 查找近邻数据点，然后插值/外推。插值策略参考 AI Configurator 的 2D+1D 混合插值，对 O(n²) 的 Attention 算子做 sqrt 变换后再插值。`interpolation_policy` 配置哪些维度精确匹配、哪些可插值。
+Wrapper 模式：精确匹配委托给 `base_source`，未命中时 `find_neighbors()` 查找近邻数据点，然后插值/外推。
+
+**通用插值策略**（不需要 per-operator 维度声明）：
+- **dtype + format 精确匹配**：已在 `ProfilingDataSource._inputs_match()` 中实现，所有算子通用
+- **shape 维度线性插值**：未精确命中时，在 CSV 中找 dtype/format 精确匹配的行，对 shape 维度做最近邻搜索 + 线性插值
+- **特殊变换**：仅 `FusedInferAttentionScore` 需要 sqrt 变换（Attention 延迟 ∝ seq²，在 √seq 空间插值精度更高）
+
+此设计基于以下观察：95% 的算子（GEMM、Norm、Elementwise、MoE 等）共享相同的插值逻辑——dtype 精确匹配 + shape 线性插值。只有 FIA 因 O(n²) 复杂度需要额外处理。参考 AI Configurator 的实现，其 12 个 `query_*` 方法中只有 Attention 系列使用了 sqrt 变换，其余均为标准线性/立方插值。
+
+`op_mapping.yaml` 的 `interpolation_policy` 声明默认策略和少量 kernel_type override。
 
 ### 4.5 op_mapping.yaml 规格
 
@@ -369,12 +378,10 @@ communication_data_ref: "../../hccl/v8.1.RC1/" # 通信数据相对路径
 communication_fallback: analytic                # 通信数据不存在时 fallback
 
 interpolation_policy:
-  compute:
-    exact_match: [dtype, format]               # dtype/format 必须精确匹配
-    interpolatable: [activation_shape]          # shape 维度可以做插值
-  communication:
-    exact_match: [dtype, num_devices, topology_tier]
-    interpolatable: [message_bytes]
+  default_method: linear                       # 所有算子默认：dtype+format 精确匹配，shape 维度线性插值
+  kernel_overrides:                            # 仅列出需要特殊处理的 kernel_type
+    FusedInferAttentionScore:
+      shape_transform: sqrt                    # O(seq²) → 在 √seq 空间插值
 
 operator_mappings:
   "aten.mm.default":                           # 标准 aten 算子
@@ -572,6 +579,12 @@ parser.add_argument("--perf-database", type=str, default=None,
 ### 6.2 计算算子 Microbenchmark
 
 通过 `torch_npu` 直接对单个算子进行细粒度 Shape 覆盖测试。`op_mapping.yaml` 的 `torch_npu_reference` 段提供了每个算子对应的 `microbench_api`，供脚本生成工具自动使用。
+
+**Shape 网格生成策略**：`generate_shape_grid.py` 内部按 kernel_type 分派生成逻辑（工具侧知识，不在 op_mapping.yaml 中配置）：
+- **GEMM 类**（MatMulV2, QuantBatchMatmulV3, GroupedMatmul 等）：从模型配置提取 N/K（hidden_size, intermediate_size 等），M 用 powers-of-2 网格遍历
+- **Attention**（FusedInferAttentionScore）：从模型配置提取 num_heads/head_dim，batch × seq_len 用网格遍历
+- **Elementwise 类**（Add, RmsNorm, SwiGlu 等）：从模型配置推导 tensor 大小，num_tokens 用网格遍历
+- **通信算子**：message_size 用 powers-of-2 网格遍历
 
 ```python
 # tools/perf_data_collection/generate_microbench.py
