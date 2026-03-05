@@ -261,7 +261,7 @@ HDY |C6+MC2查 |--- C9 --|--- C7 DSV3映射 ----|C8+C10-|
 - **映射示例**：`examples/op_mapping_example.yaml`
 - **算子分级**：设计文档 §7.1-§7.2（Tier 1/2/3 + 占比数据）
 
-**修改范围**：`perf_database/data/atlas_800_a3_752t_128g_die/vllm_ascend/v0.14.0/op_mapping.yaml`
+**修改范围**：`perf_database/data/atlas_a3_752t_128g/vllm_ascend/v0.13.0/op_mapping.yaml`
 
 **验证方法论**（每条映射的验证步骤）：
 1. 从 Profiling 提取 kernel Type 及其 Input Shapes / Data Types
