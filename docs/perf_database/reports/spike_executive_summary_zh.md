@@ -12,6 +12,8 @@
 
 核心发现：TC dispatch trace 与 NPU Profiling 之间存在 8 类系统性的 shape 差异（batch 维度、权重格式、融合算子拆分、RoPE 布局等），均可通过 `ProfilingDataSource` 中的通用规则化处理解决，无需修改 TC 核心代码。剩余 6 个未匹配算子属于结构性差异（attention 特殊模式、通信算子、KV Cache 接口差异），需后续专项开发。
 
+穿刺过程中发现 **17 处简化实现**（详见 §5），涉及 shape 匹配、op_mapping 映射、查询逻辑、dtype、数据等五个层面。这些简化在穿刺阶段足够验证可行性，但产品化前需逐项评估和升级。
+
 **关键结论：基于 Profiling 数据的性能估算路线可行，值得投入产品化。**
 
 ---
@@ -114,7 +116,7 @@ sub_kernels: [MatMulV2, hcom_allReduce_]
 ### 4.1 Attention 特殊模式（P1，影响最大）
 
 `FusedInferAttentionScore` 是 Prefill 中单次延迟最高的算子（~100us 级别），但其输入结构复杂（Q、K cache、V cache、mask、seq_lens 等 7 个输入），需要专用的 shape 匹配逻辑，包括：
-- seq 维度动态：依赖 num_queries × query_length
+- seq 维度动态：依赖 num_queries x query_length
 - block 维度：依赖 KV cache block_size（128）
 - head 维度：需要按 TP 分片后的 num_heads 匹配
 
@@ -142,46 +144,230 @@ TC 发送全量词表 `(151936, 5120)`，Profiling 存储 TP 分片后的 `(9496
 
 ---
 
-## 5. 下一步行动建议
+## 5. 穿刺中的简化实现清单
 
-### 第一阶段：完善穿刺 → 可 Demo 状态（1 周）
+穿刺过程中共有 17 处简化实现，按层面分类如下。每项标注产品化所需的升级方向和对应的设计文档章节。
 
-| 优先级 | 任务 | 预计收益 | 说明 |
-|--------|------|---------|------|
-| **P0** | Attention 特殊模式匹配 | +1 HIT，覆盖最高延迟算子 | 实现 `FusedInferAttentionScore` 的 seq/head/block 感知匹配 |
-| **P0** | 通信算子带宽模型 | +1 HIT | 基于 CommGrid 参数 + HCCL benchmark 数据实现 `CommDataSource` |
-| P1 | Embedding TP 分片 | +1 HIT | 在匹配逻辑中传入 world_size，缩放词表维度 |
-| P1 | Shape 插值（设计文档 §4.8） | 支持任意 seq length | 在 ProfilingDataSource 基础上实现 `InterpolatingDataSource` |
+### 5.1 Shape 匹配层面
 
-### 第二阶段：DSV3 Decode 支持 + 端到端验证（2 周）
+#### S-1: Block-Padding 容差 — 硬编码对齐值
 
-| 任务 | 说明 |
-|------|------|
-| DSV3 Decode 数据集成 | `v0.14.0_dsv3_decode/` 数据已就绪，需 W8A8 dtype 支持和 Decode 特有算子映射 |
-| MoE 算子映射 | GroupedMatmul、MoeGatingTopK、DistributeDispatch/Combine |
-| 端到端精度验证 | 对比 TC 仿真结果与实际 vLLM Profiling 的端到端延迟，目标 <15% 误差 |
-| 与 develop 分支集成 | 合并 gitcode/develop 的 SwiGlu 融合、GMM 融合等新 pass |
+**现状**: `_BLOCK_SIZES = (16, 32, 64)` 硬编码三种对齐值，TC 维度只要是 CSV 维度按这些值 ceil 对齐的结果就算匹配。
 
-### 第三阶段：产品化（3-4 周，对应设计文档 §5）
+**风险**: 实际 NPU tile 对齐策略更复杂（不同算子、不同 dtype 可能有不同 tile size），可能产生误匹配或漏匹配。
 
-| 任务 | 说明 |
-|------|------|
-| 数据采集自动化 | Profiling 数据解析 → CSV 导出 → 数据库验证的 CI 流水线 |
-| 多版本管理 | 支持 CANN/vLLM-Ascend 不同版本的数据目录隔离 |
-| 条件映射（conditional kernel_type） | 替代 `alternate_kernel_types`，基于 op kwargs 精确映射 |
-| 直接 vLLM op graph 抓取 | 绕过 TC dispatch，直接从 vLLM 实跑抓取算子图（设计文档核心设计原则） |
+**产品化方向**: 根据 kernel_type + dtype 确定准确的 tile size（Da Vinci Cube: BF16=16x16, INT8=16x32）。可在 op_mapping.yaml 中添加 `tile_alignment` 字段。
 
-### 架构建议
+#### S-2: Batch 维度剥离 — 无差别剥离 leading dim=1
 
-1. **op_mapping.yaml 应按模型/场景拆分**：当前单文件 60+ 条映射，随模型增多将膨胀。建议 `op_mapping_base.yaml` + `op_mapping_qwen3.yaml` overlay 模式。
+**现状**: `_strip_batch_dim()` 对所有算子无差别地剥离 leading dim=1，不区分该维度是真正的 batch 还是其他语义。
 
-2. **Shape 匹配管线需要更好的可观测性**：当前 MISS 只有 DEBUG 日志，建议增加结构化的 match report 输出（类似本报告的 §2.3 表格），方便快速定位新模型的匹配问题。
+**风险**: 如果某算子的 leading dim=1 有语义含义（不是 batch），会导致误匹配。目前对所有 TC 和 CSV 输入都做对称剥离。
 
-3. **ProfilingDataSource 不应感知 TC 的 batch/padding 行为**：当前 `_strip_batch_dim` 和 padding 容差是为了弥补 TC 与 Profiling 的差异。长期方向应在 TC 或 EmpiricalPerformanceModel 层面统一 shape 归一化，而非在 DataSource 内部逐个处理。
+**产品化方向（设计文档 §4.2）**: 应在 TC 层面或 EmpiricalPerformanceModel 统一 shape 归一化，而非在 DataSource 内部逐个处理。
+
+#### S-3: RoPE 归一化 — 硬编码 Q/K 重排 + 转置规则
+
+**现状**: `_normalize_rope_inputs()` 假设 TC 永远发送 `[Q(B,H,S,D), K(B,H,S,D), cos, sin]`，CSV 永远是 `[K(B,S,H,D), Q(B,S,H,D), cos, sin]`。输入顺序和维度排列规则是代码硬编码的。
+
+**风险**: 不同版本 vLLM-ascend 或不同 RoPE 模式（如 GLM4 的 rotary_dim != head_dim）可能改变输入结构。
+
+**产品化方向**: 在 op_mapping.yaml 中用声明式规则描述 shape 变换（如 `input_transform: [{permute: [0,2,1,3]}, {swap: [0,1]}]`），而非在 Python 代码中硬编码。
+
+#### S-4: SwiGlu 输入合并 — 假设 2→1 合并
+
+**现状**: 假设 TC 永远发 2 个等形状输入，CSV 永远存 1 个沿末维拼接的输入。
+
+**风险**: W8A8 DequantSwigluQuant 等变体的输入结构不同，此规则不适用。
+
+**产品化方向**: 与 S-3 类似，用声明式融合模式描述。
+
+#### S-5: ND 转置匹配 — 仅对第 2+ 个输入尝试
+
+**现状**: `i >= 1 and fmt == "ND"` — 只对非第一个 ND 格式输入做 `(K,N) <-> (N,K)` 转置。
+
+**风险**: 假设第一个输入永远是 activation（不需转置），非标准 matmul pattern 会失效。
+
+### 5.2 op_mapping.yaml 映射层面
+
+#### S-6: `alternate_kernel_types` — 暴力回退而非条件分派
+
+**现状**: RoPE 的 `alternate_kernel_types: [ApplyRotaryPosEmb]` 是"试完主类型再试备选"，不看 `is_neox` 等运行时参数。
+
+**产品化方向（设计文档 §4.5）**: 实现 `kernel_type_variants` 条件映射：
+```yaml
+kernel_type_variants:
+  - condition: {is_neox: true}
+    kernel_type: ApplyRotaryPosEmb
+  - condition: {is_neox: false}
+    kernel_type: InterleaveRope
+```
+
+#### S-7: `zero_cost: true` — 笼统标记，部分存疑
+
+**现状**: 14 个 op 标记为 zero_cost，但其中部分存疑：
+- `aten.copy_.default`：实际有数据搬移（KV cache update），Profiling 中可能表现为 TensorMove kernel
+- `aten.slice.Tensor`：跨步切片有实际开销
+- `aten.arange.start`：有微量计算
+
+**产品化方向**: 区分"真正零代价"（view、permute）和"近似零代价"（copy_、slice），后者应有估算逻辑或查询 TensorMove.csv。
+
+#### S-8: 量化变体映射未经 Profiling 验证
+
+**现状**: 以下映射基于 op-plugin 代码分析推导，无实际 Profiling 数据验证：
+- `fp8_linear` → `QuantBatchMatmulV3`（FP8 专用 API 可能不存在）
+- `mxfp4_linear` → `QuantBatchMatmulV3`（placeholder）
+- `grouped_matmul_fp8_swiglu` → `DequantSwigluQuant`（路径不确定）
+- 所有 `*_all_reduce` 复合算子的 sub_kernels 分解（实际可能走 MC2 单 kernel）
+
+**产品化方向**: 需采集 FP8/MXFP4/W4A8 场景的 Profiling 数据，验证或修正映射。
+
+#### S-9: MoE 路由算子映射依赖场景假设
+
+**现状**: `permute_tokens` 映射到 `MoeDistributeDispatchV2`（EP 场景），非 EP 场景应映射到 `MoeInitRouting`。当前无条件映射。
+
+**产品化方向**: 与 S-6 相同，需 `kernel_type_variants` 按 EP/非 EP 条件选择。
+
+### 5.3 查询逻辑层面
+
+#### S-10: 复合算子分解 — 只取计算部分，忽略通信延迟
+
+**现状**: `_lookup_composite()` 跳过 `hcom_*` sub_kernel，只返回 MatMulV2 延迟，confidence=0.8。通信部分完全交给 analytic model。
+
+**风险**: 实际 MC2 是流水线融合（matmul 和 allReduce 重叠执行），latency != matmul + allReduce，分开估算会**高估**总延迟。
+
+**产品化方向**: MC2 kernel 应有独立的 Profiling CSV（Type = MC2 专用 kernel），而非分解。或在 `_lookup_composite` 中建模流水线重叠。
+
+#### S-11: Attention 完全跳过（设计文档 §4.2 query_mode）
+
+**现状**: `query_mode: attention_special` → 直接返回 None。`FusedInferAttentionScore` 是延迟最高的单算子（~100us+），对端到端精度影响最大。
+
+**产品化方向（设计文档 §4.2）**: 实现 attention_special 查询模式：提取 (seq_len, num_heads, head_dim, block_size) 等关键维度，结合 FusedInferAttentionScore.csv 匹配。需同时处理 PA（PagedAttention）和 FA（FlashAttention）两种模式。
+
+#### S-12: 通信算子完全跳过（设计文档 §4.4 CommDataSource）
+
+**现状**: `category: communication` → 直接返回 None。`hcom_allReduce_.csv` 只存一个平均值 690us，无 shape 依赖。
+
+**产品化方向（设计文档 §4.4）**: 实现 `CommDataSource`，基于消息大小 + 拓扑 + 通信组的带宽模型。需 HCCL benchmark 数据（`hccl/{cann_version}/`）。
+
+#### S-13: CSV 逐行遍历匹配，无索引
+
+**现状**: `_inputs_match` 对 CSV DataFrame 逐行 `iterrows()`，O(N) 暴力匹配。当前 CSV 只有几行，不影响性能。
+
+**产品化方向**: 数据量大时（Microbenchmark 网格可达数千行）需建立 shape hash 索引或预排序结构。
+
+### 5.4 dtype 映射层面
+
+#### S-14: FP16 = BF16 等价处理
+
+**现状**: `torch.float16: "DT_BF16"` — 将 FP16 视同 BF16。Ascend A3 上 BF16 和 FP16 共用相同 kernel 路径。
+
+**风险**: 如果未来硬件或 CANN 区分 FP16/BF16 kernel 路径，会导致 dtype 不匹配。
+
+#### S-15: 不检查 output dtype/shape
+
+**现状**: `_inputs_match` 只检查输入 shape + dtype，完全不看输出。
+
+**风险**: 同一输入不同输出配置（如 in-place vs out-of-place、不同输出 dtype）可能有不同性能。
+
+### 5.5 数据层面
+
+#### S-16: 单场景数据 + 跨模型复用
+
+**现状**: 用 Qwen3-30B Prefill（TP=16, seq=136）的 Profiling 数据验证 Qwen3-32B。两者同架构但不同参数，隐含假设"同架构 → kernel 行为相同"。
+
+**产品化方向**: 需要多 seq length、多 batch size 的 Profiling 数据 + 插值。对应设计文档 §4.8 InterpolatingDataSource。
+
+#### S-17: 无插值 — 严格精确匹配
+
+**现状**: 严格精确匹配（允许 padding 容差），不支持对未见 shape 进行插值估算。seq=200 就无法匹配。
+
+**产品化方向（设计文档 §4.8）**: 实现 `InterpolatingDataSource`，参考 AI Configurator 的 2D+1D 混合插值 + sqrt 变换（Attention O(n^2) 算子）。
 
 ---
 
-## 6. 交付物清单
+## 6. 下一步行动建议
+
+结合穿刺结论、简化实现清单、以及设计文档 v1.2 的整体规划，建议按以下三个阶段推进。
+
+### 第一阶段：消除关键盲区（1-2 周，对应设计文档 §4.2-4.8）
+
+目标：解决穿刺中跳过的 3 类算子 + 实现插值，使端到端仿真可用。
+
+| 优先级 | 任务 | 涉及简化项 | 设计文档 | 预计收益 |
+|--------|------|-----------|---------|---------|
+| **P0** | **Attention 特殊模式匹配** | S-11 | §4.2 query_mode | +1 HIT，覆盖最高延迟算子 |
+| **P0** | **CommDataSource 通信带宽模型** | S-12 | §4.4 | +1 HIT，解决 allReduce/allGather |
+| **P0** | **InterpolatingDataSource 插值** | S-17 | §4.8 | 支持任意 seq length，不再依赖精确匹配 |
+| P1 | Embedding TP 分片 | — | — | +1 HIT |
+| P1 | 条件映射（kernel_type_variants） | S-6, S-9 | §4.5 | 替代 alternate_kernel_types 暴力回退 |
+| P2 | 精细化 zero_cost 分类 | S-7 | — | 区分真零代价 vs 近似零代价 |
+
+**Attention 匹配具体方案**：
+1. 从 `OpInvokeInfo` 提取 `(seq_len, num_heads, head_dim, block_size, num_blocks)` 关键维度
+2. `FusedInferAttentionScore.csv` 已有数据（Qwen3 Prefill 67x），建立多维匹配
+3. 区分 PA（PagedAttention, decode）和 FA（FlashAttention, prefill）两种模式的输入结构
+
+**InterpolatingDataSource 具体方案**（参考 AI Configurator）：
+1. Wrapper 模式包装 ProfilingDataSource：精确命中 → 直接返回，未命中 → 插值
+2. 激活维度（seq_len, batch）做线性/双线性插值
+3. Attention 算子做 sqrt 变换后再插值（O(n^2) 复杂度）
+4. 只对 `interpolatable` 标记的维度做插值（op_mapping.yaml 已有 `interpolation_policy` 字段）
+
+### 第二阶段：DSV3 Decode 支持 + 端到端验证（2-3 周，对应设计文档 §5.2）
+
+目标：覆盖第二个目标模型 DeepSeekV3 Decode 场景，验证端到端精度 <15%。
+
+| 任务 | 涉及简化项 | 说明 |
+|------|-----------|------|
+| **DSV3 Decode 数据集成** | S-16 | `v0.14.0_dsv3_decode/` 数据已就绪，需 W8A8 dtype 支持 |
+| **MoE 算子映射验证** | S-8, S-9 | GroupedMatmul、MoeGatingTopK、DistributeDispatch/Combine 实际验证 |
+| **MC2 融合 kernel** | S-10 | 确认 MC2 在 Profiling 中的实际表现（单 kernel vs 分离），调整复合分解逻辑 |
+| **reshape_and_cache 结构适配** | — | 分析 TC 与 NPU 的 KV cache 接口差异，选择改 TC op 还是加适配层 |
+| **端到端精度验证** | — | 对比 TC 仿真结果 vs 实际 vLLM Profiling 端到端延迟，目标 <15% |
+| **与 develop 分支集成** | — | 合并 gitcode/develop 的 SwiGlu 融合、GMM+SwiGlu 融合等新 pass |
+| **声明式 shape 变换** | S-3, S-4 | 将 RoPE/SwiGlu 的硬编码归一化改为 op_mapping.yaml 中的声明式规则 |
+
+**DSV3 Decode 新增算子映射清单**：
+- `QuantBatchMatmulV3`（15006x）— W8A8 matmul，需 INT8 dtype 支持
+- `AscendQuantV2`（10004x）— static quantization
+- `DequantSwigluQuant`（4879x）— GMM+SwiGlu+Quant 三合一
+- `GroupedMatmul`（4756x）— MoE expert computation
+- `InplaceAddRmsNorm`（5002x）— AddRmsNorm in-place 变体
+- `TransposeBatchMatMul`（5002x）— MLA absorb projections
+- `InterleaveRope`（2501x）— DeepSeek interleave RoPE
+- `KvRmsNormRopeCache`（2501x）— KV Norm+RoPE+Cache 融合
+- `MoeGatingTopK`（2378x）— MoE routing
+- `MoeDistributeDispatch/CombineV2`（2378x each）— MoE token routing
+
+### 第三阶段：产品化（3-4 周，对应设计文档 §5.3-5.5）
+
+目标：达到可维护、可扩展的产品质量。
+
+| 任务 | 涉及简化项 | 设计文档 | 说明 |
+|------|-----------|---------|------|
+| **数据采集自动化** | S-16 | §5.4 | Profiling → CSV → 验证的 CI 流水线 |
+| **Microbenchmark 网格** | S-13 | §5.5 | 生成计算算子 microbench 脚本，扩充 CSV 覆盖范围 |
+| **CSV 索引优化** | S-13 | — | shape hash 索引，支持数千行快速查询 |
+| **多版本管理** | — | §2.3 | CANN/vLLM-Ascend 版本数据目录隔离 |
+| **op_mapping 分层** | — | — | `op_mapping_base.yaml` + 模型/场景 overlay |
+| **Shape 归一化层级上移** | S-1, S-2 | — | 在 TC/EmpiricalPerformanceModel 层统一归一化 |
+| **直接 vLLM op graph 抓取** | — | §设计原则 | 绕过 TC dispatch，直接从 vLLM 实跑抓取算子图 |
+| **CompositePerformanceModel** | — | §9.3 | 多 PerformanceModel 级联调度器 |
+
+### 架构建议
+
+1. **op_mapping.yaml 应按模型/场景拆分**: 当前单文件 60+ 条映射，随模型增多将膨胀。建议 `op_mapping_base.yaml` + `op_mapping_qwen3.yaml` overlay 模式。
+
+2. **Shape 匹配管线需要更好的可观测性**: 当前 MISS 只有 DEBUG 日志，建议增加结构化的 match report 输出（类似本报告 §2.3 表格），方便快速定位新模型的匹配问题。
+
+3. **ProfilingDataSource 不应感知 TC 的 batch/padding 行为**: 当前 `_strip_batch_dim` 和 padding 容差是为了弥补 TC 与 Profiling 的差异。长期方向应在 TC 或 EmpiricalPerformanceModel 层面统一 shape 归一化，而非在 DataSource 内部逐个处理。
+
+4. **优先实现 InterpolatingDataSource**: 穿刺依赖精确 shape 匹配 + padding 容差，但生产环境 seq length 变化频繁。插值是实用性的关键瓶颈，应优先于其他优化项。
+
+---
+
+## 7. 交付物清单
 
 | 类别 | 文件/路径 | 说明 |
 |------|----------|------|
