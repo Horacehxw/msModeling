@@ -502,3 +502,58 @@ def test_rope_no_false_positive(rope_data_dir):
     )
     result = ds.lookup(op)
     assert result is None, "Wrong head count should not match"
+
+
+# --- Composite decomposition tests ---
+
+COMPOSITE_MATMUL_CSV = """\
+Input Shapes,Input Data Types,Input Formats,Output Shapes,Output Data Types,Output Formats,Average Duration(us)
+"136,512;32,320,16,16","DT_BF16;DT_BF16","ND;FRACTAL_NZ","136,5120","DT_BF16","ND",14.156
+"""
+
+
+@pytest.fixture
+def composite_data_dir(tmp_path):
+    data_dir = tmp_path / "composite"
+    data_dir.mkdir()
+    op_mapping = (
+        'version: "test"\n'
+        "operator_mappings:\n"
+        '  "tensor_cast.matmul_all_reduce.default":\n'
+        "    composite: true\n"
+        "    sub_kernels: [MatMulV2, hcom_allReduce_]\n"
+    )
+    (data_dir / "op_mapping.yaml").write_text(op_mapping)
+    (data_dir / "MatMulV2.csv").write_text(COMPOSITE_MATMUL_CSV.strip())
+    return data_dir
+
+
+def test_composite_decomposition_matmul(composite_data_dir):
+    """matmul_all_reduce should decompose and match MatMulV2 sub-kernel."""
+    ds = ProfilingDataSource(composite_data_dir)
+    op = _make_op_info(
+        torch.ops.tensor_cast.matmul_all_reduce.default,
+        [
+            torch.empty(144, 512, device="meta", dtype=torch.bfloat16),   # mat1
+            torch.empty(512, 5120, device="meta", dtype=torch.bfloat16),  # mat2
+            None,   # bias
+            0,      # rank
+            [0, 1], # rank_group
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is not None, "Should match MatMulV2 sub-kernel via composite decomposition"
+    assert abs(result.latency_us - 14.156) < 0.01
+    assert result.details.get("composite") is True
+    assert result.confidence < 1.0  # Lower confidence for partial match
+
+
+def test_composite_no_sub_kernels(spike_data_dir):
+    """Composite op without matching sub-kernel CSVs returns None."""
+    ds = ProfilingDataSource(spike_data_dir)
+    op = _make_op_info(
+        torch.ops.tensor_cast.multihead_latent_attention.default,
+        [torch.empty(136, 5120, device="meta", dtype=torch.bfloat16)],
+    )
+    result = ds.lookup(op)
+    assert result is None

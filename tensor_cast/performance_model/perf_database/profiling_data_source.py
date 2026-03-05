@@ -209,9 +209,9 @@ class ProfilingDataSource(DataSource):
         if mapping is None:
             return None
 
-        # Spike: skip composite, communication, attention_special
+        # Composite ops: try decomposition via sub_kernels, else skip
         if mapping.get("composite"):
-            return None
+            return self._lookup_composite(op_invoke_info, mapping)
         if mapping.get("category") == "communication":
             return None
         if mapping.get("query_mode") == "attention_special":
@@ -227,6 +227,58 @@ class ProfilingDataSource(DataSource):
             )
 
         return self._lookup_compute(op_invoke_info, mapping)
+
+    # ---- Composite op lookup ----
+
+    def _lookup_composite(
+        self, op_invoke_info: "OpInvokeInfo", mapping: dict
+    ) -> Optional[QueryResult]:
+        """Decompose composite ops and look up compute sub-kernels.
+
+        For matmul+comm composites (e.g., matmul_all_reduce), look up the
+        compute sub-kernel (MatMulV2) with the op's tensor inputs.
+        Communication sub-kernels are left to the analytic model.
+        Returns None if no sub_kernels or no match found.
+        """
+        sub_kernels = mapping.get("sub_kernels", [])
+        if not sub_kernels:
+            return None
+
+        # Extract tensor inputs from the composite op
+        tc_inputs = self._extract_tensor_inputs(op_invoke_info)
+
+        # Try each compute sub-kernel (skip communication kernels)
+        for kernel_type in sub_kernels:
+            if kernel_type.startswith("hcom_"):
+                continue
+            df = self._load_csv(kernel_type)
+            if df is None:
+                continue
+            for _, row in df.iterrows():
+                if self._inputs_match(tc_inputs, row, kernel_type=kernel_type):
+                    latency_col = (
+                        "Average Duration(us)"
+                        if "Average Duration(us)" in df.columns
+                        else "Duration(us)"
+                    )
+                    logger.debug(
+                        "HIT (composite) %s: tc_shapes=%s -> %s (%.1f us)",
+                        kernel_type,
+                        [s for s, _ in tc_inputs],
+                        row.get("Input Shapes", ""),
+                        float(row[latency_col]),
+                    )
+                    return QueryResult(
+                        latency_us=float(row[latency_col]),
+                        confidence=0.8,  # Lower confidence: partial match
+                        source=QuerySource.MEASURED,
+                        details={
+                            "kernel_type": kernel_type,
+                            "composite": True,
+                            "note": "compute sub-kernel only; comm handled by analytic",
+                        },
+                    )
+        return None
 
     # ---- Compute op lookup (design doc S4.2 _lookup_compute) ----
 
