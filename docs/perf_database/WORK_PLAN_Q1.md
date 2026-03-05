@@ -1,377 +1,568 @@
-# 算子性能数据库 Q1 工作计划
+# 算子性能数据库 Q1 工作计划 (v3)
 
 **目标**: 2026.3.23 完成端到端集成，DeepSeek-V3 / Qwen3-32B 仿真误差 <15%
-**基准日期**: 2026.3.5
-**设计文档**: `docs/perf_database/OPERATOR_PERF_DATABASE_DESIGN_zh_v1.2.md`
-**穿刺总结**: `docs/perf_database/reports/spike_executive_summary_zh.md`
+**基准日期**: 2026.3.5（周四晚发布，3.6 起执行）
+**团队**: 6 人（1 SE + 5 开发）
+**周期**: 3.6-3.23（三个 Phase）
+**设计文档**: `OPERATOR_PERF_DATABASE_DESIGN_zh_v1.2.md`（同目录）
+**穿刺总结**: `reports/spike_executive_summary_zh.md`
 
 ---
 
-## 1. Spike 定位与代码评估
+## 目录
 
-### 1.1 Spike 原则
-
-Spike 的交付物是**知识和决策**。db-spike 已完成使命，验证了 DataSource 架构可行性（87% 匹配率）。后续新的技术穿刺产出 spec 和决策，**不合入产品分支**。
-
-### 1.2 db-spike 代码质量评估
-
-对 db-spike 的核心代码做了逐文件审查：
-
-| 文件 | 行数 | 评估 | 说明 |
-|------|------|------|------|
-| `data_source.py` | 36 | Production-ready | 干净的 ABC, 无问题 |
-| `profiling_data_source.py` | 465 | Production-ready | 无 debug print, 无 hack, docstring 引用设计文档, CSV 缓存, 完整错误降级 |
-| `empirical.py` | 97 | Production-ready | 干净的 DataSource 委托 + fallback, 命中率统计 |
-| `interpolating_data_source.py` | 20 | Phase 2 占位 | 设计正确, 一个 TODO |
-| `__init__.py` | 11 | Production-ready | 干净导出 |
-| **测试 (3 文件)** | **688** | **测试/实现 = 1.29:1** | 覆盖率 ~95%, 含 false-positive 防护测试 |
-| `parse_kernel_details.py` | 342 | 完整可用 | CSV 解析 + 聚合 + 增量更新 |
-| 其他 6 个 tools | 各 12 | Stub | `raise NotImplementedError` |
-
-**结论：db-spike 代码可以直接作为产品分支基础**，不需要重写。17 项简化中大部分是设计决策（如 padding 容差、batch 剥离）而非代码质量问题，应在后续迭代中按优先级逐项升级。
+- [1. 项目概览](#1-项目概览)
+- [2. 进展管理](#2-进展管理)
+- [3. 团队与职责](#3-团队与职责)
+- [4. 任务依赖总览](#4-任务依赖总览)
+- [5. Phase 1：核心集成 + Mini 验证（3.6-3.13）](#5-phase-1核心集成--mini-验证36-313)
+- [6. Phase 2：数据扩充 + 融合 Pass + DSV3 深度匹配（3.16-3.20）](#6-phase-2数据扩充--融合-pass--dsv3-深度匹配316-320)
+- [7. Phase 3：端到端精度验证（3.19-3.23）](#7-phase-3端到端精度验证319-323)
+- [8. 风险与缓解](#8-风险与缓解)
+- [附录 A：分支策略](#附录-a分支策略)
+- [附录 B：参考索引](#附录-b参考索引)
+- [附录 C：进展管理细则](#附录-c进展管理细则)
 
 ---
 
-## 2. 分支策略
+## 1. 项目概览
 
-### 2.1 方案：db-spike → feat/perf-database
+### 1.1 目标与现状
 
-```
-develop (稳定主线)
-  │
-  └── feat/perf-database (从 db-spike 创建, 包含已验证的穿刺代码)
-        │
-        ├── XJT: feat/perf-db-cli
-        ├── ZH:   feat/perf-db-datasource
-        ├── TCX: feat/perf-db-toolchain
-        ├── ZZY: feat/perf-db-op-mapping
-        └── HDY: feat/perf-db-hccl
+为 TensorCast 构建基于实测 Profiling 数据的算子性能估算系统（`EmpiricalPerformanceModel + DataSource` 模式，设计文档 §1.1）。db-spike 穿刺已验证架构可行性：Qwen3-32B BF16 Prefill 匹配率 87%，计算算子 100%。核心代码 production-ready，直接作为产品分支基础。
 
-  └── db-spike (只读参考, 后续穿刺在独立分支, 不合入 feat)
-```
+### 1.2 核心假设
 
-**理由**：
-- db-spike 是 develop 的超集（develop 无领先 commit），无合并风险
-- 核心代码质量 8.5/10，重写无工程收益
-- dev-tcx + feat/database 的 merge 内容本身应进 develop
-- CSV 数据和 op_mapping.yaml 是数据资产，直接复用
+| 假设 | 验证方式 | 若不成立的影响 |
+|------|---------|-------------|
+| CommAnalytic 在 Qwen3 Prefill 上精度可接受 | Phase 1 mini 端到端验证 | 通信查询路径优先级需提前 |
+| DSV3 W8A8 op_mapping 可增量完成 | C3/C4 映射验证 | 映射工作量翻倍 |
+| MC2 在 compile pass 中已正确融合 | XJT验证 | 需调整 composite fallback |
+| 基础线性插值 + sqrt 变换可满足多数场景 | TCX插值精度测试 | 需更复杂的插值策略 |
 
-### 2.2 操作步骤
-
-**Step 1（3.5-3.6，HXW）**：
-1. 从 db-spike 创建 `feat/perf-database` 分支推送到 gitcode
-2. 移除穿刺实验文档（spike plan docs），保留设计文档和报告
-3. 确认 `pytest tests/perf_database/ -v` 通过
-
-**Step 2（3.6-3.7，各负责人）**：从 `feat/perf-database` 拉个人分支
-
-**Step 3（3.23，HXW）**：`feat/perf-database` PR 回 `develop`
-
-### 2.3 后续穿刺规则
-
-新的技术穿刺（如 MC2 实际表现、vLLM op graph 直接抓取）在独立分支进行，产出 spec 和决策文档，**不合入 feat/perf-database**。
-
----
-
-## 3. 团队分工
-
-| 人员 | 投入 | 职责 | 代码 Owner |
-|------|------|------|-----------|
-| **ZH** | 全职 | ProfilingDataSource 扩展（Attention/通信/插值/MoE/MLA）+ 集成验证 | `perf_database/*.py` |
-| **TCX** | 全职 | 数据采集工具链（6 个 stub → 完整实现）+ 集群数据采集 | `tools/perf_data_collection/` |
-| **ZZY** | 全职 | op_mapping 系统化验证 + DSV3 Decode 映射 + 自动化方案 + Profiling 数据分析 | `op_mapping.yaml` + 验证报告 |
-| **HDY** | 全职 | 通信 HCCL 数据采集 + 端到端验证 | HCCL 数据 |
-| **XJT** | 全职 | CLI 集成 + 融合 Pass（MC2, KvRmsNormRopeCache） | `empirical.py`, CLI, Pass |
-| **HXW** | SE | 出 spec → review PR → 新方向 spike → 进展管理 | 不 own 产品代码 |
-
-### SE（HXW）的产出时间表
-
-| 时间 | 产出 | 消费者 |
-|------|------|--------|
-| 3.5-3.6 | feat/perf-database 分支准备 | 全员 |
-| 3.5-3.7 | Attention 匹配 spec（输入输出 + 匹配规则 + 测试用例） | ZH |
-| 3.5-3.7 | 17 项简化清单产品化评估（逐项标注保留/改进/必须实现） | ZH |
-| 3.10-3.12 | DSV3 op_mapping 草稿（基于穿刺经验 + AI 辅助生成） | ZZY验证 → ZH集成 |
-| 3.14-3.16 | MoE/MLA 匹配 spec | ZH |
-| 持续 | PR Review | 全员 |
-
----
-
-## 4. Phase 1：核心集成（3.5 → 3.14）
-
-**目标**：CLI 端到端可运行 + Attention/通信/插值三个 P0 查询路径 + op_mapping 完整验证 + 数据采集工具链基础。
-
-### 任务 A：CLI 集成 + 端到端打通（XJT）
-
-**目标**：`--performance-model profiling --compile` 端到端可运行。
-
-db-spike 已有 `empirical.py`（97 行，production-ready）和 CLI 改动的参考。XJT在 `feat/perf-database` 上集成并确保端到端可运行。
-
-| # | 检查点 | 预计完成 | 验证方式 |
-|---|-------|---------|---------|
-| A1 | CLI `--performance-model {analytic,profiling}` + `--perf-database` 路径参数 | 3.7 | analytic 行为不变；profiling 模式创建 EmpiricalPerformanceModel |
-| A2 | 端到端：Qwen3-32B Prefill `--performance-model profiling --compile` | 3.10 | 不报错，log_stats 输出命中率 |
-| A3 | 融合 Pass merge：SwiGlu + GroupedMatmul+SwiGlu 从 develop 合入 | 3.14 | 单元测试通过 + dispatch trace 对齐 |
-
----
-
-### 任务 B：ProfilingDataSource 扩展（ZH）
-
-**目标**：在已有的 `_lookup_compute()` 基础上，新增 Attention、通信、插值三条查询路径。
-
-当前 `profiling_data_source.py` 的 `lookup()` 中，`attention_special` 和 `communication` 两个分支直接 return None（穿刺简化项 S-11/S-12）。需要实现这两条路径。
-
-| # | 检查点 | 预计完成 | 验证方式 |
-|---|-------|---------|---------|
-| B1 | `_lookup_attention()`：从 OpInvokeInfo 提取 (seq_len, num_heads, head_dim)，匹配 FusedInferAttentionScore.csv | 3.10 | 单元测试：Qwen3 Prefill attention 命中 |
-| B2 | `_lookup_comm()`：从 OpInvokeInfo 计算 message_bytes + topology_tier，查询通信 CSV | 3.12 | 单元测试：all_reduce/all_gather 返回耗时 |
-| B3 | InterpolatingDataSource 实现：精确命中 → 直接返回，未命中 → 线性插值 | 3.14 | 单元测试：seq=136 精确命中；seq=200 插值 |
-
-**SE 输入**：HXW 3.7 前交付 Attention 匹配 spec + 简化项评估。
-
----
-
-### 任务 C：op_mapping 系统化验证 + DSV3 映射（ZZY，全职）
-
-**目标**：系统性验证已有 op_mapping 60+ 条映射，补充 DSV3 Decode 场景映射，输出自动化方案 spec。
-
-ZZY全职投入，承担 op_mapping 从验证到 DSV3 扩展的完整链条。
-
-| # | 检查点 | 预计完成 | 验证方式 |
-|---|-------|---------|---------|
-| C1 | Profiling 算子清单：从 Qwen3-30B + DSV3 Decode 提取 (Type, 调用次数, 耗时占比) Top-20 排序表 | 3.7 | 表格输出 |
-| C2 | TC dispatch trace 导出：用 analytic 模式跑 Qwen3-32B + DSV3 | 3.9 | dispatch trace 日志 |
-| C3 | BF16 场景逐条映射验证：对照 C1/C2 验证 op_mapping 每条映射 | 3.11 | 验证报告（✅已验证/⚠️需注意/❌不匹配） |
-| C4 | DSV3 Decode op_mapping 扩展：新增 W8A8 算子映射（QuantBatchMatmulV3、AscendQuantV2、DequantSwigluQuant、GroupedMatmul、TransposeBatchMatMul、MoeGatingTopK 等） | 3.13 | op_mapping 覆盖 DSV3 Top-15 算子 |
-| C5 | W8A8 量化场景映射验证 | 3.14 | 验证报告 |
-| C6 | op_mapping 自动化方案 spec：设计 Profiling → op_mapping 半自动生成流程 | 3.14 | spec 文档 |
-
-**说明**：
-- C4 的 DSV3 映射由HXW提供 AI 辅助生成的草稿（3.12 交付），ZZY负责验证和修正
-- C2 可用 analytic 模式直接跑，不依赖XJT的 profiling CLI
-- C6 是 Q2 投入方向，Q1 只需 spec
-
----
-
-### 任务 D：数据采集工具链基础（TCX）
-
-**目标**：完善 `parse_kernel_details.py` + 实现 `discover_operators.py` + `generate_shape_grid.py`。
-
-当前 7 个工具中只有 `parse_kernel_details.py` 完整（342 行），其他 6 个是 stub。Phase 1 优先完成发现和 shape 网格工具。
-
-| # | 检查点 | 预计完成 | 验证方式 |
-|---|-------|---------|---------|
-| D1 | `parse_kernel_details.py` 验证：在 Qwen3 + DSV3 数据上运行，确认输出正确 | 3.7 | 输出 CSV 与 db-spike 已有数据一致 |
-| D2 | `discover_operators.py` 实现：对比 Profiling Type 列 vs op_mapping.yaml，输出覆盖率统计 | 3.10 | known 算子覆盖 >90% 调用次数 |
-| D3 | `generate_shape_grid.py` 实现：从 HuggingFace 模型配置提取维度 + 2 的幂次网格 | 3.12 | Qwen3-32B + DSV3 shape 网格覆盖实际维度 |
-| D4 | `generate_microbench.py` 实现：读 op_mapping.yaml 的 torch_npu_reference，生成 benchmark 脚本 | 3.14 | 生成的脚本语法正确 |
-
----
-
-### 任务 E：通信 HCCL 数据采集（HDY）
-
-| # | 检查点 | 预计完成 | 验证方式 |
-|---|-------|---------|---------|
-| E1 | `generate_comm_microbench.py` 实现：生成 torch.distributed benchmark 脚本 | 3.10 | 脚本可运行 |
-| E2 | HCCL 数据采集（集群） | 3.14 | 4 种通信算子 × 各 topology_tier |
-| E3 | HCCL Test 交叉验证 | 3.14 | Python benchmark 与 hccl_test 偏差 <10% |
-
----
-
-### Phase 1 检查点（3.14）
-
-| 交付物 | 验收标准 | 负责人 |
-|-------|---------|--------|
-| CLI `--performance-model profiling` | 端到端可运行 | XJT |
-| `_lookup_attention()` | 单元测试通过 | ZH |
-| `_lookup_comm()` | 单元测试通过 | ZH |
-| InterpolatingDataSource | 插值可工作 | ZH |
-| op_mapping 验证报告（BF16 + W8A8） | Qwen3 + DSV3 两场景 | ZZY |
-| DSV3 op_mapping 扩展 | 覆盖 Top-15 算子 | ZZY |
-| HCCL 数据 | 集群采集完成 | HDY |
-| discover + shape_grid + microbench 工具 | 可运行 | TCX |
-| 融合 Pass merge | 单元测试通过 | XJT |
-
-### Phase 1 并行度
-
-```
-      3.5       3.7       3.9       3.11      3.13      3.14
-       |         |         |         |         |         |
-HXW |= spec ==>| review ==================================>|
-       | 分支准备  | Attn spec|        | DSV3草稿 | MoE spec|
-       | 简化评估  |         |         |         |         |
-       |         |         |         |         |         |
-XJT |--- A1 --|------ A2 ---------|         |--- A3 --|
-       |         |         |         |         |         |
-ZH   |         |--- B1 -----------|--- B2 --|--- B3 --|
-       |         |         |         |         |         |
-ZZY |--- C1 --|--- C2 --|--- C3 --|--- C4 --|C5+C6 --|
-       |         |         |         |         |         |
-TCX |--- D1 --|--- D2 --|--- D3 --|--- D4 --|         |
-       |         |         |         |         |         |
-HDY |--- E1 -----------|--- E2 ------------|-- E3 ---|
-```
-
----
-
-## 5. Phase 2：数据扩充 + 融合 Pass + DSV3 场景验证（3.14 → 3.20）
-
-**目标**：Microbenchmark 数据扩充 + 融合 Pass 补齐 + DSV3 MoE/MLA 匹配 + mini 精度验证。
-
-### 任务 F：Microbenchmark 数据采集（TCX）
-
-| # | 检查点 | 预计完成 | 验证方式 |
-|---|-------|---------|---------|
-| F1 | 集群 Microbenchmark 采集 + `build_database.py` 实现 | 3.18 | 每个 kernel_type CSV 行数 > Profiling 原始 |
-| F2 | FusedAttention Microbenchmark 特殊处理 | 3.20 | 构造 paged KV cache 输入可运行 |
-| F3 | `validate.py` 实现 | 3.20 | 逐算子 + 端到端精度报告输出 |
-
-### 任务 G：融合 Pass 补齐（XJT）
-
-| # | 检查点 | 预计完成 | 验证方式 |
-|---|-------|---------|---------|
-| G1 | KvRmsNormRopeCache Pass | 3.17 | 单元测试 + dispatch trace |
-| G2 | MC2 融合 Pass（P1 可选） | 3.20 | 如无法完成 → composite fallback |
-
-### 任务 H：DSV3 MoE/MLA 匹配（ZH）
-
-**SE 输入**：HXW 3.16 前交付 MoE/MLA 匹配 spec。
-
-| # | 检查点 | 预计完成 | 验证方式 |
-|---|-------|---------|---------|
-| H1 | MoE 算子匹配：MoeGatingTopK, MoeDistributeDispatch/CombineV2, permute/unpermute_tokens | 3.18 | 单元测试 |
-| H2 | MLA 分解查询：MLA → TransposeBatchMatMul + FIA 子查询 | 3.20 | 单元测试 |
-
-### 任务 I：DSV3 Profiling 深度分析（ZZY，全职）
-
-| # | 检查点 | 预计完成 | 验证方式 |
-|---|-------|---------|---------|
-| I1 | DSV3 Decode Profiling 逐层耗时分析：按 Transformer layer 拆解算子耗时分布 | 3.16 | 分析报告 |
-| I2 | TC vs Profiling 算子对齐表：逐算子对比 TC dispatch trace 与 Profiling kernel 的 shape 差异 | 3.18 | 对齐表格，标注匹配/不匹配/原因 |
-| I3 | 未覆盖算子分析：识别 Profiling 中有但 op_mapping 未覆盖的算子，评估耗时影响 | 3.20 | 缺口清单 + 优先级排序 |
-
-### Phase 2 检查点（3.20）
-
-| 交付物 | 验收标准 | 负责人 |
-|-------|---------|--------|
-| 扩充 CSV 数据库 | shape 覆盖 > Profiling 原始 | TCX |
-| validate.py | 精度报告可输出 | TCX |
-| 融合 Pass | KvRmsNormRopeCache 通过 | XJT |
-| DSV3 MoE/MLA 匹配 | 单元测试通过 | ZH |
-| DSV3 深度对齐分析 | 对齐表格 + 缺口清单 | ZZY |
-
----
-
-## 6. Phase 3：端到端验证（3.20 → 3.23）
-
-**目标**：端到端精度 <15%，交付精度报告。
-
-### 任务 J：端到端精度验证（全员）
-
-| # | 检查点 | 预计完成 | 负责人 | 验证方式 |
-|---|-------|---------|--------|---------|
-| J1 | Qwen3-32B 端到端验证（Prefill + Decode） | 3.22 | ZH + XJT | 误差 <15%, 覆盖 >90% |
-| J2 | DSV3 端到端验证（Decode, MoE + MLA） | 3.22 | HDY + XJT | 误差 <15%, 覆盖 >90% |
-| J3 | 精度问题定位 + 修复（如不达标） | 3.22 | ZZY分析 + ZH/TCX修复 | 补数据/修映射/调插值 |
-| J4 | 精度总报告 | 3.23 | 全员 | 交付 |
-
-**验证标准**：
+### 1.3 交付标准
 
 | 指标 | 目标值 |
 |-----|-------|
-| 端到端耗时误差 | <15% |
+| 端到端耗时误差 | <15%（对比实际 vLLM Profiling） |
 | 单算子误差（已匹配） | <20% |
 | 时间覆盖率 | >90% |
 
-### 最终交付（3.23）
+### 1.4 最终交付物（3.23）
 
 | 交付物 | 验收标准 |
 |-------|---------|
-| Qwen3-32B 精度报告 | 端到端误差 <15% |
-| DeepSeek-V3 精度报告 | 端到端误差 <15% |
-| 完整数据库（CSV + YAML） | 覆盖 Tier 1/2 算子 |
+| CLI `--performance-model profiling --compile` | Qwen3-32B + DSV3 端到端可运行 |
+| 精度报告（Qwen3-32B + DSV3） | 端到端误差 <15% |
+| 完整数据库（CSV + YAML） | 覆盖 Tier 1/2 算子（设计文档 §7.1） |
 | validate.py | 可重复验证 |
 | 数据采集工具链（7 个工具） | 可重复执行 |
 
 ---
 
-## 7. 任务依赖图
+## 2. 进展管理
+
+- **飞书日报**：每人每天更新进展/阻塞/风险信号（详见[附录 C](#附录-c进展管理细则)）
+- **站会**：仅讨论阻塞项和风险，Phase 1/3 每日，Phase 2 隔日
+- **DIMA 看板**：任务卡片状态同步，对 MY 合作方可见
+- **Review 节点**：3.13 Phase 1 Review → 3.19 Phase 2 Review → 3.23 交付 Review
+
+---
+
+## 3. 团队与职责
+
+### 3.1 分工总表
+
+| 人员 | 投入 | 职责域 | 代码 Owner |
+|------|------|--------|-----------|
+| **ZH** | 50% | DataSource 查询引擎：`_lookup_compute` / `_lookup_comm` / `_lookup_composite` + review 全部查询代码 PR | `perf_database/*.py` |
+| **TCX** | 100% | 数据层全链路：工具链 + Microbenchmark + Attention 查询与数据 + 基础插值；协助 SE 进展管理（日报跟踪、站会记录） | `tools/perf_data_collection/`, attention 查询, 插值 |
+| **ZZY** | 100% | Qwen3 op_mapping：BF16 场景验证 + Decode 扩展 + 自动化方案 spec | `op_mapping.yaml` (Qwen3), 验证报告 |
+| **HDY** | 100% | DSV3 op_mapping + HCCL：W8A8 映射 + 通信数据采集 + DSV3 Profiling 分析 | `op_mapping.yaml` (DSV3), HCCL 数据 |
+| **XJT** | 70% | 集成层：CLI + compile pass 融合（MC2 验证, KvRmsNormRopeCache） | CLI, `compilation/` |
+| **HXW** | SE | spec review + 决策 + 进展管理（不 own 产品代码） | — |
+
+### 3.2 协作关系与接口
+
+```
+XJT(集成层)  ZH(查询层)  TCX(数据层)  ZZY(Qwen3映射)  HDY(DSV3映射)
+ CLI/Pass        lookup引擎    CSV工具/插值     op_mapping验证      op_mapping+HCCL
+    |                |         Attn查询              |                    |
+    |                |              |                |                    |
+    +--- pass 产出 --+-- 查询合入 --+-- mapping 同步 -+--------------------+
+```
+
+**接口点**（需 PR review 协调的地方）：
+- TCX → ZH：`_lookup_attention()` 代码合入 `profiling_data_source.py`
+- TCX → ZH：InterpolatingDataSource 代码合入 `perf_database/`
+- ZZY/HDY → ZH：`op_mapping.yaml` 变更影响查询逻辑时需同步
+- XJT → ZH：新增 compile pass 产生的 TC op 需同步到 `op_mapping.yaml`
+
+HXW（SE）：决策 + 进展管理（TCX协助）；不 own 产品代码，按需参与技术讨论。
+
+### 3.3 技术方案确认
+
+每个技术方案由负责人自行起草并验证。验证方式：对照设计文档对应章节 + 穿刺报告已有结论，在日报中简要说明方案要点和验证结果即可。有疑问或分歧时在站会提出讨论。
+
+| 方案 | 负责人 | 验证依据 | 完成时间 |
+|------|--------|---------|---------|
+| 17 项简化评估 | HXW | 穿刺报告 §5 | 3.6 |
+| MC2 Profiling 确认 | HDY | DSV3 Profiling CSV 中搜索 MC2 相关 kernel Type | 3.6（1h） |
+| Attention 匹配规则 | TCX | 穿刺报告 §4.1 + 设计文档 §4.8，写单元测试验证 | 3.9 |
+| 通信数据表格式 | ZH | 设计文档 §4.4 + §4.7，对照 `comm_config_example.yaml` | 3.9 |
+| MoE/MLA 匹配规则 | ZH | 设计文档 §4.2 composite 分解表，写单元测试验证 | 3.12 |
+
+---
+
+## 4. 任务依赖总览
+
+### 4.1 依赖图
 
 ```
           db-spike 已有代码 (feat/perf-database 基础)
-                    │
-    ┌───────────────┼───────────────┬───────────────┐
-    ▼               ▼               ▼               ▼
- A1 CLI          B1 Attention    C1 算子清单     D1 解析验证
- (XJT)        (ZH)          (ZZY)       (TCX)
-    │               │               │               │
-    ▼               │               ▼               ▼
- A2 端到端 ◄────────┤          C2 Trace导出     D2 发现工具
- (XJT)           │          (ZZY)         (TCX)
-    │               ▼               │               │
-    │          B2 通信查询      C3 BF16验证      D3 Shape网格
-    │          (ZH)          (ZZY)         (TCX)
-    │               │               │               │
-    │               ▼               ▼               ▼
-    │          B3 插值         C4 DSV3映射     D4 Microbench
-    │          (ZH)     ◄── (ZZY)  ◄── HXW草稿
-    │               │               │
-    └───────┬───────┘          C5/C6 验证+spec
-            ▼
-   Phase 1 交付 (3.14)
-            │
-    ┌───────┼───────┬───────┐
-    ▼       ▼       ▼       ▼
-  F1-F3   G1-G2   H1-H2   I1-I3
-  数据    融合    MoE/MLA  DSV3分析
-  (楚笑)  (锦涛)  (ZH)   (震宇)
-    │       │       │       │
-    └───────┼───────┘       │
-            ▼               ▼
-   Phase 2 交付 (3.20)  ◄──┘
-            │
-    ┌───────┼───────┐
-    ▼       ▼       ▼
-  J1 Qwen3 J2 DSV3 J3 修复(如需)
-    │       │       ↑
-    └───────┼───────┘ ZZY分析定位
-            ▼
+                    |
+    +---------------+---------------+---------------+
+    v               v               v               v
+ A1 CLI          B1 通信查询     C1+C2 算子清单   D1 解析验证
+ (XJT)        (ZH)          (张+胡,并行)     (TCX)
+    |               |               |               |
+    v               v               v               v
+ A2 端到端       B2 Composite    C3 Qwen3验证    D2 Attention
+ (XJT)        (ZH)          (ZZY)         查询实现
+    |               |          C7 DSV3映射       (TCX)
+    v               |          (HDY)             |
+ A3 融合merge       |               |               v
+ + MC2验证          v               v            D3 基础插值
+ (XJT)       B1+B2 完成     C3+C7+C8完成     (TCX)
+    |               |               |               |
+    +-------+-------+-------+-------+-------+-------+
+            v                                       v
+   Phase 1 交付 + Mini 端到端验证 (3.13)
+            |
+    +-------+-------+-------+-------+
+    v       v       v       v       v
+  E1-E4   F1      G1-G2   H1-H4   E5
+  数据    融合    MoE/MLA  分析    Attn插值
+  (TCX)(XJT)(ZH) (张+胡)  (TCX)
+    |       |       |       |       |
+    +-------+-------+-------+-------+
+            v
+   Phase 2 交付 + DSV3 Mini 验证 (3.19)
+            |
+    +-------+-------+
+    v       v       v
+  J1 Qwen3 J2 DSV3 J3 修复
+  (祝+许)  (胡+许)  (张分析+祝/唐修复)
+            v
    J4 精度报告 (3.23)
 ```
 
-**关键路径**：A1 → A2 → (B1 + C4) → H1 → J1 → J4
+### 4.2 关键路径
+
+`A1 → A2 → A3 → Mini 验证 → G1 → J2 → J4`
+
+### 4.3 Phase 时间线
+
+```
+3.5(发布)  3.6 ──────── 3.13        3.16 ──────── 3.19  3.20 ──── 3.23
+           ←── Phase 1 ──→ Review    ←── Phase 2 ──→ Review       交付
+                                                 ←── Phase 3 ────→
+```
+
+**Phase 1 任务排布（3.6-3.13）**：
+
+```
+      3.6       3.9       3.10      3.11      3.12      3.13
+       |         |         |         |         |         |
+XJT |-- A1 ---|------ A2 ---------|-- A3+MC2验证 ------|
+       |         |         |         |         |         |
+ZH   |         |--- B1 ------------|--- B2 ------------|
+       |         |         |         |         |         |
+TCX |-- D1 ---|-- D2 Attention ---|-- D3 插值 --|D4---|
+       |         |         |         |         |         |
+ZZY |         |= C1+C2 =|--- C3 Qwen3验证 ---|C4+C5--|
+       |         |         |         |         |         |
+HDY |C6+MC2查 |--- C9 --|--- C7 DSV3映射 ----|C8+C10-|
+```
+
+---
+
+## 5. Phase 1：核心集成 + Mini 验证（3.6-3.13，6 个工作日）
+
+**目标**：CLI 端到端可运行 + 计算/通信/Attention/Composite 四条查询路径 + op_mapping 双模型验证 + 基础插值 + **Mini 端到端首次跑通**。
+
+---
+
+### 任务 A：CLI 集成 + Compile Pass（XJT，70%）
+
+**目标**：让 `--performance-model profiling --compile` 端到端可运行，并验证已有融合 pass 正确工作。
+
+**背景**：db-spike 已有 `empirical.py`（97 行）和 CLI 改动参考。`--compile` 是正确使用 profiling 模式的前提（穿刺报告 §3.3）。MC2 pass 已有完整实现（`compilation/freezing_passes/patterns/matmul_allreduce.py`，261 行，5 种量化变体），需验证其与 profiling 数据的对齐。
+
+**修改范围**：`tensor_cast/scripts/text_generate.py`, `tensor_cast/core/model_runner.py`, `tensor_cast/core/config_resolver.py`
+
+**参考**：设计文档 §5.1-§5.3（CLI 接口）、§9.1（融合 Gap 状态）
+
+| # | 检查点 | 完成日期 | 验收标准 |
+|---|-------|---------|---------|
+| A1 | CLI `--performance-model {analytic,profiling}` + `--perf-database` 路径参数 | 3.9 | analytic 行为不变；profiling 模式创建 EmpiricalPerformanceModel |
+| A2 | 端到端：Qwen3-32B Prefill `--performance-model profiling --compile` | 3.11 | 不报错，log_stats 输出命中率 |
+| A3 | 融合 Pass merge：SwiGlu + GroupedMatmul+SwiGlu 从 develop 合入 + MC2 pass 验证 | 3.13 | 单元测试通过；`tensor_cast.matmul_all_reduce` 出现在 dispatch trace 中 |
+
+**MC2 验证要点**：
+- 确认 `--compile` 后 dispatch trace 中出现 `tensor_cast.matmul_all_reduce`（不再是分离的 mm + all_reduce）
+- HDY 3.6 确认 DSV3 Profiling 中是否有 MC2 专用 kernel Type
+- 如有 → 在 `op_mapping.yaml` 中添加 `tensor_cast.matmul_all_reduce` → 该 kernel_type 的直接映射
+- 如无 → 保留 `composite: true` + `sub_kernels: [MatMulV2, hcom_allReduce_]` 分解查询
+
+---
+
+### 任务 B：DataSource 查询路径（ZH，50%）
+
+**目标**：在已有 `_lookup_compute()` 基础上，新增通信查询和 Composite 查询两条路径。
+
+**背景**：当前 `profiling_data_source.py` 的 `lookup()` 中，`communication` 和 `composite` 两个分支直接 return None（穿刺简化项 S-11/S-12）。
+
+**修改范围**：`tensor_cast/performance_model/perf_database/profiling_data_source.py`
+
+**参考**：设计文档 §4.2（查询分派）、§4.4（通信查询）、§4.7（通信 CSV 格式）
+
+**前置依赖**：通信数据表 spec（ZH自己起草，3.9 前完成，HXW review）
+
+| # | 检查点 | 完成日期 | 验收标准 |
+|---|-------|---------|---------|
+| B1 | `_lookup_comm()`：从 OpInvokeInfo 计算 message_bytes + topology_tier，查询通信 CSV | 3.11 | 单元测试：all_reduce/all_gather 返回耗时 |
+| B2 | `_lookup_composite()`：matmul_all_reduce 分解 + MLA 分解框架 | 3.13 | 单元测试：matmul_all_reduce 分解后匹配 |
+
+**通信查询实现要点**（设计文档 §4.2）：
+- `args[0]` → `message_bytes = tensor.nelement() * tensor.element_size()`
+- `rank_group` 位置因算子而异：all_reduce=args[2], all_gather=args[3], all_to_all=args[4]
+- `topology_tier = comm_grid._get_topology_idx_for_group(rank_group)`
+- CSV 按 `(num_devices, topology_tier)` 精确匹配
+
+**Composite 查询实现要点**（设计文档 §4.2）：
+- `composite: true` 时分解为 sub_kernels 逐个查询并求和
+- MLA 分解复用 `performance_model/__init__.py` 已有 shape 推导逻辑
+- 任一子内核未命中 → 整体 return None → fallback analytic
+
+**说明**：`_lookup_attention()` 由TCX实现（任务 D2），提交 PR 后ZH review 并合入。
+
+---
+
+### 任务 C：op_mapping 系统化验证（ZZY + HDY，各 100%）
+
+**目标**：系统性验证已有 op_mapping 映射，补充 DSV3 Decode W8A8 场景映射。这是端到端精度的**核心瓶颈** — 映射错误直接导致算子 MISS。
+
+**背景**：穿刺阶段建立了 60+ 条映射，但仅在 Qwen3 BF16 Prefill 上验证。DSV3 Decode 有 10+ 个新 kernel type 需要映射（QuantBatchMatmulV3, GroupedMatmul, DequantSwigluQuant 等）。
+
+**参考**：
+- **映射方法论**：`tutorial/OP_PLUGIN_MAPPING_TUTORIAL.md`（正向/反向映射操作手册 + 速查表）
+- **映射格式**：设计文档 §4.5（op_mapping.yaml 规格）
+- **映射示例**：`examples/op_mapping_example.yaml`
+- **算子分级**：设计文档 §7.1-§7.2（Tier 1/2/3 + 占比数据）
+
+**修改范围**：`perf_database/data/atlas_a3_752t_128g/vllm_ascend/v0.13.0/op_mapping.yaml`
+
+**验证方法论**（每条映射的验证步骤）：
+1. 从 Profiling 提取 kernel Type 及其 Input Shapes / Data Types
+2. 用 analytic 模式跑 TC，导出 dispatch trace，找到对应的 TC op 及其 args shapes
+3. 按 `tutorial/OP_PLUGIN_MAPPING_TUTORIAL.md` §6-7 确认 TC op → kernel Type 的映射链
+4. 对比 TC args shapes 与 Profiling Input Shapes，记录差异（batch 维度、FRACTAL_NZ、padding 等）
+5. 确认差异可被 `profiling_data_source.py` 的通用规则处理（穿刺报告 §3.1 八类差异）
+
+#### ZZY（Qwen3 主线）
+
+| # | 检查点 | 完成日期 | 验收标准 |
+|---|-------|---------|---------|
+| C1 | Qwen3 Profiling 算子清单：Top-20 (Type, 调用次数, 耗时占比) | 3.9 | 表格输出 |
+| C2 | TC dispatch trace 导出：analytic 模式跑 Qwen3-32B Prefill + Decode | 3.9（C1/C2 并行） | trace 日志 |
+| C3 | BF16 场景逐条映射验证：按验证方法论逐条检查 | 3.11 | 验证报告（已验证/需注意/不匹配） |
+| C4 | Qwen3 Decode 场景映射补充 + 验证 | 3.12 | op_mapping 覆盖 Qwen3 Decode Top-15 |
+| C5 | op_mapping 自动化方案 spec + 优化 OP_PLUGIN_MAPPING_TUTORIAL | 3.13 | spec 文档 + 教程增补 DSV3 实例 |
+
+#### HDY（DSV3 主线 + HCCL）
+
+| # | 检查点 | 完成日期 | 验收标准 |
+|---|-------|---------|---------|
+| C6 | DSV3 Profiling 算子清单：Top-20 排序表 | 3.6（快速任务） | 表格输出 |
+| MC2 | 查 DSV3 Profiling 是否有 MC2 专用 kernel Type | 3.6（1h） | 结论（有/无） → 告知XJT和ZH |
+| C9 | HCCL 数据采集方案：`generate_comm_microbench.py` 实现 | 3.10 | 脚本可运行 |
+| C7 | DSV3 W8A8 op_mapping 扩展：QuantBatchMatmulV3, AscendQuantV2, DequantSwigluQuant, GroupedMatmul, TransposeBatchMatMul, MoeGatingTopK 等 | 3.12 | op_mapping 覆盖 DSV3 Top-15 |
+| C8 | W8A8 量化场景映射验证 | 3.13 | 验证报告 |
+| C10 | HCCL 集群数据采集（4 种通信算子 x 各 topology_tier） | 3.13 | CSV 产出 |
+
+**双人交叉验证**：ZZY review HDY的 DSV3 映射，HDY review ZZY的 Qwen3 映射。
+
+---
+
+### 任务 D：数据采集工具链 + Attention + 插值（TCX，100%）
+
+**目标**：验证数据解析工具 + 实现 Attention 查询 + 实现基础插值 + 算子发现工具。
+
+**背景**：当前 7 个工具中只有 `parse_kernel_details.py` 完整（342 行），其他 6 个是 stub。Attention (`FusedInferAttentionScore`) 是 Prefill 中延迟最高的单算子（~100us+），对端到端精度影响最大（穿刺报告 §4.1）。插值是实用性的关键瓶颈（穿刺报告 S-17）。
+
+**修改范围**：
+- `tools/perf_data_collection/parse_kernel_details.py`, `discover_operators.py`
+- `tensor_cast/performance_model/perf_database/profiling_data_source.py`（`_lookup_attention()` 方法）
+- `tensor_cast/performance_model/perf_database/interpolating_data_source.py`
+
+**参考**：
+- Attention：设计文档 §4.8（FusedAttention 特殊处理）、穿刺报告 §4.1
+- 插值：设计文档 §4.4（InterpolatingDataSource）、AI Configurator 实现（`src/aiconfigurator/sdk/perf_database.py` 插值方法）
+
+| # | 检查点 | 完成日期 | 验收标准 |
+|---|-------|---------|---------|
+| D1 | `parse_kernel_details.py` 验证：在 Qwen3 + DSV3 数据上确认输出正确 | 3.6 | 输出 CSV 与 db-spike 已有数据一致 |
+| D2 | `_lookup_attention()` 实现 | 3.10 | 单元测试：Qwen3 Prefill FIA 命中 |
+| D3 | InterpolatingDataSource 基础版：最近邻 + 线性插值 | 3.12 | 单元测试：seq=200 返回估算值 |
+| D4 | `discover_operators.py`：对比 Profiling Type vs op_mapping.yaml | 3.13 | known 算子覆盖 >90% 调用次数 |
+
+**D2 Attention 查询实现要点**（设计文档 §4.8）：
+- 从 `OpInvokeInfo.args[6]`（seq_lens）计算 `batch_size = len(seq_lens)` 和 `avg_seq_len = mean(seq_lens)`
+- 从 `OpInvokeInfo.args[0]`（query tensor）提取 `num_heads`, `head_dim`
+- FIA CSV 索引维度：`(batch_size, avg_seq_len, num_heads, head_dim, dtype)`
+- 区分 PA（PagedAttention, decode, seq_lens 长）和 FA（FlashAttention, prefill, query_lens 长）
+- 提交 PR 后由ZH review 并合入 `profiling_data_source.py`
+
+**D3 插值实现要点**（参考 AI Configurator）：
+- Wrapper 模式包装 ProfilingDataSource：精确命中 → 直接返回，未命中 → 插值
+- 计算算子：对 seq/batch 等可变维度做线性插值（`scipy.interpolate.griddata` 或 numpy 手写）
+- 权重维度（hidden_size, num_heads 等）保持精确匹配
+- `op_mapping.yaml` 的 `interpolation_policy` 声明哪些维度可插值（设计文档 §4.5）
+- 提交 PR 后由ZH review 并合入 `perf_database/`
+
+---
+
+### Phase 1 里程碑（3.13）
+
+**必达交付物**：
+
+| 交付物 | 验收标准 | 负责人 |
+|-------|---------|--------|
+| CLI `--performance-model profiling` | 端到端可运行 | XJT |
+| `_lookup_comm()` | 单元测试通过 | ZH |
+| `_lookup_composite()` | matmul_all_reduce 分解通过 | ZH |
+| `_lookup_attention()` | Qwen3 Prefill FIA 命中 | TCX → ZH review |
+| InterpolatingDataSource 基础版 | 线性插值可用 | TCX → ZH review |
+| op_mapping 验证报告（Qwen3 BF16） | 覆盖 Top-15 | ZZY |
+| op_mapping 扩展（DSV3 W8A8） | 覆盖 Top-15 | HDY |
+| HCCL 数据 | 集群采集完成 | HDY |
+| 融合 Pass merge + MC2 验证 | 单元测试通过 | XJT |
+
+**Mini 端到端验证（3.13，全员）**：
+
+用已有数据跑 Qwen3-32B Prefill 端到端，记录：
+
+| 指标 | 记录内容 |
+|------|---------|
+| 命中率 | HIT / MISS / FALLBACK 各多少 |
+| Fallback 算子耗时占比 | 哪些算子走了 analytic fallback，占端到端百分比 |
+| 已匹配算子误差 | 与 Profiling 实测对比 |
+| 端到端初始误差 | 允许远超 15%，重点暴露系统性问题 |
+
+**Go/No-Go**：若 >50% 算子 MISS 或 fallback 占比 >30%，Phase 2 优先级需重排。
+
+---
+
+## 6. Phase 2：数据扩充 + 融合 Pass + DSV3 深度匹配（3.16-3.20，5 个工作日）
+
+**目标**：Microbenchmark 数据扩充 + KvRmsNormRopeCache Pass + DSV3 MoE/MLA 匹配 + Attention 插值升级 + DSV3 mini 验证。
+
+---
+
+### 任务 E：Microbenchmark + Attention 升级（TCX）
+
+**参考**：设计文档 §6.1-§6.4（数据库构建三步走）、§6.2（计算算子 Microbenchmark）、§6.4（FusedAttention Microbenchmark）
+
+| # | 检查点 | 完成日期 | 验收标准 |
+|---|-------|---------|---------|
+| E1 | `generate_shape_grid.py`：从 HuggingFace 模型配置提取维度 + 2 的幂次网格 | 3.16 | Qwen3 + DSV3 shape 网格覆盖实际维度 |
+| E2 | `generate_microbench.py`：读 op_mapping.yaml 的 torch_npu_reference 生成脚本 | 3.17 | 生成的脚本语法正确 |
+| E3 | 集群 Microbenchmark 采集 + `build_database.py` | 3.19 | 每个 kernel_type CSV 行数 > Profiling 原始 |
+| E4 | FusedAttention Microbenchmark（构造 paged KV cache 输入） | 3.20 | FIA CSV 覆盖多种 (batch_size, seq_len) 组合 |
+| E5 | Attention 插值 sqrt 变换：O(n^2) 算子插值前做 sqrt 线性化 | 3.20 | 不同 seq_len 下 FIA 插值误差 <20% |
+
+---
+
+### 任务 F：KvRmsNormRopeCache Pass（XJT）
+
+**目标**：实现 KvRmsNormRopeCache 融合 pass，使 TC dispatch trace 与 DSV3 Profiling 中的 `KvRmsNormRopeCache` kernel 对齐。
+
+**背景**：DSV3 Decode 中 `KvRmsNormRopeCache` 占 0.8%（2501 次调用）。TC 当前将其分解为 `rms_norm` + `apply_rope` + `reshape_and_cache` 三个独立 op。NPU 有对应的融合 kernel `npu_kv_rmsnorm_rope_cache`（op-plugin 已有条目）。
+
+**参考实现**：
+- 模式参考：`compilation/patterns/rms_norm.py`（544 行，RmsNorm 类 pattern）+ `patterns/rotary_embedding.py`（81 行）
+- 图操作参考：`compilation/freezing_passes/grouped_matmul_swiglu_pass.py`（204 行）
+- 自定义 op 注册：`ops/mla.py`（已有 mlapo op，新增 kv_rms_norm_rope_cache）
+
+**修改范围**：新增 `compilation/patterns/kv_rms_norm_rope_cache.py`，修改 `compilation/patterns/__init__.py`，新增 op 到 `ops/mla.py`
+
+| # | 检查点 | 完成日期 | 验收标准 |
+|---|-------|---------|---------|
+| F1 | KvRmsNormRopeCache pattern + custom op + 注册 | 3.17 | 单元测试 + dispatch trace 出现 `tensor_cast.kv_rms_norm_rope_cache` |
+
+**工作量估算**：~160 行代码，2-3 天。
+
+**MoeGatingTopK**：Q1 不做 pass，用 op_mapping composite 或 analytic fallback 兜底。Q2 补 pass（预估 250 行，3-4 天）。
+
+---
+
+### 任务 G：MoE/MLA 匹配（ZH）
+
+**参考**：设计文档 §4.2（composite 查询 + MLA 分解）
+
+**前置依赖**：MoE/MLA spec（ZH起草 3.12，HXW review）
+
+| # | 检查点 | 完成日期 | 验收标准 |
+|---|-------|---------|---------|
+| G1 | MoE 算子匹配：MoeGatingTopK, MoeDistributeDispatch/CombineV2 | 3.18 | 单元测试 |
+| G2 | MLA 分解查询完善：区分 Prefill/Decode 子内核 shape（设计文档 §4.2 MLA 分解表） | 3.20 | 单元测试 |
+
+---
+
+### 任务 H：DSV3 深度分析 + 验证工具（ZZY + HDY + TCX）
+
+| # | 负责人 | 检查点 | 完成日期 | 验收标准 |
+|---|-------|-------|---------|---------|
+| H1 | HDY | DSV3 Decode Profiling 逐层耗时分析 | 3.16 | 分析报告 |
+| H2 | ZZY | TC vs Profiling 算子对齐表（Qwen3 + DSV3） | 3.18 | 对齐表格（匹配/不匹配/原因） |
+| H3 | HDY | HCCL Test 交叉验证 | 3.18 | Python benchmark 与 hccl_test 偏差 <10% |
+| H4 | ZZY | 未覆盖算子分析 + 耗时影响评估 | 3.20 | 缺口清单 + 优先级排序 |
+| H5 | TCX | `validate.py`：逐算子 + 端到端精度报告输出 | 3.20 | 精度报告可输出 |
+
+### Phase 2 检查点（3.19 Review + 3.20 收尾）
+
+| 交付物 | 验收标准 | 负责人 |
+|-------|---------|--------|
+| 扩充 CSV 数据库 | shape 覆盖 > Profiling 原始 | TCX |
+| FIA Microbenchmark + sqrt 插值 | 多种 batch/seq + 误差 <20% | TCX |
+| validate.py | 精度报告可输出 | TCX |
+| KvRmsNormRopeCache Pass | 单元测试通过 | XJT |
+| DSV3 MoE/MLA 匹配 | 单元测试通过 | ZH |
+| DSV3 对齐分析 | 对齐表格 + 缺口清单 | ZZY + HDY |
+
+**DSV3 Mini 验证**（3.19）：同 Phase 1 格式，覆盖 DSV3 Decode 场景。
+
+---
+
+## 7. Phase 3：端到端精度验证（3.19-3.23，3 个工作日）
+
+**目标**：端到端精度 <15%，交付精度报告。
+
+> **说明**：Phase 3 与 Phase 2 尾部有 1 天重叠（3.19-3.20），ZH和XJT可在 3.19 Phase 2 Review 后直接启动端到端验证。
+
+| # | 检查点 | 完成日期 | 负责人 | 验收标准 |
+|---|-------|---------|--------|---------|
+| J1 | Qwen3-32B 端到端验证（Prefill + Decode） | 3.20 | ZH + XJT | 误差 <15%, 覆盖 >90% |
+| J2 | DSV3 端到端验证（Decode, MoE + MLA） | 3.20 | HDY + XJT | 误差 <15%, 覆盖 >90% |
+| J3 | 精度问题定位 + 修复 | 3.23 | ZZY分析 + ZH/TCX修复 | 补数据/修映射/调插值 |
+| J4 | 精度总报告 | 3.23 | 全员 | 交付 |
 
 ---
 
 ## 8. 风险与缓解
 
-| 风险 | 影响 | 概率 | 缓解措施 |
-|------|------|------|---------|
-| 集群资源不足 | F1/E2 延迟 | 中 | 3.10 前预约；Phase 1 用现有 Profiling 数据 |
-| MC2 融合 Pass 复杂 | G2 延期 | 中 | 降为 P1 可选，composite fallback |
-| 精度 <15% 难达到 | J1/J2 调优 | 中 | Phase 2 mini 验证提前暴露；ZZY全职分析定位 |
-| DSV3 MoE/MLA 映射复杂 | H1/H2 延期 | 中 | 穿刺已验证通用匹配逻辑，MoE 是增量 |
-| Attention 匹配精度不足 | 端到端误差超标 | 低 | FIA.csv 已有 67 行数据，可补 Microbenchmark |
+| # | 风险 | 影响 | 概率 | 缓解措施 |
+|---|------|------|------|---------|
+| R1 | 集群资源不足 | E3/C10 延迟 | 中 | 3.10 前预约；Phase 1 用现有 Profiling 数据 |
+| R2 | KvRmsNormRopeCache Pass 比预期复杂 | F1 延期 | 低 | op_mapping composite 兜底；有 RmsNorm+RoPE 现成 pattern 参考 |
+| R3 | DSV3 MoE/MLA 映射复杂 | G1/G2 延期 | 中 | 穿刺已验证通用逻辑；HDY全职 DSV3 分析降低不确定性 |
+| R4 | Attention 匹配精度不足 | 端到端误差超标 | 中 | FIA.csv 已有 67 行；E4 补 Microbenchmark；E5 sqrt 插值 |
+| R5 | 端到端精度 <15% 难达到 | Phase 3 调优期不足 | 高 | **核心缓解**：Phase 1/2 各做 mini 验证提前暴露问题 |
+| R6 | op_mapping 错误致系统性 MISS | 匹配率下降 | 中 | 双人交叉 review；discover_operators 检测覆盖率 |
+| R7 | 通信占比高但精度不足（Qwen3 89.8%） | Qwen3 误差超标 | 中 | Phase 1 mini 验证确认 CommAnalytic 精度 |
+| R8 | ZH 50% 导致 Phase 2 DataSource 进度不足 | G1/G2 延期 | 中 | TCX承担 attention+插值减轻ZH负担；MoE/MLA spec 提前准备 |
+| R9 | XJT被其他项目拖住 | A2 延期影响全队 | 中 | A2 是全队解锁点，3.9确认进展；必要时 SE 兜底 |
 
 ---
 
-## 9. 新方向 Spike（HXW，时间盒 1-3 天）
+## 附录 A：分支策略
 
-后续穿刺产出 spec 和决策，不合入 feat/perf-database。
+```
+develop (稳定主线)
+  |
+  +-- feat/perf-database (从 db-spike 创建)
+        |
+        +-- XJT: feat/perf-db-compiler
+        +-- ZH:   feat/perf-db-datasource
+        +-- TCX: feat/perf-db-toolchain
+        +-- ZZY: feat/perf-db-op-mapping
+        +-- HDY: feat/perf-db-op-mapping-dsv3
+```
 
-| 候选 Spike | 触发条件 | 时间盒 | 产出 |
-|-----------|---------|-------|------|
-| MC2 Profiling 实际表现 | Phase 2 G2 启动前 | 1 天 | MC2 是单 kernel 还是分离的？决定实现方案 |
-| 直接从 vLLM 抓 op graph | Phase 3 后 | 2 天 | 绕过 TC dispatch 的可行性评估 |
-| Attention 插值精度 | B3 前 | 1 天 | 不同 seq_length 下 FIA 插值误差评估 |
+**操作步骤**：
+- Step 1（3.6，HXW）：创建 feat/perf-database，确认测试通过
+- Step 2（3.6-3.9，各负责人）：拉个人分支
+- Step 3（3.23，HXW）：feat/perf-database PR 回 develop
 
 ---
 
-## 10. 每周同步
+## 附录 B：参考索引
+
+每个任务涉及的设计文档/教程章节速查：
+
+| 任务 | 设计文档章节 | 其他参考 |
+|------|------------|---------|
+| A1-A2 CLI | §5.1-§5.3 | — |
+| A3 融合 Pass | §9.1 | `compilation/freezing_passes/patterns/matmul_allreduce.py` |
+| B1 通信查询 | §4.2, §4.4, §4.7 | `examples/comm_config_example.yaml` |
+| B2 Composite | §4.2 (composite + MLA 分解) | `performance_model/__init__.py` (shape 推导) |
+| C1-C8 op_mapping | §4.5, §7.1-§7.2 | `tutorial/OP_PLUGIN_MAPPING_TUTORIAL.md`, `examples/op_mapping_example.yaml` |
+| C9-C10 HCCL | §6.3 | HCCL Test 文档 |
+| D1 解析 | §6.5 | — |
+| D2 Attention | §4.8 | 穿刺报告 §4.1 |
+| D3 插值 | §4.4 | AI Configurator `perf_database.py` 插值方法 |
+| D4 发现 | §6.6 | — |
+| E1-E4 Microbench | §6.1-§6.4 | — |
+| F1 KvRmsNormRopeCache | §9.1 | `compilation/patterns/rms_norm.py`, `patterns/rotary_embedding.py` |
+| G1-G2 MoE/MLA | §4.2 | — |
+
+---
+
+## 附录 C：进展管理细则
+
+### 飞书日报
+
+每人每天 18:00 前更新，模板：
+
+```
+【日报】姓名 日期
+
+完成：
+- [任务 ID] 具体完成内容
+
+进行中：
+- [任务 ID] 进展描述
+
+阻塞：
+- 无 / 描述阻塞原因和需要谁帮助
+
+风险信号：
+- 无 / 描述发现的潜在问题
+
+明日计划：
+- [任务 ID] 计划做什么
+```
+
+**规则**：
+- "阻塞"= 我无法继续推进，需要外部帮助
+- "风险信号"= 我能继续但发现了潜在问题
+- 连续 2 天同一任务无进展且无阻塞，SE 主动询问
+
+### DIMA 看板
+
+按 Phase 分 Swimlane，每个检查点一张卡片。必填字段：Owner、Due Date、Status（To Do / In Progress / Review / Done / Blocked）。
+
+### 站会规则
+
+- 严格 15 分钟，每人 2 分钟
+- **只回答两个问题**：1) 有阻塞需要帮助吗？2) 发现风险信号了吗？
+- 所有人都回答"无"→ 3 分钟散会
+
+### Review 节点
 
 | 时间 | 形式 | 内容 |
 |------|------|------|
-| Phase 1（3.5-3.14） | 每日 15min 站会 | 昨日完成 / 今日计划 / 阻塞项 |
-| Phase 2（3.14-3.20） | 隔日同步 | 进展 + 集群协调 |
-| Phase 3（3.20-3.23） | 每日同步 | 精度快速响应 |
-| 关键节点 | Review 会 | 3.14 / 3.20 / 3.23 |
+| **3.13** | Review 会 1h | Phase 1 mini 端到端结果 + Phase 2 优先级调整 |
+| **3.19** | Review 会 1h | DSV3 mini 验证 + Phase 3 go/no-go |
+| **3.23** | Review 会 1h | 精度报告 Review |
