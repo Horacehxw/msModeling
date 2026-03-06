@@ -339,14 +339,18 @@ class ProfilingDataSource(DataSource):
     def _extract_tensor_inputs(
         self, op_invoke_info: "OpInvokeInfo"
     ) -> List[Tuple[Tuple[int, ...], torch.dtype]]:
-        """Extract (shape, dtype) for each tensor arg."""
+        """Extract (shape, dtype) for each non-scalar tensor arg.
+
+        Scalar tensors (ndim=0, shape=()) are filtered out because profiling
+        CSVs never include scalar inputs in their shape strings.
+        """
         inputs = []
         for arg in op_invoke_info.args:
-            if isinstance(arg, torch.Tensor):
+            if isinstance(arg, torch.Tensor) and arg.ndim > 0:
                 inputs.append((tuple(arg.shape), arg.dtype))
             elif isinstance(arg, (list, tuple)):
                 for item in arg:
-                    if isinstance(item, torch.Tensor):
+                    if isinstance(item, torch.Tensor) and item.ndim > 0:
                         inputs.append((tuple(item.shape), item.dtype))
         return inputs
 
