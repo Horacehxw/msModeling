@@ -3,7 +3,6 @@ from abc import ABC, abstractmethod
 from typing import Any, List, Optional
 
 import torch
-import torch.nn.functional as F
 
 from .. import ops  # noqa: F401
 from ..model_config import MoEConfig
