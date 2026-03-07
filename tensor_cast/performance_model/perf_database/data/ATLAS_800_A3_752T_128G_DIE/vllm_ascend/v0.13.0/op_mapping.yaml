@@ -326,19 +326,22 @@ operator_mappings:
 
   "tensor_cast.mlapo.default":
     composite: true
-    sub_kernels: [TransposeBatchMatMul, FusedInferAttentionScore]
+    sub_kernels: [MatMulV2, KvRmsNormRopeCache]
     notes: >
-      [LOW] op-plugin: npu_mla_prolog (YAML:6086) and npu_mla_prolog_v2 (YAML:6091).
+      [HIGH] op-plugin: npu_mla_prolog (YAML:6086) and npu_mla_prolog_v2 (YAML:6091).
       aclnn: aclnnMlaPrologV2WeightNz (V2 is highest available in op-plugin 7.2.0; V3 does NOT exist).
-      MLAPO 包含 projection+norm+RoPE+cache 融合; npu_mla_prolog_v2 覆盖 prolog 部分, attention 仍独立.
+      MLAPO 包含 projection+norm+RoPE 融合: (1) MatMulV2 用于 Q/KV projection, (2) KvRmsNormRopeCache 用于 KV norm+rope.
+      [Spike 11] 更正 sub_kernels: 原 [TransposeBatchMatMul, FIA] 对应 attention 而非 prolog.
+      mlapo 仅覆盖 prolog (projection + norm + rope), attention 由 multihead_latent_attention 独立处理.
 
   "tensor_cast.mlapo_quant.default":
     composite: true
-    sub_kernels: [TransposeBatchMatMul, FusedInferAttentionScore]
+    sub_kernels: [QuantBatchMatmulV3, KvRmsNormRopeCache]
     notes: >
-      [LOW] op-plugin: npu_mla_prolog_v2 (YAML:6091).
+      [HIGH] op-plugin: npu_mla_prolog_v2 (YAML:6091).
       aclnn: aclnnMlaPrologV2WeightNz (V3 does NOT exist in op-plugin 7.2.0).
-      量化 MLAPO; 与非量化版同结构, 待实现后确认.
+      量化 MLAPO: (1) QuantBatchMatmulV3 用于量化 Q/KV projection, (2) KvRmsNormRopeCache 用于 KV norm+rope.
+      [Spike 11] 更正 sub_kernels: 与 mlapo 同结构, projection 改用量化 kernel.
 
 
   # ========== 8. KV Cache ==========

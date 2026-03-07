@@ -5,6 +5,48 @@ import torch
 from ..utils import register_tensor_cast_op
 
 
+@register_tensor_cast_op("kv_rmsnorm_rope_cache", mutates_args=("kv_cache",))
+def _(
+    kv: torch.Tensor,
+    gamma: torch.Tensor,
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+    kv_cache: torch.Tensor,
+    slot_mapping: torch.Tensor,
+    kv_lora_rank: int,
+    qk_rope_head_dim: int,
+    epsilon: float = 1e-6,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Fused KV RmsNorm + RoPE + Cache write for MLA attention.
+
+    Equivalent to vllm-ascend's torch_npu.npu_kv_rmsnorm_rope_cache().
+    Splits kv into kv_c (compressed) and k_pe (rope part),
+    applies RmsNorm to kv_c, RoPE to k_pe, and writes both to kv_cache.
+
+    Args:
+        kv: (num_tokens, kv_lora_rank + qk_rope_head_dim)
+        gamma: (kv_lora_rank,) RmsNorm weight
+        cos, sin: (1, seq_len, qk_rope_head_dim) rotary embeddings
+        kv_cache: (total_blocks, block_size, kv_lora_rank + qk_rope_head_dim)
+        slot_mapping: (num_tokens,) cache slot indices
+        kv_lora_rank: dimension of compressed KV
+        qk_rope_head_dim: dimension of RoPE part
+        epsilon: RmsNorm epsilon
+
+    Returns:
+        k_pe: (num_tokens, qk_rope_head_dim) — RoPE-rotated key
+        kv_c_normed: (num_tokens, kv_lora_rank) — normalized compressed KV
+    """
+    num_tokens = kv.size(0)
+    device = kv.device
+    dtype = kv.dtype
+    return (
+        torch.empty((num_tokens, qk_rope_head_dim), dtype=dtype, device=device),
+        torch.empty((num_tokens, kv_lora_rank), dtype=dtype, device=device),
+    )
+
+
 @register_tensor_cast_op("concat_and_cache_mla", mutates_args=("kv_cache",))
 def _(
     kv_c_normed: torch.Tensor,
