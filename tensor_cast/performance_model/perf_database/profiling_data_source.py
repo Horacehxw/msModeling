@@ -198,9 +198,10 @@ class ProfilingDataSource(DataSource):
         Dispatch logic (design doc S4.2):
           func_name -> op_mapping.yaml
             - not found -> return None
-            - composite == true -> return None (spike: fallback to analytic)
-            - category == "communication" -> return None (spike: fallback)
-            - query_mode == "attention_special" -> return None (spike: fallback)
+            - composite == true -> _lookup_composite()
+            - category == "communication" -> _lookup_comm()
+            - query_mode == "attention_special" -> _lookup_attention()
+            - zero_cost == true -> return QueryResult(0.0)
             - default -> _lookup_compute()
         """
         func_str = _normalize_func_name(op_invoke_info.func)
@@ -213,9 +214,9 @@ class ProfilingDataSource(DataSource):
         if mapping.get("composite"):
             return self._lookup_composite(op_invoke_info, mapping)
         if mapping.get("category") == "communication":
-            return None
+            return self._lookup_comm(op_invoke_info, mapping)
         if mapping.get("query_mode") == "attention_special":
-            return None
+            return self._lookup_attention(op_invoke_info, mapping)
 
         # Zero-cost ops: shape-only operations with no kernel execution
         if mapping.get("zero_cost"):
@@ -279,6 +280,178 @@ class ProfilingDataSource(DataSource):
                         },
                     )
         return None
+
+    # ---- Communication op lookup (design doc §4.7) ----
+
+    def _lookup_comm(
+        self, op_invoke_info: "OpInvokeInfo", mapping: dict
+    ) -> Optional[QueryResult]:
+        """Look up communication op latency by message_bytes + num_devices.
+
+        Communication CSV columns: message_bytes, num_devices, dtype,
+        topology_tier, Duration(us).
+
+        Args are expected as (tensor, ..., rank_group) where rank_group is
+        always the last arg (a list of device ranks).
+        """
+        kernel_type = mapping.get("kernel_type")
+        if not kernel_type:
+            return None
+
+        df = self._load_csv(kernel_type)
+        if df is None:
+            return None
+
+        # Extract the first tensor arg for message_bytes
+        tensor = op_invoke_info.args[0]
+        if not isinstance(tensor, torch.Tensor):
+            return None
+        message_bytes = tensor.nelement() * tensor.element_size()
+
+        # Extract num_devices from rank_group (always last arg)
+        rank_group = op_invoke_info.args[-1]
+        if not isinstance(rank_group, (list, tuple)):
+            return None
+        num_devices = len(rank_group)
+
+        # Match on message_bytes + num_devices
+        mask = (df["message_bytes"] == message_bytes) & (
+            df["num_devices"] == num_devices
+        )
+        matched = df[mask]
+        if matched.empty:
+            logger.debug(
+                "MISS (comm) %s: message_bytes=%d, num_devices=%d",
+                kernel_type,
+                message_bytes,
+                num_devices,
+            )
+            return None
+
+        row = matched.iloc[0]
+        latency_col = (
+            "Average Duration(us)"
+            if "Average Duration(us)" in df.columns
+            else "Duration(us)"
+        )
+        latency = float(row[latency_col])
+        logger.debug(
+            "HIT (comm) %s: message_bytes=%d, num_devices=%d -> %.2f us",
+            kernel_type,
+            message_bytes,
+            num_devices,
+            latency,
+        )
+        return QueryResult(
+            latency_us=latency,
+            confidence=0.9,
+            source=QuerySource.MEASURED,
+            details={"kernel_type": kernel_type},
+        )
+
+    # ---- Attention special lookup (design doc §4.8) ----
+
+    def _lookup_attention(
+        self, op_invoke_info: "OpInvokeInfo", mapping: dict
+    ) -> Optional[QueryResult]:
+        """Look up attention op latency using FIA microbenchmark CSV.
+
+        Attention CSV columns: batch_size, avg_seq_len, num_heads, head_dim,
+        dtype, Duration(us).
+
+        Attention op args layout (from tensor_cast/ops/attention.py):
+          args[0]: query  (num_tokens, hidden_size)
+          args[1]: key    (total_blocks, block_size, kv_heads, head_dim) or (*, kv_heads, head_dim)
+          args[6]: seq_lens (batch_size,) — per-request KV lengths
+        """
+        kernel_type = mapping.get("kernel_type")
+        if not kernel_type:
+            return None
+
+        df = self._load_csv(kernel_type)
+        if df is None:
+            return None
+
+        # Extract seq_lens from args[6]
+        args = op_invoke_info.args
+        if len(args) < 7:
+            return None
+        seq_lens = args[6]
+        if not isinstance(seq_lens, torch.Tensor):
+            return None
+
+        # Compute batch_size and avg_seq_len from seq_lens tensor
+        batch_size = seq_lens.shape[0]
+        # Use .float().mean().item() — seq_lens must be on CPU (not meta)
+        try:
+            avg_seq_len = int(seq_lens.float().mean().item())
+        except Exception:
+            return None
+
+        # Extract head_dim and kv_heads from key tensor (args[1])
+        key = args[1]
+        if not isinstance(key, torch.Tensor) or key.ndim < 2:
+            return None
+        head_dim = key.shape[-1]
+        kv_heads = key.shape[-2]
+
+        # Compute num_heads from query hidden_size / head_dim
+        query = args[0]
+        if not isinstance(query, torch.Tensor) or query.ndim < 2:
+            return None
+        hidden_size = query.shape[-1]
+        num_heads = hidden_size // head_dim
+
+        # Get dtype string
+        dtype_str = DTYPE_MAP.get(query.dtype)
+        if dtype_str is None:
+            return None
+
+        # Match CSV rows on all 5 dimensions
+        mask = (
+            (df["batch_size"] == batch_size)
+            & (df["avg_seq_len"] == avg_seq_len)
+            & (df["num_heads"] == num_heads)
+            & (df["head_dim"] == head_dim)
+            & (df["dtype"] == dtype_str)
+        )
+        matched = df[mask]
+        if matched.empty:
+            logger.debug(
+                "MISS (attention) %s: batch=%d, avg_seq=%d, heads=%d, "
+                "head_dim=%d, dtype=%s",
+                kernel_type,
+                batch_size,
+                avg_seq_len,
+                num_heads,
+                head_dim,
+                dtype_str,
+            )
+            return None
+
+        row = matched.iloc[0]
+        latency_col = (
+            "Average Duration(us)"
+            if "Average Duration(us)" in df.columns
+            else "Duration(us)"
+        )
+        latency = float(row[latency_col])
+        logger.debug(
+            "HIT (attention) %s: batch=%d, avg_seq=%d, heads=%d, "
+            "head_dim=%d -> %.2f us",
+            kernel_type,
+            batch_size,
+            avg_seq_len,
+            num_heads,
+            head_dim,
+            latency,
+        )
+        return QueryResult(
+            latency_us=latency,
+            confidence=0.9,
+            source=QuerySource.MEASURED,
+            details={"kernel_type": kernel_type},
+        )
 
     # ---- Compute op lookup (design doc S4.2 _lookup_compute) ----
 

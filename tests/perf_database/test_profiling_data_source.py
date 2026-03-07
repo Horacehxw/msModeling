@@ -557,3 +557,243 @@ def test_composite_no_sub_kernels(spike_data_dir):
     )
     result = ds.lookup(op)
     assert result is None
+
+
+# --- Communication query tests (design doc §4.7) ---
+
+COMM_OP_MAPPING_YAML = """
+version: "test"
+device: TEST_DEVICE
+
+operator_mappings:
+  "tensor_cast.all_reduce.default":
+    kernel_type: hcom_allReduce_
+    category: communication
+  "tensor_cast.all_gather.default":
+    kernel_type: hcom_allGather_
+    category: communication
+  "tensor_cast.all_to_all.default":
+    kernel_type: hcom_alltoallv_
+    category: communication
+  "aten.mm.default":
+    kernel_type: MatMulV2
+"""
+
+# Design doc §4.7: message_bytes, num_devices, dtype, topology_tier, Duration(us)
+COMM_ALLREDUCE_CSV = """\
+message_bytes,num_devices,dtype,topology_tier,Duration(us)
+1310720,16,DT_BF16,0,689.96
+655360,16,DT_BF16,0,412.50
+1310720,4,DT_BF16,2,125.30
+"""
+
+COMM_ALLGATHER_CSV = """\
+message_bytes,num_devices,dtype,topology_tier,Duration(us)
+655360,16,DT_BF16,0,167.62
+"""
+
+
+@pytest.fixture
+def comm_data_dir(tmp_path):
+    data_dir = tmp_path / "comm"
+    data_dir.mkdir()
+    (data_dir / "op_mapping.yaml").write_text(COMM_OP_MAPPING_YAML)
+    (data_dir / "hcom_allReduce_.csv").write_text(COMM_ALLREDUCE_CSV.strip())
+    (data_dir / "hcom_allGather_.csv").write_text(COMM_ALLGATHER_CSV.strip())
+    return data_dir
+
+
+def test_comm_allreduce_exact_match(comm_data_dir):
+    """all_reduce with matching message_bytes + num_devices should return latency."""
+    ds = ProfilingDataSource(comm_data_dir)
+    op = _make_op_info(
+        torch.ops.tensor_cast.all_reduce.default,
+        [
+            torch.empty(1, 640, 1024, device="meta", dtype=torch.bfloat16),
+            0,
+            list(range(16)),
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is not None, "Should match comm CSV by message_bytes + num_devices"
+    assert abs(result.latency_us - 689.96) < 0.01
+    assert result.source == QuerySource.MEASURED
+    assert result.details.get("kernel_type") == "hcom_allReduce_"
+
+
+def test_comm_allreduce_different_shape_same_bytes(comm_data_dir):
+    """Different tensor shape but same message_bytes should still match."""
+    ds = ProfilingDataSource(comm_data_dir)
+    op = _make_op_info(
+        torch.ops.tensor_cast.all_reduce.default,
+        [
+            torch.empty(640, 1024, device="meta", dtype=torch.bfloat16),
+            0,
+            list(range(16)),
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is not None
+    assert abs(result.latency_us - 689.96) < 0.01
+
+
+def test_comm_allreduce_miss_wrong_bytes(comm_data_dir):
+    """Non-matching message_bytes should return None."""
+    ds = ProfilingDataSource(comm_data_dir)
+    op = _make_op_info(
+        torch.ops.tensor_cast.all_reduce.default,
+        [
+            torch.empty(100, 100, device="meta", dtype=torch.bfloat16),
+            0,
+            list(range(16)),
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is None
+
+
+def test_comm_allgather_match(comm_data_dir):
+    """all_gather(x, dim, rank, rank_group) should match by message_bytes."""
+    ds = ProfilingDataSource(comm_data_dir)
+    op = _make_op_info(
+        torch.ops.tensor_cast.all_gather.default,
+        [
+            torch.empty(1, 640, 512, device="meta", dtype=torch.bfloat16),
+            0,
+            0,
+            list(range(16)),
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is not None
+    assert abs(result.latency_us - 167.62) < 0.01
+
+
+def test_comm_no_csv_returns_none(comm_data_dir):
+    """Communication op without CSV file should return None."""
+    ds = ProfilingDataSource(comm_data_dir)
+    op = _make_op_info(
+        torch.ops.tensor_cast.all_to_all.default,
+        [
+            torch.empty(100, 512, device="meta", dtype=torch.bfloat16),
+            [25] * 4,
+            [25] * 4,
+            0,
+            [0, 1, 2, 3],
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is None
+
+
+# --- Attention special query tests (design doc §4.8) ---
+
+ATTN_OP_MAPPING_YAML = """
+version: "test"
+device: TEST_DEVICE
+
+operator_mappings:
+  "tensor_cast.attention.default":
+    kernel_type: FusedInferAttentionScore
+    query_mode: attention_special
+  "tensor_cast.attention_quant.default":
+    kernel_type: FusedInferAttentionScore
+    query_mode: attention_special
+"""
+
+# Design doc §4.8 microbenchmark format
+ATTN_FIA_CSV = """\
+batch_size,avg_seq_len,num_heads,head_dim,dtype,Duration(us)
+1,4096,4,128,DT_BF16,56.18
+2,3500,4,128,DT_BF16,98.50
+10,4500,4,128,DT_BF16,890.70
+1,4096,8,128,DT_BF16,112.36
+"""
+
+
+@pytest.fixture
+def attn_data_dir(tmp_path):
+    data_dir = tmp_path / "attn"
+    data_dir.mkdir()
+    (data_dir / "op_mapping.yaml").write_text(ATTN_OP_MAPPING_YAML)
+    (data_dir / "FusedInferAttentionScore.csv").write_text(ATTN_FIA_CSV.strip())
+    return data_dir
+
+
+def test_attention_prefill_match(attn_data_dir):
+    """Prefill: batch=2, seq_lens=[3500,3500], 4 heads, head_dim=128."""
+    ds = ProfilingDataSource(attn_data_dir)
+    op = _make_op_info(
+        torch.ops.tensor_cast.attention.default,
+        [
+            torch.empty(7000, 512, device="meta", dtype=torch.bfloat16),       # query: hidden=4*128=512
+            torch.empty(56, 128, 4, 128, device="meta", dtype=torch.bfloat16), # key (paged)
+            torch.empty(56, 128, 4, 128, device="meta", dtype=torch.bfloat16), # value
+            None,  # attention_mask
+            torch.empty(2, 28, device="meta", dtype=torch.int32),              # block_table
+            torch.empty(3, device="meta", dtype=torch.int64),                  # query_start_loc
+            torch.tensor([3500, 3500], dtype=torch.int64),                     # seq_lens
+            torch.tensor([3500, 3500], dtype=torch.int64),                     # query_lens
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is not None, "Should match FIA by batch_size=2, avg_seq_len=3500"
+    assert abs(result.latency_us - 98.50) < 0.01
+    assert result.details.get("kernel_type") == "FusedInferAttentionScore"
+
+
+def test_attention_decode_match(attn_data_dir):
+    """Decode: batch=10, seq_lens=[4500]*10, 4 heads, head_dim=128."""
+    ds = ProfilingDataSource(attn_data_dir)
+    op = _make_op_info(
+        torch.ops.tensor_cast.attention.default,
+        [
+            torch.empty(10, 512, device="meta", dtype=torch.bfloat16),          # query
+            torch.empty(360, 128, 4, 128, device="meta", dtype=torch.bfloat16), # key
+            torch.empty(360, 128, 4, 128, device="meta", dtype=torch.bfloat16), # value
+            None,
+            torch.empty(10, 36, device="meta", dtype=torch.int32),
+            torch.empty(11, device="meta", dtype=torch.int64),
+            torch.tensor([4500] * 10, dtype=torch.int64),                       # seq_lens
+            torch.tensor([1] * 10, dtype=torch.int64),                          # query_lens
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is not None, "Should match FIA by batch_size=10, avg_seq_len=4500"
+    assert abs(result.latency_us - 890.70) < 0.01
+
+
+def test_attention_miss_wrong_heads(attn_data_dir):
+    """Wrong num_heads should not match."""
+    ds = ProfilingDataSource(attn_data_dir)
+    op = _make_op_info(
+        torch.ops.tensor_cast.attention.default,
+        [
+            torch.empty(1, 2048, device="meta", dtype=torch.bfloat16),          # 16 heads * 128
+            torch.empty(32, 128, 16, 128, device="meta", dtype=torch.bfloat16), # 16 kv heads
+            torch.empty(32, 128, 16, 128, device="meta", dtype=torch.bfloat16),
+            None,
+            torch.empty(1, 32, device="meta", dtype=torch.int32),
+            torch.empty(2, device="meta", dtype=torch.int64),
+            torch.tensor([4096], dtype=torch.int64),
+            torch.tensor([4096], dtype=torch.int64),
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is None, "16 heads not in CSV, should miss"
+
+
+def test_attention_miss_no_seq_lens(attn_data_dir):
+    """If seq_lens is None, should return None gracefully."""
+    ds = ProfilingDataSource(attn_data_dir)
+    op = _make_op_info(
+        torch.ops.tensor_cast.attention.default,
+        [
+            torch.empty(100, 512, device="meta", dtype=torch.bfloat16),
+            torch.empty(10, 128, 4, 128, device="meta", dtype=torch.bfloat16),
+            torch.empty(10, 128, 4, 128, device="meta", dtype=torch.bfloat16),
+            None, None, None, None, None,
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is None, "No seq_lens -> can't compute batch/seq, return None"
