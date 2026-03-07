@@ -57,8 +57,10 @@ operator_mappings:
     kernel_type: MatMulV2
     notes: >
       [MEDIUM] op-plugin: YAML:915 / AddmmKernelNpuOpApi.cpp.
-      aclnn: aclnnAddmm (ND), aclnnAddmmWeightNz (NZ).
-      vLLM 推理中 nn.Linear 通常走 mm (无 bias), addmm 较少出现; 无直接 profiling 验证.
+      aclnn: aclnnAddmm (ND), aclnnAddmmWeightNz (NZ); 底层 kernel Type 仍为 MatMulV2.
+      vLLM 推理中 nn.Linear 通常走 mm (无 bias), addmm 较少出现; profiling 中未见 aclnnAddmm 条目.
+      [人工 Review] 同事认为"addmm有加权后加算，不能用MatMulV2概括"; 经查证 AddmmKernelNpuOpApi.cpp 调用
+      aclnnAddmm/aclnnAddmmWeightNz, NPU 底层仍执行 MatMulV2 kernel (bias add 被融合). 映射正确.
 
   "aten.bmm.default":
     kernel_type: TransposeBatchMatMul
@@ -69,17 +71,23 @@ operator_mappings:
 
   "aten.embedding.default":
     kernel_type: GatherV2
+    alternate_kernel_types: [GatherV3]
     notes: >
       [HIGH] op-plugin: YAML:1930 / EmbeddingKernelNpuOpApi.cpp.
-      aclnn: aclnnEmbedding; 内部实现为 gather dim=0.
+      aclnn: aclnnEmbedding; 内部实现为 gather dim=0 (计算类算子, 非通信).
       Profiling: DSV3 GatherV2(123x), Qwen3 GatherV2(4x) + GatherV3(8x).
+      [人工 Review] 同事标注"embedding类的，和通信类完全无关"; 确认 GatherV2 为计算类 kernel (非通信),
+      当前映射未归类为 communication, 映射正确. Qwen3 中也出现 GatherV3, 已添加 alternate.
 
   "aten.index_select.default":
-    kernel_type: GatherV2
+    kernel_type: GatherV3
+    alternate_kernel_types: [GatherV2]
     notes: >
       [MEDIUM] op-plugin: YAML:2664 / IndexSelectKernelNpuOpApi.cpp.
-      aclnn: aclnnIndexSelect; 语义等价 gather.
-      LLM 推理中较少使用, 无直接 profiling 验证.
+      aclnn: aclnnIndexSelect → GatherV3 (profiling 验证: aclnnIndexSelect_GatherV3AiCore_GatherV3).
+      acl_op 层调用 GatherV2, 但 aclnn 运行时实际分派到 GatherV3.
+      Qwen3 Profiling 中存在 GatherV3 条目. 保留 GatherV2 作为备选兼容旧 CANN 版本.
+      [人工 Review] 同事确认实际 kernel 为 GatherV3, 已修正.
 
   "aten.convolution.default":
     kernel_type: Conv2D
@@ -87,6 +95,8 @@ operator_mappings:
       [LOW] op-plugin: YAML:1709 / ConvolutionKernelNpuOpApi.cpp.
       aclnn: aclnnConvolution.
       LLM 不含卷积层, profiling 中无此算子; 仅用于 video/image models (DiT 等).
+      [人工 Review] 同事指出"为什么是2D不是3D/1D", Conv2D 为 aclnn 实际 kernel Type 名称 (即使处理 1D/3D 也统一用 Conv2D);
+      profiling 中未出现, 无法验证. 若扩展至 DiT 需重新确认.
 
   "aten.cat.default":
     kernel_type: ConcatD
@@ -106,15 +116,19 @@ operator_mappings:
     kernel_type: Add
     notes: >
       [HIGH] op-plugin: YAML:862 / AddKernelNpuOpApi.cpp.
-      aclnn: aclnnAdd/aclnnAddV3/aclnnAdds.
+      aclnn: aclnnAdd (tensor+tensor), aclnnAdds (tensor+scalar); 均产生 Type=Add.
       Profiling: DSV3 Decode Add(7545x, 残差连接 + 偏置加法).
+      [人工 Review] 同事标 N 但未给出理由; 经查 AddKernelNpuOpApi.cpp 确认 aclnnAdd → Add, 映射正确.
 
   "aten.to.dtype":
     kernel_type: Cast
+    alternate_kernel_types: [TensorMove]
     notes: >
-      [HIGH] op-plugin: _to_copy → aclnnInplaceCopy.
-      aclnn: aclnnInplaceCopy.
+      [HIGH] op-plugin: CastKernelNpuOpApi.cpp → aclnnCast (dtype 转换).
+      _to_copy 路径: aclnnInplaceCopy (同 dtype 时产生 TensorMove 而非 Cast).
       Profiling: DSV3 Decode Cast(2788x, dtype 转换).
+      [人工 Review] 同事指出可能产生 TensorMove/BroadcastTo; 经查证 BroadcastTo 为 shape 广播非 dtype 转换,
+      TensorMove 仅在同 dtype copy 时出现, 已添加为 alternate.
 
 
   # ========== 2. 量化线性 (Quantized Linear) ==========
@@ -1045,10 +1059,15 @@ torch_npu_reference:
     apis:
       - name: "torch.nn.functional.embedding"
         note: "aten::embedding → aclnnEmbedding → GatherV2"
-      - name: "torch.index_select"
-        note: "aten::index_select → aclnnIndexSelect → GatherV2"
-    aclnn: [aclnnEmbedding, aclnnIndexSelect]
+    aclnn: [aclnnEmbedding]
     microbench_api: "torch.nn.functional.embedding"
+
+  GatherV3:
+    apis:
+      - name: "torch.index_select"
+        note: "aten::index_select → aclnnIndexSelect → GatherV3 (aclnn 运行时分派)"
+    aclnn: [aclnnIndexSelect]
+    microbench_api: "torch.index_select"
 
   ConcatD:
     apis:
@@ -1067,8 +1086,8 @@ torch_npu_reference:
   Cast:
     apis:
       - name: "torch.Tensor.to"
-        note: "aten::to.dtype → aclnnInplaceCopy → Cast"
-    aclnn: aclnnInplaceCopy
+        note: "aten::to.dtype → aclnnCast (dtype 转换) → Cast; 同 dtype 时走 aclnnInplaceCopy → TensorMove"
+    aclnn: [aclnnCast, aclnnInplaceCopy]
     microbench_api: "torch.Tensor.to"
 
   # --- MC2 (MatMul + Communication Fusion) ---
