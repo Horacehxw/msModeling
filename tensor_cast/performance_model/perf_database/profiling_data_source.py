@@ -302,6 +302,18 @@ class ProfilingDataSource(DataSource):
         if df is None:
             return None
 
+        # Check that CSV has the expected microbenchmark columns.
+        # Raw profiling CSVs (from kernel_details.csv) have "Input Shapes" etc.
+        # and cannot be queried by structured fields — fall back to analytic.
+        required_cols = {"message_bytes", "num_devices"}
+        if not required_cols.issubset(df.columns):
+            logger.debug(
+                "MISS (comm) %s: CSV missing columns %s, need microbenchmark format",
+                kernel_type,
+                required_cols - set(df.columns),
+            )
+            return None
+
         # Extract the first tensor arg for message_bytes
         tensor = op_invoke_info.args[0]
         if not isinstance(tensor, torch.Tensor):
@@ -370,6 +382,19 @@ class ProfilingDataSource(DataSource):
 
         df = self._load_csv(kernel_type)
         if df is None:
+            return None
+
+        # Check that CSV has the expected microbenchmark columns.
+        # Raw profiling CSVs have "Input Shapes" etc. and cannot be queried
+        # by structured attention fields — fall back to analytic.
+        required_cols = {"batch_size", "avg_seq_len", "num_heads", "head_dim"}
+        if not required_cols.issubset(df.columns):
+            logger.debug(
+                "MISS (attention) %s: CSV missing columns %s, "
+                "need microbenchmark format",
+                kernel_type,
+                required_cols - set(df.columns),
+            )
             return None
 
         # Extract seq_lens from args[6]

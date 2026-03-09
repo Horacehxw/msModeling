@@ -707,10 +707,13 @@ operator_mappings:
       aclnn: aclnnBitwiseNot. DSV3 MoE routing 中布尔掩码取反.
 
   "aten.index.Tensor":
-    kernel_type: GatherV2
+    kernel_type: Index
+    alternate_kernel_types: [GatherV2]
     notes: >
-      [LOW] op-plugin: YAML:2601 / IndexKernelNpuOpApi.cpp.
-      aclnn: aclnnIndex. DSV3/Qwen3 索引操作; 语义类似 gather.
+      [HIGH] path: A. op-plugin: YAML:2601 / IndexKernelNpuOpApi.cpp.
+      aclnn: aclnnIndex. CANN: ops-nn/index/index/ OPTYPE: index (DEPENDENCIES: gather_v2).
+      Profiling: Type=Index (Name=aclnnIndex_IndexAiCore_Index).
+      Prior mapping to GatherV2 was incorrect — GatherV2 is from aclnnEmbedding, not aclnnIndex.
 
   "prims.convert_element_type.default":
     zero_cost: true
@@ -777,8 +780,11 @@ operator_mappings:
     notes: "Index generation, negligible cost"
 
   "aten.copy_.default":
-    zero_cost: true
-    notes: "In-place copy, typically fused into subsequent ops on NPU"
+    kernel_type: TensorMove
+    notes: >
+      [LOW] op-plugin: CopyKernelNpuOpApi.cpp. aclnn: aclnnInplaceCopy → TensorMove.
+      Profiling: Type=TensorMove (~5.6 us). Previously marked zero_cost but real NPU
+      kernel is TensorMove (data movement for dtype conversion / cache init).
 
   "aten.slice.Tensor":
     zero_cost: true

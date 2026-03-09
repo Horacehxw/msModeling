@@ -664,13 +664,19 @@ TC 的融合 op（如 `matmul_all_reduce`）在 NPU 上可能是独立的 kernel
 cd "$MSMODELING_DIR"
 
 python -m tensor_cast.scripts.text_generate Qwen/Qwen3-32B \
-  --num-queries 2 --query-length 3500 \
+  --num-queries 2 --query-length 68 \
   --device ATLAS_800_A3_752T_128G_DIE --world-size 16 --tp-size 16 \
+  --quantize-linear-action DISABLED \
   --performance-model profiling --compile \
+  --perf-database tensor_cast/performance_model/perf_database/data/ATLAS_800_A3_752T_128G_DIE/vllm_ascend/v0.13.0 \
   --chrome-trace /tmp/qwen3_32b_prefill_trace.json 2>&1 | tee /tmp/tc_run.log
 ```
 
-**注意**: `--compile` 是必须的 — 没有它，融合算子 (RmsNorm, SwiGlu, RoPE) 会分解为 72+ 个 aten 原语，无法匹配 profiling kernels。
+**注意**:
+- `--compile` 是必须的 — 没有它，融合算子 (RmsNorm, SwiGlu, RoPE) 会分解为 72+ 个 aten 原语，无法匹配 profiling kernels。
+- `--quantize-linear-action DISABLED` — 参考 profiling 数据为 BF16 (MatMulV2)，默认 W8A8_DYNAMIC 会产生 QuantBatchMatmulV3 ops 导致 shape 不匹配。
+- `--num-queries 2 --query-length 68` — 产生 ~144 total tokens (padding to TP=16)，与参考 profiling CSV 中的 136 token shapes 通过 block-padding tolerance 匹配。
+- `--perf-database` — 指定参考数据目录路径（包含 op_mapping.yaml + kernel CSV 文件）。
 
 ### 11.2 检查 op_mapping 覆盖率
 
@@ -777,11 +783,13 @@ interpolation_policy:
 ```bash
 cd "$MSMODELING_DIR"
 
-# Qwen3-32B BF16 Prefill, 16 卡 TP
+# Qwen3-32B BF16 Prefill, 16 卡 TP (nq=2, ql=68 → 144 tokens, matches CSV 136 via block-padding)
 python -m tensor_cast.scripts.text_generate Qwen/Qwen3-32B \
-  --num-queries 2 --query-length 3500 \
+  --num-queries 2 --query-length 68 \
   --device ATLAS_800_A3_752T_128G_DIE --world-size 16 --tp-size 16 \
+  --quantize-linear-action DISABLED \
   --performance-model profiling --compile \
+  --perf-database tensor_cast/performance_model/perf_database/data/ATLAS_800_A3_752T_128G_DIE/vllm_ascend/v0.13.0 \
   --chrome-trace /tmp/qwen3_32b_trace.json
 ```
 
@@ -898,11 +906,13 @@ find "$VLLM_ASCEND_DIR/vllm_ascend/" -name "*.py" -exec grep -l "triton\|tl\." {
 ```bash
 cd "$MSMODELING_DIR"
 
-# Qwen3-32B BF16 Prefill
+# Qwen3-32B BF16 Prefill (nq=2, ql=68 → 144 tokens, matches reference CSV)
 python3.10 -m tensor_cast.scripts.text_generate Qwen/Qwen3-32B \
-  --num-queries 2 --query-length 3500 \
+  --num-queries 2 --query-length 68 \
   --device ATLAS_800_A3_752T_128G_DIE --world-size 16 --tp-size 16 \
+  --quantize-linear-action DISABLED \
   --performance-model profiling --compile \
+  --perf-database tensor_cast/performance_model/perf_database/data/ATLAS_800_A3_752T_128G_DIE/vllm_ascend/v0.13.0 \
   --chrome-trace /tmp/qwen3_32b_prefill_trace.json
 
 # DSv3 W8A8 Decode
@@ -910,6 +920,7 @@ python3.10 -m tensor_cast.scripts.text_generate deepseek-ai/DeepSeek-V3 \
   --device ATLAS_800_A3_752T_128G_DIE --world-size 32 --tp-size 4 --dp-size 8 --ep \
   --quantize-linear-action W8A8_STATIC \
   --performance-model profiling --compile \
+  --perf-database tensor_cast/performance_model/perf_database/data/ATLAS_800_A3_752T_128G_DIE/vllm_ascend/v0.13.0 \
   --chrome-trace /tmp/dsv3_decode_trace.json
 ```
 
@@ -1052,11 +1063,13 @@ grep -rn "torch_npu\." "$VLLM_ASCEND_DIR/vllm_ascend/" --include="*.py"
 ### 17.1 生成 Stub CSV
 
 ```bash
-# Step 1: 运行 TC 仿真生成 chrome trace (4 个配置)
+# Step 1: 运行 TC 仿真生成 chrome trace
 python -m tensor_cast.scripts.text_generate Qwen/Qwen3-32B \
-  --num-queries 2 --query-length 3500 \
+  --num-queries 2 --query-length 68 \
   --device ATLAS_800_A3_752T_128G_DIE --world-size 16 --tp-size 16 \
+  --quantize-linear-action DISABLED \
   --performance-model profiling --compile \
+  --perf-database tensor_cast/performance_model/perf_database/data/ATLAS_800_A3_752T_128G_DIE/vllm_ascend/v0.13.0 \
   --chrome-trace ./qwen3_prefill_trace.json
 
 # Step 2: 提取 ops (使用 extract_tc_ops.py)
@@ -1104,13 +1117,22 @@ Stub CSV 生成器应用以下 TC→NPU 转换 (与 `profiling_data_source._inpu
 除了 mock 测试，还可以运行真实 TC 仿真确认全流程：
 
 ```bash
-# Qwen3-32B Prefill — 预期 95.9% (47/49, 仅 attention_special + communication miss)
+# Qwen3-32B BF16 Prefill — 使用参考数据验证 (预期 84.8%, 39/46)
 python -m tensor_cast.scripts.text_generate Qwen/Qwen3-32B \
-  --num-queries 2 --query-length 3500 \
+  --num-queries 2 --query-length 68 \
   --device ATLAS_800_A3_752T_128G_DIE --world-size 16 --tp-size 16 \
+  --quantize-linear-action DISABLED \
+  --performance-model profiling --compile \
+  --perf-database tensor_cast/performance_model/perf_database/data/ATLAS_800_A3_752T_128G_DIE/vllm_ascend/v0.13.0
+
+# Qwen3-32B Prefill — 使用 stub CSV 验证 (预期 ~95%, 仅 attention_special + communication miss)
+python -m tensor_cast.scripts.text_generate Qwen/Qwen3-32B \
+  --num-queries 2 --query-length 68 \
+  --device ATLAS_800_A3_752T_128G_DIE --world-size 16 --tp-size 16 \
+  --quantize-linear-action DISABLED \
   --performance-model profiling --compile --perf-database /tmp/stub_csvs
 
-# DSv3 Prefill (W8A8) — 预期 90.7% (78/86, MLA composite + communication + MoE shapes)
+# DSv3 Prefill (W8A8) — 使用 stub CSV 验证 (预期 ~90%, MLA composite + communication + MoE shapes)
 python -m tensor_cast.scripts.text_generate deepseek-ai/DeepSeek-V3 \
   --device ATLAS_800_A3_752T_128G_DIE --world-size 32 --tp-size 4 --dp-size 8 --ep-size 8 \
   --quantize-linear-action W8A8_STATIC --num-queries 2 --query-length 3500 \

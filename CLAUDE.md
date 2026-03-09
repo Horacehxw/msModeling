@@ -68,10 +68,17 @@ python -m tensor_cast.scripts.text_generate moonshotai/Kimi-K2-Instruct \
 ```bash
 # --compile is REQUIRED for profiling mode (even BF16) — without it,
 # fused ops decompose to 72+ aten primitives that can't match profiling kernels
+# --perf-database is REQUIRED — path to directory with op_mapping.yaml + kernel CSVs
+# --quantize-linear-action must match profiling data (default is W8A8_DYNAMIC, use DISABLED for BF16 data)
+# --num-queries/--query-length must produce token counts matching profiling CSV shapes
+
+# BF16 — reference data has 136/64 token shapes, nq=2 ql=68 → 144 tokens (block-padding match)
 python -m tensor_cast.scripts.text_generate Qwen/Qwen3-32B \
-  --num-queries 2 --query-length 3500 \
+  --num-queries 2 --query-length 68 \
   --device ATLAS_800_A3_752T_128G_DIE --world-size 16 --tp-size 16 \
-  --performance-model profiling --compile
+  --quantize-linear-action DISABLED \
+  --performance-model profiling --compile \
+  --perf-database tensor_cast/performance_model/perf_database/data/ATLAS_800_A3_752T_128G_DIE/vllm_ascend/v0.13.0
 
 # With quantization
 python -m tensor_cast.scripts.text_generate deepseek-ai/DeepSeek-V3 \
