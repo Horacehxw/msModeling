@@ -169,6 +169,8 @@ class ProfilingDataSource(DataSource):
         self.comm_grid = comm_grid
         self._op_mapping = self._load_op_mapping()
         self._csv_cache: Dict[str, Optional[pd.DataFrame]] = {}
+        # Set after each lookup() miss to explain why
+        self.last_miss_reason: str = ""
 
     def _load_op_mapping(self) -> dict:
         yaml_path = self.data_dir / "op_mapping.yaml"
@@ -208,6 +210,7 @@ class ProfilingDataSource(DataSource):
         mappings = self._op_mapping.get("operator_mappings", {})
         mapping = mappings.get(func_str)
         if mapping is None:
+            self.last_miss_reason = "unmapped"
             return None
 
         # Composite ops: try decomposition via sub_kernels, else skip
@@ -243,6 +246,7 @@ class ProfilingDataSource(DataSource):
         """
         sub_kernels = mapping.get("sub_kernels", [])
         if not sub_kernels:
+            self.last_miss_reason = "no_sub_kernels"
             return None
 
         # Extract tensor inputs from the composite op
@@ -279,6 +283,7 @@ class ProfilingDataSource(DataSource):
                             "note": "compute sub-kernel only; comm handled by analytic",
                         },
                     )
+        self.last_miss_reason = "shape_mismatch"
         return None
 
     # ---- Communication op lookup (design doc §4.7) ----
@@ -296,10 +301,12 @@ class ProfilingDataSource(DataSource):
         """
         kernel_type = mapping.get("kernel_type")
         if not kernel_type:
+            self.last_miss_reason = "unmapped"
             return None
 
         df = self._load_csv(kernel_type)
         if df is None:
+            self.last_miss_reason = "csv_not_found"
             return None
 
         # Check that CSV has the expected microbenchmark columns.
@@ -312,17 +319,20 @@ class ProfilingDataSource(DataSource):
                 kernel_type,
                 required_cols - set(df.columns),
             )
+            self.last_miss_reason = "csv_format_raw"
             return None
 
         # Extract the first tensor arg for message_bytes
         tensor = op_invoke_info.args[0]
         if not isinstance(tensor, torch.Tensor):
+            self.last_miss_reason = "invalid_args"
             return None
         message_bytes = tensor.nelement() * tensor.element_size()
 
         # Extract num_devices from rank_group (always last arg)
         rank_group = op_invoke_info.args[-1]
         if not isinstance(rank_group, (list, tuple)):
+            self.last_miss_reason = "invalid_args"
             return None
         num_devices = len(rank_group)
 
@@ -338,6 +348,7 @@ class ProfilingDataSource(DataSource):
                 message_bytes,
                 num_devices,
             )
+            self.last_miss_reason = "shape_mismatch"
             return None
 
         row = matched.iloc[0]
@@ -378,10 +389,12 @@ class ProfilingDataSource(DataSource):
         """
         kernel_type = mapping.get("kernel_type")
         if not kernel_type:
+            self.last_miss_reason = "unmapped"
             return None
 
         df = self._load_csv(kernel_type)
         if df is None:
+            self.last_miss_reason = "csv_not_found"
             return None
 
         # Check that CSV has the expected microbenchmark columns.
@@ -395,14 +408,17 @@ class ProfilingDataSource(DataSource):
                 kernel_type,
                 required_cols - set(df.columns),
             )
+            self.last_miss_reason = "csv_format_raw"
             return None
 
         # Extract seq_lens from args[6]
         args = op_invoke_info.args
         if len(args) < 7:
+            self.last_miss_reason = "invalid_args"
             return None
         seq_lens = args[6]
         if not isinstance(seq_lens, torch.Tensor):
+            self.last_miss_reason = "invalid_args"
             return None
 
         # Compute batch_size and avg_seq_len from seq_lens tensor
@@ -411,11 +427,13 @@ class ProfilingDataSource(DataSource):
         try:
             avg_seq_len = int(seq_lens.float().mean().item())
         except Exception:
+            self.last_miss_reason = "invalid_args"
             return None
 
         # Extract head_dim and kv_heads from key tensor (args[1])
         key = args[1]
         if not isinstance(key, torch.Tensor) or key.ndim < 2:
+            self.last_miss_reason = "invalid_args"
             return None
         head_dim = key.shape[-1]
         kv_heads = key.shape[-2]
@@ -423,6 +441,7 @@ class ProfilingDataSource(DataSource):
         # Compute num_heads from query hidden_size / head_dim
         query = args[0]
         if not isinstance(query, torch.Tensor) or query.ndim < 2:
+            self.last_miss_reason = "invalid_args"
             return None
         hidden_size = query.shape[-1]
         num_heads = hidden_size // head_dim
@@ -430,6 +449,7 @@ class ProfilingDataSource(DataSource):
         # Get dtype string
         dtype_str = DTYPE_MAP.get(query.dtype)
         if dtype_str is None:
+            self.last_miss_reason = "invalid_args"
             return None
 
         # Match CSV rows on all 5 dimensions
@@ -452,6 +472,7 @@ class ProfilingDataSource(DataSource):
                 head_dim,
                 dtype_str,
             )
+            self.last_miss_reason = "shape_mismatch"
             return None
 
         row = matched.iloc[0]
@@ -526,6 +547,15 @@ class ProfilingDataSource(DataSource):
         if df is not None:
             for _, row in df.iterrows():
                 csv_shapes_list.append(str(row.get("Input Shapes", "")))
+        # Determine miss reason: input count mismatch vs shape mismatch
+        if df is not None and len(df) > 0:
+            csv_first_shapes = _parse_shape_str(str(df.iloc[0].get("Input Shapes", "")))
+            if len(tc_inputs) != len(csv_first_shapes):
+                self.last_miss_reason = "input_count_mismatch"
+            else:
+                self.last_miss_reason = "shape_mismatch"
+        else:
+            self.last_miss_reason = "csv_not_found"
         logger.debug(
             "MISS %s: tc_shapes=%s, csv_shapes=%s",
             primary_kernel,
@@ -590,11 +620,7 @@ class ProfilingDataSource(DataSource):
             s2, dtype2 = tc_inputs[1]
             s1 = _strip_batch_dim(s1)
             s2 = _strip_batch_dim(s2)
-            if (
-                len(s1) == len(s2)
-                and s1[:-1] == s2[:-1]
-                and dtype1 == dtype2
-            ):
+            if len(s1) == len(s2) and s1[:-1] == s2[:-1] and dtype1 == dtype2:
                 merged_shape = s1[:-1] + (s1[-1] + s2[-1],)
                 tc_inputs_normalized = [(merged_shape, dtype1)]
 

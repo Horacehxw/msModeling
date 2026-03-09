@@ -4,11 +4,12 @@ Design doc reference: §4.3
 """
 
 import logging
+from collections import Counter
 from typing import Optional
 
-from overrides import override
-
 import torch
+
+from overrides import override
 
 from ..device import DeviceProfile
 from .base import PerformanceModel
@@ -16,6 +17,17 @@ from .op_invoke_info import OpInvokeInfo
 from .perf_database.data_source import DataSource
 
 logger = logging.getLogger(__name__)
+
+# Human-readable descriptions for miss reason codes
+_MISS_REASON_LABELS = {
+    "unmapped": "not in op_mapping.yaml",
+    "shape_mismatch": "kernel found, no matching shape in CSV",
+    "input_count_mismatch": "TC input count differs from CSV",
+    "csv_format_raw": "CSV has raw profiling format (needs microbenchmark)",
+    "csv_not_found": "kernel CSV file missing",
+    "no_sub_kernels": "composite op has no sub_kernels defined",
+    "invalid_args": "op args could not be parsed",
+}
 
 
 class EmpiricalPerformanceModel(PerformanceModel):
@@ -40,7 +52,8 @@ class EmpiricalPerformanceModel(PerformanceModel):
         self._fallback_model = fallback_model
         self._stats = {"hit": 0, "miss": 0}
         self._hit_details: list[str] = []
-        self._miss_details: list[str] = []
+        # Each miss: (func_name, reason, tc_shapes)
+        self._miss_details: list[tuple[str, str, list[tuple]]] = []
 
     @property
     def fallback_model(self) -> PerformanceModel:
@@ -71,7 +84,9 @@ class EmpiricalPerformanceModel(PerformanceModel):
         tc_shapes = [
             tuple(a.shape) for a in op_invoke_info.args if isinstance(a, torch.Tensor)
         ]
-        self._miss_details.append(f"{func_name} {tc_shapes}")
+        # Read miss reason from data source (if it supports it)
+        reason = getattr(self.data_source, "last_miss_reason", "unknown")
+        self._miss_details.append((func_name, reason, tc_shapes))
         return self.fallback_model.process_op(op_invoke_info)
 
     def get_stats(self) -> dict:
@@ -90,7 +105,40 @@ class EmpiricalPerformanceModel(PerformanceModel):
             stats["total"],
             stats["hit_rate"] * 100,
         )
+
+        # Deduplicated HITs: count occurrences of each mapping
         if self._hit_details:
-            logger.info("  HITs: %s", " | ".join(self._hit_details))
+            hit_counts = Counter(self._hit_details)
+            hit_lines = [
+                f"  {mapping} (x{count})" if count > 1 else f"  {mapping}"
+                for mapping, count in hit_counts.most_common()
+            ]
+            logger.info(
+                "  HITs (%d unique):\n%s", len(hit_counts), "\n".join(hit_lines)
+            )
+
+        # MISSes grouped by reason category
         if self._miss_details:
-            logger.info("  MISSes: %s", " | ".join(self._miss_details))
+            by_reason: dict[str, list[tuple[str, list[tuple]]]] = {}
+            for func_name, reason, tc_shapes in self._miss_details:
+                by_reason.setdefault(reason, []).append((func_name, tc_shapes))
+
+            miss_lines = []
+            for reason, ops in sorted(by_reason.items()):
+                label = _MISS_REASON_LABELS.get(reason, reason)
+                # Deduplicate ops with same func_name
+                op_counts = Counter(func_name for func_name, _ in ops)
+                op_strs = [
+                    f"{name} (x{count})" if count > 1 else name
+                    for name, count in op_counts.most_common()
+                ]
+                miss_lines.append(f"  [{reason}] {label}: {', '.join(op_strs)}")
+                # Log shape details at DEBUG level
+                for func_name, tc_shapes in ops:
+                    logger.debug("    %s shapes: %s", func_name, tc_shapes)
+
+            logger.info(
+                "  MISSes (%d unique reasons):\n%s",
+                len(by_reason),
+                "\n".join(miss_lines),
+            )
