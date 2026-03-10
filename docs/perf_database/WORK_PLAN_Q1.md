@@ -107,7 +107,7 @@ HXW（SE）：决策 + 进展管理（TCX协助）；不 own 产品代码，按�
 | 方案 | 负责人 | 验证依据 | 完成时间 |
 |------|--------|---------|---------|
 | 17 项简化评估 | HXW | 穿刺报告 §5 | 3.6 |
-| MC2 Profiling 确认 | HDY | DSV3 Profiling CSV 中搜索 MC2 相关 kernel Type | 3.6（1h） |
+| 计算+通信融合算子确认 | HDY | DSV3 Profiling CSV 中搜索计算+通信融合类 kernel Type（含 MC2 及其他融合形式） | 3.6（1h） |
 | Attention 匹配规则 | TCX | 穿刺报告 §4.1 + 设计文档 §4.8，写单元测试验证 | 3.9 |
 | 通信数据表格式 | ZH | 设计文档 §4.4 + §4.7，对照 `comm_config_example.yaml` | 3.9 |
 | MoE/MLA 匹配规则 | ZH | 设计文档 §4.2 composite 分解表，写单元测试验证 | 3.12 |
@@ -209,11 +209,12 @@ HDY |C6+MC2查 |--- C9 --|--- C7 DSV3映射 ----|C8+C10-|
 | A2 | 端到端：Qwen3-32B Prefill `--performance-model profiling --compile` | 3.11 | 不报错，log_stats 输出命中率 |
 | A3 | 融合 Pass merge：SwiGlu + GroupedMatmul+SwiGlu 从 develop 合入 + MC2 pass 验证 | 3.13 | 单元测试通过；`tensor_cast.matmul_all_reduce` 出现在 dispatch trace 中 |
 
-**MC2 验证要点**：
+**计算+通信融合算子验证要点**：
 - 确认 `--compile` 后 dispatch trace 中出现 `tensor_cast.matmul_all_reduce`（不再是分离的 mm + all_reduce）
-- HDY 3.6 确认 DSV3 Profiling 中是否有 MC2 专用 kernel Type
-- 如有 → 在 `op_mapping.yaml` 中添加 `tensor_cast.matmul_all_reduce` → 该 kernel_type 的直接映射
-- 如无 → 保留 `composite: true` + `sub_kernels: [MatMulV2, hcom_allReduce_]` 分解查询
+- HDY 3.6 确认 DSV3 Profiling 中是否有计算+通信融合类 kernel Type（含 MC2 及其他融合形式）
+- **结论（已确认）**：
+  - **MC2（MatMul+AllReduce 融合）**：DSV3 Profiling 中无专用 kernel Type，matmul（`QuantBatchMatmulV3`）和通信（`hcom_reduceScatter_` / `hcom_allGather_`）分开记录 → 保留 `composite: true` + `sub_kernels: [QuantBatchMatmulV3, hcom_allReduce_]` 分解查询
+  - **DispatchFFNCombine（计算+通信融合）**：DSV3 Profiling 中**存在**此融合 kernel，融合了 `all_to_all×2 + GroupedMatmul×2 + SwiGlu + MoE routing`，耗时占端到端 **35.3%**，是 DSV3 最重要的单一 kernel。TC 将其分解为 `permute_tokens + grouped_matmul×2 + swiglu + unpermute_tokens + all_to_all×2`，op_mapping.yaml 已配置 `composite: true` 处理，无需新增直接映射
 
 ---
 
@@ -285,7 +286,7 @@ HDY |C6+MC2查 |--- C9 --|--- C7 DSV3映射 ----|C8+C10-|
 | # | 检查点 | 完成日期 | 验收标准 |
 |---|-------|---------|---------|
 | C6 | DSV3 Profiling 算子清单：Top-20 排序表 | 3.6（快速任务） | 表格输出 |
-| MC2 | 查 DSV3 Profiling 是否有 MC2 专用 kernel Type | 3.6（1h） | 结论（有/无） → 告知XJT和ZH |
+| 计算+通信融合确认 | 查 DSV3 Profiling 是否有计算+通信融合类 kernel Type（含 MC2 及其他融合形式） | 3.6（1h） | 结论 → 告知XJT和ZH |
 | C9 | HCCL 数据采集方案：`generate_comm_microbench.py` 实现 | 3.10 | 脚本可运行 |
 | C7 | DSV3 W8A8 op_mapping 扩展：QuantBatchMatmulV3, AscendQuantV2, DequantSwigluQuant, GroupedMatmul, TransposeBatchMatMul, MoeGatingTopK 等 | 3.12 | op_mapping 覆盖 DSV3 Top-15 |
 | C8 | W8A8 量化场景映射验证 | 3.13 | 验证报告 |
