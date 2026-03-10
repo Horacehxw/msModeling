@@ -211,27 +211,96 @@ Save to: `$MSMODELING/tensor_cast/performance_model/perf_database/data/$DEVICE/v
 
 ## Phase 5: VERIFY
 
-```
-DISPATCH: Agent tool
-  subagent_type: general-purpose
-  prompt: |
-    Read <skill_dir>/verifier-prompt.md for instructions.
+Verification requires deriving the correct TensorCast simulation parameters from the profiling data itself. Do NOT guess parameters — extract them from the CSV shapes.
 
-    op_mapping_path: "<assembled yaml path>"
-    msmodeling_dir: "<path>"
-    model: "<MODEL>"
-    device: "<DEVICE>"
-    tc_config:
-      world_size: <WS>
-      tp_size: <TP>
-      dp_size: <DP>
-      ep: <true|false>
-      quantize_linear_action: "<QUANT>"
-    profiling_csv_path: "<path>"
-    python_path: "<PYTHON>"
+### 5a: Analyze Profiling Data to Derive TC Parameters
+
+For each profiling dataset, extract these from the per-kernel CSVs:
+
+**Step 1: Determine workload type (prefill vs decode)**
+```bash
+# Check batch dimensions in compute kernel CSVs
+awk -F',' 'NR>1 {print $3}' $DATA_DIR/MatMulV2.csv | head -20
+awk -F',' 'NR>1 {print $3}' $DATA_DIR/AddRmsNorm.csv | head -10
+```
+- Small batch dims (1-50) = **decode** workload → use `--query-length 1 --context-length X`
+- Large batch dims (100+) = **prefill** workload → use `--query-length X`
+- Mixed = PandD trace → verify both separately
+
+**Step 2: Determine quantization mode**
+```bash
+ls $DATA_DIR/*.csv | grep -i -E "quant|int8"
+```
+- `QuantBatchMatmulV3.csv` exists with INT8 dtypes → `--quantize-linear-action W8A8_STATIC`
+- `DynamicQuant.csv` exists → may indicate W8A8_DYNAMIC
+- Only BF16 MatMulV2 shapes → `--quantize-linear-action DISABLED`
+
+**Step 3: Determine parallelism from hidden dimensions**
+```bash
+# Extract hidden/intermediate dims from MatMulV2 or QuantBatchMatmulV3
+head -5 $DATA_DIR/MatMulV2.csv | cut -d',' -f3,4
+# Look at SwiGlu dims
+head -5 $DATA_DIR/SwiGlu.csv | cut -d',' -f3,4
+# Check FIA head counts
+head -5 $DATA_DIR/FusedInferAttentionScore.csv | cut -d',' -f3
+```
+- Compare CSV dims to model's full hidden_size to compute TP:
+  - `intermediate_per_card = model.intermediate_size / TP`
+  - `q_heads_per_card = model.num_attention_heads / TP`
+  - Match against SwiGlu and FIA shapes to find correct TP
+- Check MoE ops (GroupedMatmul*, MoeGatingTopK) → EP config
+- Derive DP from: `world_size = TP × DP × EP`
+
+**Step 4: Determine batch size**
+```bash
+# Find most common batch dims across compute kernels
+for f in MatMulV2.csv AddRmsNorm.csv SwiGlu.csv QuantBatchMatmulV3.csv; do
+  echo "=== $f ===" && awk -F',' 'NR>1 {print $3}' $DATA_DIR/$f | sort | uniq -c | sort -rn | head -5
+done
+```
+- The most frequent batch dim = target `--num-queries`
+- For decode: `--num-queries=<batch_dim> --query-length=1`
+- For prefill: `--num-queries=1 --query-length=<batch_dim>` (or split: nq=2, ql=batch/2)
+
+### 5b: Run TensorCast Simulation
+
+```bash
+$PYTHON -m tensor_cast.scripts.text_generate $MODEL \
+  --num-queries $NQ --query-length $QL [--context-length $CL] \
+  --device $DEVICE --world-size $WS --tp-size $TP [--dp-size $DP] [--ep-size $EP] \
+  --quantize-linear-action $QUANT \
+  --performance-model profiling --compile \
+  --perf-database $DATA_DIR 2>&1 | tee /tmp/verify_run.log
 ```
 
-Collect verification_report.md and corrections_needed list.
+### 5c: Analyze Gaps
+
+From the output, classify every MISS into one of these categories:
+
+| Gap Category | Symptom | Action |
+|---|---|---|
+| **Op mapping error** | Op has wrong kernel_type or no mapping | Fix op_mapping.yaml entry |
+| **Shape coverage gap** | Op mapped correctly but CSV lacks matching shape | Add profiling data for that shape (re-profile or microbenchmark) |
+| **TC decomposition mismatch** | TC produces different intermediate shapes than real vLLM | Known limitation — TC compile pass doesn't match vLLM exactly |
+| **Structural miss** | Embedding, KV cache, comm ops differ structurally | Expected — these ops have fundamentally different TC vs NPU interfaces |
+| **Param mismatch** | Wrong batch/seq/TP caused shape miss | Re-derive params from Step 5a |
+
+**Key distinction:** A shape MISS with correct kernel_type = data coverage gap (not an op_mapping bug). A shape MISS with wrong kernel_type = op_mapping error.
+
+### 5d: Iterate
+
+1. Fix any op_mapping errors found in 5c
+2. If param mismatch: re-run with corrected params
+3. Re-run simulation until no new op_mapping errors remain
+4. Document remaining gaps with categories
+
+### 5e: Report
+
+Generate a verification report with:
+- TC command used (copy-pasteable)
+- Match rate: `X/Y ops matched (Z%)`
+- Gap breakdown by category (table)
+- For each MISS: op name, TC shape, expected kernel_type, gap category, action needed
 
 ---
 
@@ -245,8 +314,24 @@ For each correction in corrections_needed:
 | Shape mismatch | Investigate shape transform; may need new flag in profiling_data_source.py |
 | Latency outlier (>2x) | Check if wrong kernel_type or missing alternate_kernel_types |
 | Wrong confidence | Re-verify evidence chain with updated profiling data |
+| TC decomposition mismatch | Document as known limitation; no op_mapping fix needed |
 
 After all corrections applied, re-run Phase 5. Repeat until verification passes.
+
+---
+
+## Handling CANN Version Differences
+
+Kernel types can change between CANN versions (renames, fusions, removals). The skill handles this naturally:
+
+1. **Always verify against profiling data** — the `Type` column in `kernel_details.csv` is ground truth for the current CANN version
+2. **Use `alternate_kernel_types`** — when a kernel has been renamed across versions, list both old and new names so the mapping works with either
+3. **Check for fused kernels** — newer CANN versions may fuse previously separate ops into a single kernel (use `composite: true` or update `kernel_type`)
+4. **Check for removed kernels** — Triton kernels may be replaced by native CANN fusions; profiling-only placeholders may no longer appear
+
+**How to discover version changes:** Compare `profiling_types.txt` from two profiling runs on different CANN versions. Types that appear in one but not the other indicate renames, fusions, or removals. Trace each through the 5-layer pipeline to determine the correct mapping.
+
+**aclgraph parity:** vllm-ascend's `aclgraph` compiler ensures eager mode and graph mode produce exactly the same ops, including fusion passes. Profiling from either mode is valid for op_mapping.
 
 ---
 

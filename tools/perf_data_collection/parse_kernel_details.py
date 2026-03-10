@@ -61,15 +61,16 @@ EXTRA_NUMERIC_COLUMNS = [
 
 def check_version(value: str) -> str:
     version = value.strip()
-    if not re.fullmatch(r"[0-9]+(?:\.[0-9A-Za-z_-]+)*", version):
+    if not re.fullmatch(r"[0-9A-Za-z]+(?:[._-][0-9A-Za-z]+)*", version):
         raise argparse.ArgumentTypeError(
-            f"Invalid --vllm-ascend-version: {value!r}. Expected value like 0.9.2"
+            f"Invalid --vllm-ascend-version: {value!r}. "
+            "Expected value like 0.9.2 or vllm0.13.0_torch2.8.0_cann8.3"
         )
     return version
 
 
 def normalize_device_name(device: str) -> str:
-    return device.strip().lower()
+    return device.strip()
 
 
 def normalize_vllm_ascend_version(version: str) -> str:

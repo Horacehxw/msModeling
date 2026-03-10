@@ -40,6 +40,17 @@ aclnnMatmulWeightNz  _  MatMulCommon  _  MatMulV2
 
 Single-segment names (e.g., `FusedInferAttentionScore`, `GroupedMatmul`) indicate graph-compiled mode — the L0 OpType directly. Triton kernels use the Python function name directly (e.g., `split_qkv_rmsnorm_rope_kernel`).
 
+### Handling CANN Version Differences
+
+Kernel types can change between CANN versions — renames, fusions, or removals. Always verify the actual `Type` column in `kernel_details.csv` for the target CANN version rather than assuming a fixed name.
+
+**When tracing the call chain:**
+- If the L0 OPTYPE you find in CANN source doesn't match what appears in profiling, the CANN version may have renamed it. Check the profiling data as ground truth.
+- Use `alternate_kernel_types` to list both old and new kernel names for cross-version compatibility.
+- Some ops may be fused into larger kernels in newer CANN versions (e.g., separate matmul + activation → single fused kernel). These require updating `kernel_type`, not just adding alternates.
+
+**aclgraph parity:** vllm-ascend aclgraph ensures eager mode and graph mode produce exactly the same ops including fusion passes, so profiling from either mode is valid for op_mapping.
+
 ## Three-Path Decision Tree
 
 ```
@@ -142,10 +153,11 @@ START: What is the op?
 4. For Triton kernels: Profiling Type = the `@triton.jit` function name
 5. For csrc/ ops: check op_host/*_def.cpp for OP_ADD registration name
 
-**Example (split_qkv_rmsnorm_rope_kernel):**
+**Example (Triton kernel):**
 - vllm-ascend: `vllm_ascend/ops/triton/linearnorm/split_qkv_rmsnorm_rope.py`
 - QKNormRopeFusionPass in `vllm_ascend/compilation/passes/`
 - Profiling: Type=`split_qkv_rmsnorm_rope_kernel`
+- Note: Triton kernels may be replaced by native CANN fusions in newer versions — always verify against profiling data
 
 ## HCCL Communication Ops
 
@@ -186,7 +198,7 @@ After determining the mapping, flag which shape transforms apply to this op. The
 - [ ] **ND weight transpose**: TC has `(K, N)` from `weight.T`, NPU may store `(N, K)`. Applies to MatMulV2 2nd input only.
 - [ ] **SwiGlu input concat**: TC dispatches 2 inputs `(S, D/2)`, NPU expects 1 input `(S, D)`. Applies to SwiGlu kernel.
 - [ ] **RoPE layout transpose**: TC `(B,H,S,D)` with `[Q,K,cos,sin]` order. NPU `(B,S,H,D)` with `[K,Q,cos,sin]`. Applies to InterleaveRope, ApplyRotaryPosEmb.
-- [ ] **RoPE alternate kernels**: TC has one `apply_rope` op, NPU has InterleaveRope (interleave mode) and ApplyRotaryPosEmb (neox mode). Use `alternate_kernel_types`.
+- [ ] **RoPE alternate kernels**: TC has one `apply_rope` op, NPU has InterleaveRope (interleave mode) and ApplyRotaryPosEmb (neox mode). Use `alternate_kernel_types`. Note: Some CANN versions may replace Triton-based RoPE kernels with native CANN fusions — verify against profiling data.
 - [ ] **Composite decomposition**: TC fused op (e.g., matmul_all_reduce) maps to separate NPU kernels. Use `composite: true` + `sub_kernels`.
 
 ## General Search Hints
