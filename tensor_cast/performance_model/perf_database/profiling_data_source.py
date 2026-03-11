@@ -288,16 +288,51 @@ class ProfilingDataSource(DataSource):
 
     # ---- Communication op lookup (design doc §4.7) ----
 
+    def _resolve_topology_tier(self, group: list) -> Optional[int]:
+        """Resolve topology_tier from group using CommGrid, mirroring
+        CommAnalyticModel._get_topology_idx_for_group().
+
+        Returns start_dim (topology_tier) or None if comm_grid is not set.
+        """
+        if self.comm_grid is None:
+            return None
+        coords = [
+            self._rank_to_coord(r, self.comm_grid.grid.shape) for r in group
+        ]
+        diff_dim = -1
+        for dim_idx in range(self.comm_grid.grid.dim()):
+            first = coords[0][dim_idx]
+            if any(c[dim_idx] != first for c in coords[1:]):
+                diff_dim = dim_idx
+                break
+        if diff_dim == -1:
+            return max(self.comm_grid.topologies.keys())
+        for start_dim in sorted(self.comm_grid.topologies.keys(), reverse=True):
+            if start_dim <= diff_dim:
+                return start_dim
+        return None
+
+    @staticmethod
+    def _rank_to_coord(rank: int, grid_shape) -> list:
+        coord = []
+        temp = rank
+        for dim_size in reversed(grid_shape):
+            coord.insert(0, temp % dim_size)
+            temp //= dim_size
+        return coord
+
     def _lookup_comm(
         self, op_invoke_info: "OpInvokeInfo", mapping: dict
     ) -> Optional[QueryResult]:
-        """Look up communication op latency by message_bytes + num_devices.
+        """Look up communication op latency by message_bytes + num_devices + topology_tier.
 
         Communication CSV columns: message_bytes, num_devices, dtype,
         topology_tier, Duration(us).
 
-        Args are expected as (tensor, ..., rank_group) where rank_group is
-        always the last arg (a list of device ranks).
+        Args are expected as (tensor, ..., rank, rank_group) where rank is
+        second-to-last and rank_group (list of device ranks) is always last.
+        topology_tier is resolved from rank + rank_group via CommGrid when
+        comm_grid is set; otherwise the CSV is queried without tier filtering.
         """
         kernel_type = mapping.get("kernel_type")
         if not kernel_type:
@@ -329,24 +364,31 @@ class ProfilingDataSource(DataSource):
             return None
         message_bytes = tensor.nelement() * tensor.element_size()
 
-        # Extract num_devices from rank_group (always last arg)
+        # Extract rank (second-to-last) and rank_group (last)
         rank_group = op_invoke_info.args[-1]
+        rank = op_invoke_info.args[-2]
         if not isinstance(rank_group, (list, tuple)):
             self.last_miss_reason = "invalid_args"
             return None
         num_devices = len(rank_group)
 
-        # Match on message_bytes + num_devices
-        mask = (df["message_bytes"] == message_bytes) & (
-            df["num_devices"] == num_devices
-        )
+        # Resolve topology_tier from group via CommGrid
+        topology_tier = self._resolve_topology_tier(list(rank_group))
+
+        # Build match mask: always filter on message_bytes + num_devices;
+        # add topology_tier filter when the CSV has the column and tier is known.
+        mask = (df["message_bytes"] == message_bytes) & (df["num_devices"] == num_devices)
+        if topology_tier is not None and "topology_tier" in df.columns:
+            mask = mask & (df["topology_tier"] == topology_tier)
+
         matched = df[mask]
         if matched.empty:
             logger.debug(
-                "MISS (comm) %s: message_bytes=%d, num_devices=%d",
+                "MISS (comm) %s: message_bytes=%d, num_devices=%d, topology_tier=%s",
                 kernel_type,
                 message_bytes,
                 num_devices,
+                topology_tier,
             )
             self.last_miss_reason = "shape_mismatch"
             return None
@@ -359,17 +401,18 @@ class ProfilingDataSource(DataSource):
         )
         latency = float(row[latency_col])
         logger.debug(
-            "HIT (comm) %s: message_bytes=%d, num_devices=%d -> %.2f us",
+            "HIT (comm) %s: message_bytes=%d, num_devices=%d, topology_tier=%s -> %.2f us",
             kernel_type,
             message_bytes,
             num_devices,
+            topology_tier,
             latency,
         )
         return QueryResult(
             latency_us=latency,
             confidence=0.9,
             source=QuerySource.MEASURED,
-            details={"kernel_type": kernel_type},
+            details={"kernel_type": kernel_type, "topology_tier": topology_tier},
         )
 
     # ---- Attention special lookup (design doc §4.8) ----
