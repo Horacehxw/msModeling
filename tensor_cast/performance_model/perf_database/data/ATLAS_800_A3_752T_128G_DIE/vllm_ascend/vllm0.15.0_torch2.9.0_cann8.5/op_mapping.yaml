@@ -13,6 +13,7 @@
 #   - vLLM-ascend: /home/horacehxw/Projects/vllm-ascend/ (v0.15.0rc1)
 #   - CANN repos: ops-nn, ops-transformer, ops-math (v8.5.0)
 #   - Qwen3-32B PandD Profiling (CANN 8.5): 16 卡 BF16 aclgraph, 28641 kernels, 37 unique Types
+#   - Qwen3-32B PandD Profiling v2 (CANN 8.5, stack): 16 卡 BF16 aclgraph, 4046 kernels, 1P+2D, 37 unique Types
 #   - DeepSeek-V3 PandD Profiling (CANN 8.5): 32 卡 W8A8 aclgraph, 36918 kernels, 41 unique Types
 #
 # CANN 8.5 vs 8.3 关键变化:
@@ -20,6 +21,8 @@
 #   - ApplyRotaryPosEmb → _triton_rope + split_qkv_rmsnorm_rope_kernel (Triton 融合)
 #   - ApplyTopKTopPWithSorted → ApplyTopKTopPCustom (vllm-ascend 自定义 sampling op)
 #   - 新增 allgatherAicpuKernel (AICPU all-gather 变体)
+#   - 新增 reduce_scatterAicpuKernel (AICPU reduce_scatter 变体, 与 allgatherAicpuKernel 对称)
+#   - 新增 MatMulV3 (大 M Prefill GEMM, CANN 8.5 新 kernel; Decode 仍用 MatMulV2)
 #   - 新增 LinearIndex (ScatterElementsV2 内部子 kernel)
 #   - DispatchFFNCombine: vllm-ascend v0.15.0 超级融合 MoE op (csrc/dispatch_ffn_combine/)
 #     替代 MoeDistributeDispatchV2 + GroupedMatmul(×2) + SwiGlu + MoeDistributeCombineV2 + Unpermute
@@ -52,10 +55,13 @@ operator_mappings:
 
   "aten.mm.default":
     kernel_type: MatMulV2
+    alternate_kernel_types: [MatMulV3]
     notes: >
       [HIGH] op-plugin: MmKernelNpuOpApi.cpp.
       aclnn: aclnnMm (ND), aclnnMatmulWeightNz (NZ权重); 两者 Type 均为 MatMulV2.
       Profiling: Qwen3-32B CANN 8.5 MatMulV2(7710x).
+      CANN 8.5 新增 MatMulV3: 大 M (Prefill) 场景下 GEMM 使用 MatMulV3, 小 M (Decode) 仍用 MatMulV2.
+      Qwen3-32B 新 profiling (1P+2D): MatMulV3(128x, FFN gate+up/down, M=4096), MatMulV2(643x, Decode+QKV/O).
 
   "aten.addmm.default":
     kernel_type: MatMulV2
@@ -462,11 +468,13 @@ operator_mappings:
 
   "tensor_cast.reduce_scatter.default":
     kernel_type: hcom_reduceScatter_
-    alternate_kernel_types: [HcomReduceScatter]
+    alternate_kernel_types: [reduce_scatterAicpuKernel, HcomReduceScatter]
     category: communication
     notes: >
       [HIGH] HCCL direct. DSV3 CANN 8.5 aclgraph profiling 中实际出现 hcom_reduceScatter_(2082x),
       非 HcomReduceScatter. 主次关系已按 DSV3 profiling 实测调整.
+      CANN 8.5 新增 reduce_scatterAicpuKernel: AICPU 执行路径变体, 与 allgatherAicpuKernel 对称.
+      Qwen3-32B 新 profiling: reduce_scatterAicpuKernel(129x, 1.71%), 与 hcom_reduceScatter_(129x) 数量相同.
       HcomReduceScatter (CamelCase) 为 torchair 早期版本变体, 保留为 alternate.
 
   "tensor_cast.all_to_all.default":
@@ -946,5 +954,19 @@ torch_npu_reference:
     apis:
       - name: "torch.distributed.reduce_scatter"
         note: "HCCL direct (graph-compiled variant)"
+    aclnn: null
+    microbench_api: "torch.distributed.reduce_scatter"
+
+  MatMulV3:
+    apis:
+      - name: "torch.mm"
+        note: "aclnnMm / aclnnMatmulWeightNz → MatMulV3 (大 M Prefill 场景, CANN 8.5 新增)"
+    aclnn: [aclnnMm, aclnnMatmulWeightNz]
+    microbench_api: "torch.mm"
+
+  reduce_scatterAicpuKernel:
+    apis:
+      - name: "torch.distributed.reduce_scatter"
+        note: "HCCL AICPU reduce_scatter 变体, 与 allgatherAicpuKernel 对称. Graph 编译时由 HCCL 分派到 AICPU 执行."
     aclnn: null
     microbench_api: "torch.distributed.reduce_scatter"
