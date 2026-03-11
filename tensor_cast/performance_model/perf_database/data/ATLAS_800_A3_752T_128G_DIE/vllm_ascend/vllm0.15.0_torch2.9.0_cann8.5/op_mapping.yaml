@@ -461,11 +461,13 @@ operator_mappings:
       Profiling: hcom_allGather_(30x), allgatherAicpuKernel(30x).
 
   "tensor_cast.reduce_scatter.default":
-    kernel_type: HcomReduceScatter
-    alternate_kernel_types: [hcom_reduceScatter_]
+    kernel_type: hcom_reduceScatter_
+    alternate_kernel_types: [HcomReduceScatter]
     category: communication
     notes: >
-      [MEDIUM] HCCL direct. CamelCase = graph-compiled, lowercase = eager.
+      [HIGH] HCCL direct. DSV3 CANN 8.5 aclgraph profiling 中实际出现 hcom_reduceScatter_(2082x),
+      非 HcomReduceScatter. 主次关系已按 DSV3 profiling 实测调整.
+      HcomReduceScatter (CamelCase) 为 torchair 早期版本变体, 保留为 alternate.
 
   "tensor_cast.all_to_all.default":
     kernel_type: hcom_alltoallv_
@@ -706,8 +708,13 @@ operator_mappings:
     notes: >
       [HIGH] vllm-ascend v0.15.0 超级融合 MoE op (csrc/dispatch_ffn_combine/).
       融合: InitRouting + DispatchV2 + 2×MatMul + SwiGlu + CombineV2 + Unpermute.
-      DSv3 CANN 8.5: 路由专家 FFN 全部由此 kernel 执行 (928x).
-      TC 将此分解为 permute_tokens + grouped_matmul×2 + swiglu + unpermute_tokens + all_to_all×2.
+      DSv3 CANN 8.5: 路由专家 FFN 全部由此 kernel 执行 (928x, 35.3%).
+      TC 将此分解为 permute_tokens + grouped_matmul_quant×2 + grouped_matmul_quant_swiglu + unpermute_tokens + all_to_all×2.
+      查询策略: TC sub ops 各自查询对应 kernel CSV (GroupedMatmul, MoeDistributeDispatchV2 等);
+      若 CSV 不存在则通过 alternate_kernel_types 回退到 DispatchFFNCombine.csv.
+      注意: 多个 sub ops 同时 fallback 到 DispatchFFNCombine 会导致重复计数.
+      推荐: Phase 2 为 DispatchFFNCombine 单独采集 microbenchmark, 仅让
+      grouped_matmul_quant_swiglu 使用 DispatchFFNCombine alternate, 其余 sub ops 用 analytic fallback.
 
   "profiling.TransData":
     kernel_type: TransData
