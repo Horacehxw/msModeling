@@ -1,7 +1,7 @@
 # TensorCast 算子性能数据库：技术设计文档
 
-**版本**: 1.2
-**日期**: 2026.3.4
+**版本**: 1.3
+**日期**: 2026.3.10
 **范围**: 面向 LLM 仿真的可扩展实测性能模型，不绑定具体算力卡，支持基于实测 Profiling 数据和 Microbenchmark 数据的算子性能估算。
 **初期目标模型**: DeepSeek-V3、Qwen3-32B
 
@@ -344,11 +344,11 @@ class EmpiricalPerformanceModel(PerformanceModel):
 ```python
 # Profiling 数据库驱动
 pm = EmpiricalPerformanceModel(device_profile,
-    data_source=ProfilingDataSource("data/.../vllm_ascend/v0.13.0/", comm_grid=...))
+    data_source=ProfilingDataSource("data/.../vllm_ascend/v0.13.0/", device_profile))
 
 # Profiling + 插值
 pm = EmpiricalPerformanceModel(device_profile,
-    data_source=InterpolatingDataSource(ProfilingDataSource("data/...")))
+    data_source=InterpolatingDataSource(ProfilingDataSource("data/...", device_profile)))
 ```
 
 ### 4.4 InterpolatingDataSource
@@ -515,7 +515,7 @@ batch_size,avg_seq_len,num_heads,head_dim,dtype,Duration(us)
 # 使用 ProfilingDataSource
 data_source = ProfilingDataSource(
     "perf_database/data/ATLAS_800_A3_752T_128G_DIE/vllm_ascend/v0.13.0",
-    comm_grid=device_profile.comm_grid
+    device_profile,
 )
 perf_model = EmpiricalPerformanceModel(device_profile, data_source)
 runtime = Runtime(perf_models=perf_model, device_profile=device_profile)
@@ -523,23 +523,107 @@ runtime = Runtime(perf_models=perf_model, device_profile=device_profile)
 
 ### 5.2 CLI 接口
 
-在 `tensor_cast/scripts/text_generate.py` 中新增参数：
+在 `cli/inference/text_generate.py` 中支持多性能模型并行：
 
 ```python
 parser.add_argument("--performance-model",
-                    choices=["analytic", "profiling", "empirical"],
-                    default="analytic", help="性能模型类型")
-parser.add_argument("--perf-database", type=str, default=None,
+                    action="append",
+                    default=None,
+                    help="性能模型类型，可多次指定。"
+                         "'analytic': Roofline 模型（默认，无需数据）。"
+                         "'profiling': 基于实测 Profiling 数据库的 EmpiricalPerformanceModel "
+                         "（需要 --profiling-database）。")
+parser.add_argument("--profiling-database", type=str, default=None,
                     help="性能数据库路径（profiling 模式生效），"
                          "指向包含 op_mapping.yaml 和 CSV 数据文件的目录")
+
+# 默认值处理
+if args.performance_model is None:
+    args.performance_model = ["analytic"]
+```
+
+**使用示例**：
+
+```bash
+# 单个模型（默认）
+--performance-model analytic
+
+# 多个模型并行运行
+--performance-model analytic --performance-model profiling --profiling-database /path/to/db
 ```
 
 | CLI 选项 | 创建的模型 | 是否需要物理设备 | 是否需要数据库 |
-|---------|----------|----------------|-------------|
+|---------|----------|----------------|---------------|
 | `--performance-model analytic` | `AnalyticPerformanceModel` | 否 | 否 |
-| `--performance-model profiling` | `EmpiricalPerformanceModel(ProfilingDataSource(...))` | 否 | 是（`--perf-database`） |
+| `--performance-model profiling` | `EmpiricalPerformanceModel(ProfilingDataSource(...))` | 否 | 是（`--profiling-database`） |
+| 多次指定 | 多个模型并行运行，输出多份结果 | 否 | 按需 |
 
-### 5.3 数据流
+### 5.3 UserInputConfig 配置
+
+`UserInputConfig.performance_model` 支持 `Union[str, List[str]]`：
+
+```python
+@dataclass
+class UserInputConfig:
+    performance_model: Union[str, List[str]] = "analytic"
+    """性能模型类型：'analytic' | 'profiling'。
+    可以是单个字符串或字符串列表以运行多个模型。"""
+
+    def _normalize_performance_model(self):
+        """将 performance_model 规范化为字符串列表。"""
+        pm = self.performance_model
+        if isinstance(pm, str):
+            self.performance_model = [pm]
+```
+
+### 5.4 ModelRunner 多模型支持
+
+`ModelRunner.__init__` 构建多个 `PerformanceModel` 实例：
+
+```python
+class ModelRunner:
+    def __init__(self, user_input: UserInputConfig):
+        perf_model_types: List[str] = user_input.performance_model
+        self.perf_models: List[PerformanceModel] = []
+        
+        for perf_model_type in perf_model_types:
+            if perf_model_type == "profiling":
+                data_source = ProfilingDataSource(
+                    user_input.profiling_database,
+                    self.device_profile,
+                )
+                self.perf_models.append(
+                    EmpiricalPerformanceModel(
+                        self.device_profile,
+                        data_source=data_source,
+                        fallback_model=AnalyticPerformanceModel(self.device_profile),
+                    )
+                )
+            elif perf_model_type == "analytic":
+                self.perf_models.append(AnalyticPerformanceModel(self.device_profile))
+```
+
+### 5.5 ModelRunnerMetrics 输出
+
+`ModelRunnerMetrics` 存储每个模型的执行时间和 TPS：
+
+```python
+@dataclass
+class ModelRunnerMetrics:
+    single_card_tps: float  # 第一个模型的 TPS（向后兼容）
+    execution_time_s: Dict[str, float]  # 每个模型的执行时间，按模型名索引
+    tps_per_model: Dict[str, float]  # 每个模型的 TPS，按模型名索引
+    # ... 其他字段
+
+    def print_info(self):
+        for model_name, exec_time in self.execution_time_s.items():
+            print(f"[{model_name}] Execution time: {exec_time:.6f} s")
+            tps = self.tps_per_model.get(model_name)
+            if tps is not None:
+                print(f"[{model_name}] TPS/Device: {tps:.4g} token/s")
+```
+
+### 5.6 数据流
 
 `--performance-model profiling` → 创建 `EmpiricalPerformanceModel(ProfilingDataSource(data_dir))` → Runtime 拦截算子生成 `OpInvokeInfo` → `data_source.lookup()` 查询（分派逻辑见 4.2 节）→ 命中返回实测耗时，未命中 fallback 至 Roofline/CommAnalytic。
 
@@ -1023,6 +1107,50 @@ op-plugin 库（https://github.com/Ascend/op-plugin）的 `op_plugin/config/op_p
 ---
 
 ## Change Log
+
+### v1.2 → v1.3 (2026.3.10)
+
+#### 新增功能
+
+- **[CLI]** `--performance-model` 支持多次指定，可同时运行多个性能模型
+  - 旧用法: `--performance-model analytic` (单选)
+  - 新用法: `--performance-model analytic --performance-model profiling` (多选)
+  - 默认值: `["analytic"]`
+
+- **[ModelRunnerMetrics]** 新增 `tps_per_model: Dict[str, float]` 字段
+  - 存储每个性能模型独立计算的 TPS
+  - `print_info()` 遍历输出每个模型的结果
+
+#### 接口变更
+
+| 组件 | 变更 | 影响 |
+|------|------|------|
+| `UserInputConfig.performance_model` | `str` → `Union[str, List[str]]` | 向后兼容，字符串自动包装为列表 |
+| `ModelRunnerMetrics.execution_time_s` | `float` → `Dict[str, float]` | **Breaking**: 下游代码需适配字典类型 |
+| `ModelRunner.perf_model` | `PerformanceModel` → `List[PerformanceModel]` | 内部变更，API 不变 |
+| `ProfilingDataSource.__init__` | 移除 `comm_grid` 参数，改用 `device_profile` | **Breaking**: 调用方需更新参数 |
+
+#### 代码质量
+
+- **[model_runner.py]** `PerformanceModel` 导入移至 `TYPE_CHECKING` 块 (RUFF TC001)
+- **[user_config.py]** 新增 `_normalize_performance_model()` 规范化逻辑
+- **[user_config.py]** 新增 `word_embedding_tp_mode` 字段及 `_normalize_embedding_tp_mode()` 方法
+
+#### 测试适配
+
+- `test_text_generate.py`: `execution_time_s` 相关断言适配 `Dict[str, float]`
+- `test_vl_compile.py`: 同上
+- `test_text_generate.py`: `ModelRunnerMetrics` 构造新增 `tps_per_model` 参数
+
+#### 文件变更清单
+
+```
+cli/inference/text_generate.py           | CLI 参数改为 action="append"
+tensor_cast/core/user_config.py          | performance_model 类型变更 + WordEmbeddingTPMode
+tensor_cast/core/model_runner.py         | 多模型支持 + ModelRunnerMetrics 字段变更
+tests/test_tensor_cast/test_text_generate.py  | 测试适配
+tests/test_tensor_cast/test_vl_compile.py      | 测试适配
+```
 
 ### v1.1 → v1.2
 
