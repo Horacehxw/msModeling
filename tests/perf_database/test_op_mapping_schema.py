@@ -49,7 +49,7 @@ ALL_MAPPINGS = _discover_op_mappings()
 
 
 def _load_entries(yaml_path):
-    with open(yaml_path) as f:
+    with open(yaml_path ,'r', encoding='utf-8') as f:
         return yaml.safe_load(f).get("operator_mappings", {})
 
 
