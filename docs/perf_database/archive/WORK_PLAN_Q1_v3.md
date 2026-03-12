@@ -1,13 +1,11 @@
-# 算子性能数据库 Q1 工作计划 (v3.1)
+# 算子性能数据库 Q1 工作计划 (v3)
 
 **目标**: 2026.3.23 完成端到端集成，DeepSeek-V3 / Qwen3-32B 仿真误差 <15%
 **基准日期**: 2026.3.5（周四晚发布，3.6 起执行）
 **团队**: 6 人（1 SE + 5 开发）
 **周期**: 3.6-3.23（三个 Phase）
-**设计文档**: `OPERATOR_PERF_DATABASE_DESIGN_zh_v1.3.1.md`（同目录）
+**设计文档**: `OPERATOR_PERF_DATABASE_DESIGN_zh_v1.2.md`（同目录）
 **穿刺总结**: `reports/spike_executive_summary_zh.md`
-**目标版本**: CANN 8.5（vllm 0.15.0 + torch 2.9.0），数据目录 `vllm0.15.0_torch2.9.0_cann8.5/`
-**变更日志**: `CHANGELOG_20260312.md`（同目录）
 
 ---
 
@@ -19,7 +17,6 @@
 - [4. 任务依赖总览](#4-任务依赖总览)
 - [5. Phase 1：核心集成 + Mini 验证（3.6-3.13）](#5-phase-1核心集成--mini-验证36-313)
 - [5.5 C10 后续计划：HCCL 数据入库与验证](#55-c10-后续计划hccl-数据入库与验证)
-- [5.6 C11：DispatchFFNCombine 子内核数据采集（v3.1 新增）](#56-c11dispatchffncombine-子内核数据采集v31-新增)
 - [6. Phase 2：数据扩充 + 融合 Pass + DSV3 深度匹配（3.16-3.20）](#6-phase-2数据扩充--融合-pass--dsv3-深度匹配316-320)
 - [7. Phase 3：端到端精度验证（3.19-3.23）](#7-phase-3端到端精度验证319-323)
 - [8. 风险与缓解](#8-风险与缓解)
@@ -35,8 +32,6 @@
 
 为 TensorCast 构建基于实测 Profiling 数据的算子性能估算系统（`EmpiricalPerformanceModel + DataSource` 模式，设计文档 §1.1）。db-spike 穿刺已验证架构可行性：Qwen3-32B BF16 Prefill 匹配率 87%，计算算子 100%。核心代码 production-ready，直接作为产品分支基础。
 
-> **v3.1 更新**：最终 E2E 验证目标版本调整为 CANN 8.5（vllm 0.15.0 + torch 2.9.0）。CANN 8.3 数据保留作为参考基线。CANN 8.5 引入 DispatchFFNCombine 超级融合（35.3% DSV3），需新增 C11 任务覆盖。
-
 ### 1.2 核心假设
 
 | 假设 | 验证方式 | 若不成立的影响 |
@@ -45,7 +40,6 @@
 | DSV3 W8A8 op_mapping 可增量完成 | C3/C4 映射验证 | 映射工作量翻倍 |
 | MC2 在 compile pass 中已正确融合 | XJT验证 | 需调整 composite fallback |
 | 通用 shape 线性插值 + FIA sqrt 变换可满足所有场景（不需要 per-operator 维度声明） | TCX插值精度测试 + ZZY/HDY override 标注 | 需新增 kernel_overrides |
-| CANN 8.5 DispatchFFNCombine 可通过 composite 分解查询覆盖 | C11 数据采集 + Phase 2 验证 | 需新增 TC 融合 pass（估计 5+ 天） |
 
 ### 1.3 交付标准
 
@@ -61,9 +55,9 @@
 |-------|---------|
 | CLI `--performance-model profiling --compile` | Qwen3-32B + DSV3 端到端可运行 |
 | 精度报告（Qwen3-32B + DSV3） | 端到端误差 <15% |
-| 完整数据库（CSV + YAML） | CANN 8.5 数据，覆盖 Tier 1/2 算子（设计文档 §7.1） |
+| 完整数据库（CSV + YAML） | 覆盖 Tier 1/2 算子（设计文档 §7.1） |
 | validate.py | 可重复验证 |
-| 数据采集工具链（9 个工具） | 可重复执行 |
+| 数据采集工具链（7 个工具） | 可重复执行 |
 
 ---
 
@@ -86,17 +80,14 @@
 | **TCX** | 100% | 数据层全链路：工具链 + Microbenchmark + Attention 查询与数据 + 基础插值；协助 SE 进展管理（日报跟踪、站会记录） | `tools/perf_data_collection/`, attention 查询, 插值 |
 | **ZZY** | 100% | Qwen3 op_mapping：BF16 场景验证 + Decode 扩展 + 自动化方案 spec | `op_mapping.yaml` (Qwen3), 验证报告 |
 | **HDY** | 100% | DSV3 op_mapping + HCCL：W8A8 映射 + 通信数据采集 + DSV3 Profiling 分析 | `op_mapping.yaml` (DSV3), HCCL 数据 |
-| **XJT** | ~~70%~~ 已交接 | 集成层：CLI + compile pass 融合（A1/A2/A3 + MC2 验证 已完成） | CLI, `compilation/` |
-| **LJW** | 100%（3.17起） | 接替 XJT：融合 Pass（DispatchFFNCombine 可行性评估 + 实现） | `compilation/` |
+| **XJT** | 70% | 集成层：CLI + compile pass 融合（MC2 验证, KvRmsNormRopeCache） | CLI, `compilation/` |
 | **HXW** | SE | spec review + 决策 + 进展管理（不 own 产品代码） | — |
-
-> **人员变动（3.12）**：XJT 工作交接给 LJW，LJW 3.17 起全职投入。XJT 已完成 A1/A2/A3 + MC2 验证 + KvRmsNormRopeCache 确认（mlapo 已覆盖，无需独立 pass）。
 
 ### 3.2 协作关系与接口
 
 ```
-XJT→LJW(集成层) ZH(查询层) TCX(数据层) ZZY(Qwen3映射) HDY(DSV3映射)
- CLI/Pass          lookup引擎   CSV工具/插值    op_mapping验证     op_mapping+HCCL
+XJT(集成层)  ZH(查询层)  TCX(数据层)  ZZY(Qwen3映射)  HDY(DSV3映射)
+ CLI/Pass        lookup引擎    CSV工具/插值     op_mapping验证      op_mapping+HCCL
     |                |         Attn查询              |                    |
     |                |              |                |                    |
     +--- pass 产出 --+-- 查询合入 --+-- mapping 同步 -+--------------------+
@@ -215,9 +206,9 @@ HDY |C6+MC2查 |--- C9 --|--- C7 DSV3映射 ----|C8+C10-|
 
 | # | 检查点 | 完成日期 | 验收标准 |
 |---|-------|---------|---------|
-| A1 | CLI `--performance-model {analytic,profiling}` + `--perf-database` 路径参数 | 3.9 → ✅ 3.10 | analytic 行为不变；profiling 模式创建 EmpiricalPerformanceModel |
-| A2 | 端到端：Qwen3-32B Prefill `--performance-model profiling --compile` | 3.11 → ✅ 3.11 | 不报错，log_stats 输出命中率 |
-| A3 | 融合 Pass merge + MC2 pass 验证 + KvRmsNormRopeCache 确认 | 3.13 → ✅ 3.11 | MC2 BF16+W8A8 验证通过；KvRmsNormRopeCache 被 mlapo 覆盖，无需独立 pass |
+| A1 | CLI `--performance-model {analytic,profiling}` + `--perf-database` 路径参数 | 3.9 | analytic 行为不变；profiling 模式创建 EmpiricalPerformanceModel |
+| A2 | 端到端：Qwen3-32B Prefill `--performance-model profiling --compile` | 3.11 | 不报错，log_stats 输出命中率 |
+| A3 | 融合 Pass merge：SwiGlu + GroupedMatmul+SwiGlu 从 develop 合入 + MC2 pass 验证 | 3.13 | 单元测试通过；`tensor_cast.matmul_all_reduce` 出现在 dispatch trace 中 |
 
 **计算+通信融合算子验证要点**：
 - 确认 `--compile` 后 dispatch trace 中出现 `tensor_cast.matmul_all_reduce`（不再是分离的 mm + all_reduce）
@@ -242,8 +233,8 @@ HDY |C6+MC2查 |--- C9 --|--- C7 DSV3映射 ----|C8+C10-|
 
 | # | 检查点 | 完成日期 | 验收标准 |
 |---|-------|---------|---------|
-| B1 | `_lookup_comm()`：从 OpInvokeInfo 计算 message_bytes + topology_tier，查询通信 CSV | 3.11 → ✅ 3.11 | topology_tier 精确匹配实现（8fa2da3） |
-| B2 | `_lookup_composite()`：matmul_all_reduce 分解 + MLA 分解框架 | 3.13 → 🔄 进行中 | MC2 compute+comm sum 初稿完成；MoE/MLA spec 起草中 |
+| B1 | `_lookup_comm()`：从 OpInvokeInfo 计算 message_bytes + topology_tier，查询通信 CSV | 3.11 | 单元测试：all_reduce/all_gather 返回耗时 |
+| B2 | `_lookup_composite()`：matmul_all_reduce 分解 + MLA 分解框架 | 3.13 | 单元测试：matmul_all_reduce 分解后匹配 |
 
 **通信查询实现要点**（设计文档 §4.2）：
 - `args[0]` → `message_bytes = tensor.nelement() * tensor.element_size()`
@@ -285,22 +276,22 @@ HDY |C6+MC2查 |--- C9 --|--- C7 DSV3映射 ----|C8+C10-|
 
 | # | 检查点 | 完成日期 | 验收标准 |
 |---|-------|---------|---------|
-| C1 | Qwen3 Profiling 算子清单：Top-20 (Type, 调用次数, 耗时占比) | 3.9 → ✅ 3.10 | 表格输出 |
-| C2 | TC dispatch trace 导出 | 3.9 → ✅ 3.10 | **发现**：TC compile 路径不可行用于 op_mapping 验证，改用 AI/skill 方案辅助 |
-| C3 | BF16 场景逐条映射验证 | 3.11 → ✅ 3.11 | 验证报告完成（97.01% 覆盖） |
-| C4 | Qwen3 Decode 场景映射补充 + 验证 | 3.12 → 🔄 进行中 | shape 不匹配问题待解决 |
-| C5 | op_mapping 自动化方案 spec | 3.13 | **调整**：TC compile 路径不可行，改为 AI/skill 方案 + 教程增补 |
+| C1 | Qwen3 Profiling 算子清单：Top-20 (Type, 调用次数, 耗时占比) | 3.9 | 表格输出 |
+| C2 | TC dispatch trace 导出：analytic 模式跑 Qwen3-32B Prefill + Decode | 3.9（C1/C2 并行） | trace 日志 |
+| C3 | BF16 场景逐条映射验证：按验证方法论逐条检查 | 3.11 | 验证报告（已验证/需注意/不匹配） |
+| C4 | Qwen3 Decode 场景映射补充 + 验证 | 3.12 | op_mapping 覆盖 Qwen3 Decode Top-15 |
+| C5 | op_mapping 自动化方案 spec + 优化 OP_PLUGIN_MAPPING_TUTORIAL | 3.13 | spec 文档 + 教程增补 DSV3 实例 |
 
 #### HDY（DSV3 主线 + HCCL）
 
 | # | 检查点 | 完成日期 | 验收标准 |
 |---|-------|---------|---------|
-| C6 | DSV3 Profiling 算子清单：Top-20 排序表 | 3.6 → ✅ 3.10 | 表格输出 |
-| 计算+通信融合确认 | 查 DSV3 Profiling 计算+通信融合类 kernel Type | 3.6 → ✅ 3.6 | **结论**：DispatchFFNCombine 占 35.3%（见 A3 结论） |
-| C9 | HCCL 数据采集方案：`generate_comm_microbench.py` 实现 | 3.10 → ✅ 3.11 | 脚本重构完成（单 session + 全局预热） |
-| C7 | DSV3 W8A8 op_mapping 扩展 | 3.12 → ✅ 3.11 | op_mapping 覆盖 DSV3 Top-15 |
-| C8 | W8A8 量化场景映射验证 | 3.13 → ✅ 3.11 | 验证报告完成（98.02% 覆盖） |
-| C10 | HCCL 集群数据采集（4 种通信算子 x 各 topology_tier） | 3.13 → 🔄 部分完成 | CSV 已产出（tier=1/2）；tier=0 需多节点环境（见 §C10 后续计划） |
+| C6 | DSV3 Profiling 算子清单：Top-20 排序表 | 3.6（快速任务） | 表格输出 |
+| 计算+通信融合确认 | 查 DSV3 Profiling 是否有计算+通信融合类 kernel Type（含 MC2 及其他融合形式） | 3.6（1h） | 结论 → 告知XJT和ZH |
+| C9 | HCCL 数据采集方案：`generate_comm_microbench.py` 实现 | 3.10 | 脚本可运行 |
+| C7 | DSV3 W8A8 op_mapping 扩展：QuantBatchMatmulV3, AscendQuantV2, DequantSwigluQuant, GroupedMatmul, TransposeBatchMatMul, MoeGatingTopK 等 | 3.12 | op_mapping 覆盖 DSV3 Top-15 |
+| C8 | W8A8 量化场景映射验证 | 3.13 | 验证报告 |
+| C10 | HCCL 集群数据采集（4 种通信算子 x 各 topology_tier） | 3.13 | CSV 产出（见 §C10 后续计划） |
 
 **插值 override 标注**：分析 op_mapping 时顺便确认各 kernel_type 是否需要插值特殊处理（`interpolation_policy.kernel_overrides`）。预期结果：仅 FusedInferAttentionScore 需要 sqrt 变换，其余算子均适用默认线性插值。
 
@@ -325,10 +316,10 @@ HDY |C6+MC2查 |--- C9 --|--- C7 DSV3映射 ----|C8+C10-|
 
 | # | 检查点 | 完成日期 | 验收标准 |
 |---|-------|---------|---------|
-| D1 | `parse_kernel_details.py` 验证 | 3.6 → ✅ | 输出 CSV 与 db-spike 已有数据一致 |
-| D2 | `_lookup_attention()` 实现 | 3.10 → 🔄 进行中 | 支撑 microbench 问题中 |
-| D3 | InterpolatingDataSource 基础版 | 3.12 → 🔄 进行中 | |
-| D4 | `discover_operators.py` | 3.13 | |
+| D1 | `parse_kernel_details.py` 验证：在 Qwen3 + DSV3 数据上确认输出正确 | 3.6 | 输出 CSV 与 db-spike 已有数据一致 |
+| D2 | `_lookup_attention()` 实现 | 3.10 | 单元测试：Qwen3 Prefill FIA 命中 |
+| D3 | InterpolatingDataSource 基础版：最近邻 + 线性插值 | 3.12 | 单元测试：seq=200 返回估算值 |
+| D4 | `discover_operators.py`：对比 Profiling Type vs op_mapping.yaml | 3.13 | known 算子覆盖 >90% 调用次数 |
 
 **D2 Attention 查询实现要点**（设计文档 §4.8）：
 - 从 `OpInvokeInfo.args[6]`（seq_lens）计算 `batch_size = len(seq_lens)` 和 `avg_seq_len = mean(seq_lens)`
@@ -435,20 +426,6 @@ tensor_cast/performance_model/perf_database/data/
 
 ---
 
-## 5.6 C11：DispatchFFNCombine 子内核数据采集（v3.1 新增）
-
-> **背景**：CANN 8.5 引入 DispatchFFNCombine 超级融合算子，融合 `all_to_all×2 + GroupedMatmul×2 + SwiGlu + MoE routing`，占 DSV3 Decode **35.3%**。当前 op_mapping 已配置 `composite: true` 分解，但子内核 CSV 数据不全。
-
-| # | 任务 | 负责人 | 截止 | 验收标准 |
-|---|------|--------|------|---------|
-| C11-1 | 确认 DispatchFFNCombine 子内核列表 + 现有 CSV 覆盖情况 | HDY | 3.13 | 子内核清单 + 缺口报告 |
-| C11-2 | 缺失子内核 CSV 数据采集（GroupedMatmulSwigluQuant, MoeDistributeDispatch/CombineV2, hcom_alltoallv_） | HDY | 3.18 | CSV 入库 |
-| C11-3 | DispatchFFNCombine composite 分解端到端验证 | ZH | 3.19 | 误差 <20% |
-
-> **注**：C11-1 截止日期提前至 3.13，作为 Phase 1 E2E 验证的前置条件。若子内核 CSV 数据充分，composite 分解即可覆盖；若不充分，Phase 2 需评估 TC 侧融合 pass 可行性（LJW F1）。
-
----
-
 ## 6. Phase 2：数据扩充 + 融合 Pass + DSV3 深度匹配（3.16-3.20，5 个工作日）
 
 **目标**：Microbenchmark 数据扩充 + KvRmsNormRopeCache Pass + DSV3 MoE/MLA 匹配 + Attention 插值升级 + DSV3 mini 验证。
@@ -469,26 +446,26 @@ tensor_cast/performance_model/perf_database/data/
 
 ---
 
-### 任务 F：融合 Pass（LJW，100%，3.17 起）
+### 任务 F：KvRmsNormRopeCache Pass（XJT）
 
-**目标**：评估 DispatchFFNCombine TC 侧融合可行性；若可行则实现 pass，否则依赖 composite 分解兜底。
+**目标**：实现 KvRmsNormRopeCache 融合 pass，使 TC dispatch trace 与 DSV3 Profiling 中的 `KvRmsNormRopeCache` kernel 对齐。
 
-**背景变更（v3.1）**：
-- ~~KvRmsNormRopeCache pass~~：**不再需要**（mlapo op 已覆盖，穿刺验证 3f82c2b）
-- DispatchFFNCombine 成为 CANN 8.5 最高优先级融合需求（35.3% DSV3）
-- LJW 接替 XJT，3.17 起投入
+**背景**：DSV3 Decode 中 `KvRmsNormRopeCache` 占 0.8%（2501 次调用）。TC 当前将其分解为 `rms_norm` + `apply_rope` + `reshape_and_cache` 三个独立 op。NPU 有对应的融合 kernel `npu_kv_rmsnorm_rope_cache`（op-plugin 已有条目）。
 
 **参考实现**：
-- 模式参考：`compilation/patterns/rms_norm.py`（544 行）+ `freezing_passes/grouped_matmul_swiglu_pass.py`（204 行）
-- DispatchFFNCombine 融合了 `all_to_all×2 + GroupedMatmul×2 + SwiGlu + MoE routing`
-- 需获取贺博的超级融合算子设计文档（3.12 站会待办）
+- 模式参考：`compilation/patterns/rms_norm.py`（544 行，RmsNorm 类 pattern）+ `patterns/rotary_embedding.py`（81 行）
+- 图操作参考：`compilation/freezing_passes/grouped_matmul_swiglu_pass.py`（204 行）
+- 自定义 op 注册：`ops/mla.py`（已有 mlapo op，新增 kv_rms_norm_rope_cache）
+
+**修改范围**：新增 `compilation/patterns/kv_rms_norm_rope_cache.py`，修改 `compilation/patterns/__init__.py`，新增 op 到 `ops/mla.py`
 
 | # | 检查点 | 完成日期 | 验收标准 |
 |---|-------|---------|---------|
-| F1 | DispatchFFNCombine 可行性评估 + 设计文档 | 3.18 | 评估报告（做/不做 + 理由） |
-| F2 | （条件性）DispatchFFNCombine pass 实现 | 3.20 | 单元测试通过 |
+| F1 | KvRmsNormRopeCache pattern + custom op + 注册 | 3.17 | 单元测试 + dispatch trace 出现 `tensor_cast.kv_rms_norm_rope_cache` |
 
-**MoeGatingTopK**：Q1 不做 pass，用 op_mapping composite 或 analytic fallback 兜底。Q2 补 pass。
+**工作量估算**：~160 行代码，2-3 天。
+
+**MoeGatingTopK**：Q1 不做 pass，用 op_mapping composite 或 analytic fallback 兜底。Q2 补 pass（预估 250 行，3-4 天）。
 
 ---
 
@@ -522,7 +499,7 @@ tensor_cast/performance_model/perf_database/data/
 | 扩充 CSV 数据库 | shape 覆盖 > Profiling 原始 | TCX |
 | FIA Microbenchmark + sqrt 插值 | 多种 batch/seq + 误差 <20% | TCX |
 | validate.py | 精度报告可输出 | TCX |
-| DispatchFFNCombine 可行性评估（+ 条件性 pass） | 评估报告 / 单元测试通过 | LJW |
+| KvRmsNormRopeCache Pass | 单元测试通过 | XJT |
 | DSV3 MoE/MLA 匹配 | 单元测试通过 | ZH |
 | DSV3 对齐分析 | 对齐表格 + 缺口清单 | ZZY + HDY |
 
@@ -557,10 +534,7 @@ tensor_cast/performance_model/perf_database/data/
 | R6 | op_mapping 错误致系统性 MISS | 匹配率下降 | 中 | 双人交叉 review；discover_operators 检测覆盖率 |
 | R7 | 通信占比高但精度不足（Qwen3 89.8%） | Qwen3 误差超标 | 中 | Phase 1 mini 验证确认 CommAnalytic 精度 |
 | R8 | ZH 50% 导致 Phase 2 DataSource 进度不足 | G1/G2 延期 | 中 | TCX承担 attention+插值减轻ZH负担；MoE/MLA spec 提前准备 |
-| R9 | ~~XJT被其他项目拖住~~ | ~~A2 延期影响全队~~ | ~~中~~ | **已关闭**：A1/A2/A3 已完成，XJT→LJW 交接 |
-| R10 | 单算子与整网算子耗时 gap | Microbenchmark 数据无法直接反映整网场景（3.12 TCX 提出） | 高 | Phase 1 mini 验证暴露差距；TCX 调研解决方案；必要时引入校正因子 |
-| R11 | CANN 8.5 DispatchFFNCombine 覆盖不足 | DSV3 35.3% 耗时无法匹配 | 高 | C11 子内核数据采集 + composite 分解兜底；LJW F1 评估 TC 融合可行性 |
-| R12 | LJW 上手周期 | 新人需 2-3 天熟悉代码 | 中 | XJT 交接 + 现有 compile pass 代码参考丰富 |
+| R9 | XJT被其他项目拖住 | A2 延期影响全队 | 中 | A2 是全队解锁点，3.9确认进展；必要时 SE 兜底 |
 
 ---
 
@@ -571,7 +545,7 @@ develop (稳定主线)
   |
   +-- feat/perf-database (从 db-spike 创建)
         |
-        +-- LJW: feat/perf-db-compiler (接替 XJT)
+        +-- XJT: feat/perf-db-compiler
         +-- ZH:   feat/perf-db-datasource
         +-- TCX: feat/perf-db-toolchain
         +-- ZZY: feat/perf-db-op-mapping
