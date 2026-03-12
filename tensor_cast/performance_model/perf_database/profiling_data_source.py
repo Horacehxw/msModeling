@@ -11,6 +11,7 @@ import pandas as pd
 import torch
 import yaml
 
+from ...device import DeviceProfile
 from .data_source import DataSource, QueryResult, QuerySource
 
 if TYPE_CHECKING:
@@ -161,12 +162,15 @@ class ProfilingDataSource(DataSource):
 
     Init args:
         data_dir: path containing op_mapping.yaml + {KernelType}.csv files
-        comm_grid: optional CommGrid for topology_tier resolution (Phase 2)
+        device_profile: DeviceProfile for comm_grid topology_tier resolution.
+            Optional — when omitted, communication lookups skip tier filtering.
     """
 
-    def __init__(self, data_dir: str | Path, comm_grid=None):
+    def __init__(
+        self, data_dir: str | Path, device_profile: Optional[DeviceProfile] = None
+    ):
         self.data_dir = Path(data_dir)
-        self.comm_grid = comm_grid
+        self.comm_grid = device_profile.comm_grid if device_profile else None
         self._op_mapping = self._load_op_mapping()
         self._csv_cache: Dict[str, Optional[pd.DataFrame]] = {}
         # Set after each lookup() miss to explain why
