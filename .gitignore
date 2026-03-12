@@ -16,3 +16,7 @@ temp/
 
 # perf_database YAML tracked by git, CSV tracked by git-lfs (see .gitattributes)
 # Do NOT ignore tensor_cast/performance_model/perf_database/data/
+
+# AI-generated plan artifacts (superpowers, brainstorming, etc.)
+docs/plans/
+docs/perf_database/plans/
