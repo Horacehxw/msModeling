@@ -482,7 +482,7 @@ operator_mappings:
 
   "tensor_cast.rms_norm_dynamic_quant_mxfp4.default":
     composite: true
-    sub_kernels: [RmsNorm]
+    sub_kernels: [RmsNorm, DynamicQuant]
     notes: >
       [LOW] op-plugin: YAML:6335; MXFP4 quant 部分无 op-plugin 对应.
       aclnn: aclnnRmsNorm.

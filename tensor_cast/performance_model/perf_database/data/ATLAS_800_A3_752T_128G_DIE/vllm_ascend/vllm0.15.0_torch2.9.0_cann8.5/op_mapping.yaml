@@ -400,15 +400,13 @@ operator_mappings:
       [LOW] RmsNorm + MXFP4 quant 分解; MXFP4 部分可能用 npu_dynamic_block_quant.
 
   "tensor_cast.add_rms_norm_dynamic_quant_mxfp4.default":
-    composite: true
-    sub_kernels: [AddRmsNormBias]
+    kernel_type: AddRmsNormDynamicQuant
     notes: >
       [LOW] AddRmsNormBias + MXFP4 quant 分解.
       CANN 8.5: sub_kernel 更新为 AddRmsNormBias (从 AddRmsNorm).
 
   "tensor_cast.add_rms_norm_dynamic_quant2_mxfp4.default":
-    composite: true
-    sub_kernels: [AddRmsNormBias]
+    kernel_type: AddRmsNormDynamicQuant
     notes: >
       [LOW] 同上; '2' 使用 residual.
 
