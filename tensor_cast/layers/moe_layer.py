@@ -176,11 +176,45 @@ class ParallelMoELayer(ModelWrapperBase):
         else:
             self.transform_dp_group = self.global_dp_group.world_size != 1
 
+    def _get_dp_alignment(self):
+        """Get the alignment divisor for MoE DP domain transformations.
+
+        For EP: num_experts * tp_size — ensures that after slice by tp_size
+        AND expert dispatch, each expert's token count is still divisible
+        by tp_size (needed by RowParallelLinear.gather_slice_data path).
+        This is intentionally stricter than the old _get_padding_alignment()
+        in input_generator.py, which only used num_experts * tp_size when
+        moe_tp != tp. The stricter condition is correct because EP expert
+        dispatch always requires tokens divisible by num_experts after slice.
+
+        For non-EP: tp_size — sufficient for all_gather/slice operations.
+        """
+        tp_size = self.global_tp_group.world_size
+        if self.has_ep:
+            num_experts = self._inner.fused_moe.num_global_experts
+            return num_experts * tp_size
+        else:
+            return tp_size
+
     def forward(self, hidden_states: torch.Tensor):
         if self.transform_dp_group:
             origin_shape = hidden_states.shape
             if len(origin_shape) == 3:
                 hidden_states = hidden_states.view(-1, *origin_shape[2:])
+
+            # Pad tokens so that slice/all_gather can divide evenly.
+            # In real vLLM this alignment is guaranteed by the scheduler;
+            # TC must handle arbitrary num_tokens from input_generator.
+            # Capture 2D token count (after any 3D->2D reshape, before padding).
+            num_tokens = hidden_states.shape[0]
+            divisor = self._get_dp_alignment()
+            padding_tokens = (-num_tokens) % divisor
+            # Always call F.pad unconditionally (padding_tokens == 0 is safe).
+            # Avoids a data-dependent branch that breaks torch.compile.
+            hidden_states = torch.nn.functional.pad(
+                hidden_states, (0, 0, 0, padding_tokens)
+            )
+
             if self.has_ep:
                 hidden_states = self.global_tp_group.slice(hidden_states, dim=0)
             else:
@@ -193,6 +227,10 @@ class ParallelMoELayer(ModelWrapperBase):
                 hidden_states = self.global_tp_group.all_gather(hidden_states, dim=0)
             else:
                 hidden_states = self.global_dp_group.slice(hidden_states, dim=0)
+
+            # Remove padding tokens added at entry.
+            hidden_states = hidden_states[:num_tokens]
+
             if len(origin_shape) == 3:
                 hidden_states = hidden_states.view(
                     *origin_shape[:2], *hidden_states.shape[1:]
