@@ -30,6 +30,9 @@ class RequestInfo:
 
 
 def _get_padding_alignment(model_config) -> int:
+    # Deprecated: no longer called at runtime. TP padding is now handled
+    # locally in ParallelMoELayer.forward() via _get_dp_alignment().
+    # Kept for backward compatibility with existing tests.
     parallel_config = model_config.parallel_config
     if (
         parallel_config.moe_tensor_parallel_size != parallel_config.tensor_parallel_size
@@ -120,20 +123,6 @@ def generate_inputs(model, requests: List[RequestInfo], block_size: int = 128):
         (batch_size * query_len,), dtype=torch.long, device="meta"
     )
 
-    # We use padding to ensure that the number of tokens in each DP domain is divisible by tp_size.
-    # This allows the data to be evenly distributed across each device if needed,
-    # thereby enabling arbitrary conversion of DP domains.
-    # two cases:
-    # prefill, moe-tp-size and tp-size usually is different, padding to multiples of (moe-tp-size * tp-size)
-    # decode, moe-tp-size and tp-size usually is same, padding to multiples of tp-size
-    padding_tokens = 0
-    division_num = _get_padding_alignment(model_config)
-
-    if batch_size * query_len % division_num != 0:
-        padding_tokens = division_num - (batch_size * query_len % division_num)
-
-    query_start_loc[-1] = query_start_loc[-1] + padding_tokens
-
     attn_meta = AttentionMetadataTensorCast(
         query_start_loc=query_start_loc,
         seq_lens=seq_lens,
@@ -143,7 +132,7 @@ def generate_inputs(model, requests: List[RequestInfo], block_size: int = 128):
     )
 
     # The total number of new tokens to be processed in this batch, concatenated.
-    num_tokens = batch_size * query_len + padding_tokens
+    num_tokens = batch_size * query_len
     input_ids = torch.empty([1, num_tokens], dtype=torch.long, device="meta")
     position_ids = torch.empty([1, num_tokens], dtype=torch.long, device="meta")
     kv_cache_by_layers, kv_cache_per_token = _get_kv_cache_info(
@@ -390,16 +379,10 @@ def generate_inputs_varlen(model, requests: List[RequestInfo], block_size):
     is_decode_list = [r.is_decode for r in requests]
     num_tokens = sum(query_lens)
 
-    # padding query to make sure total num_tokens is divisible by tp_size in each dp domain
-    division_num = _get_padding_alignment(model_config)
-    padding_nums = (-num_tokens) % division_num
-    num_tokens += padding_nums
-
     query_start_loc = [0]
     for ql in query_lens:
         query_start_loc.append(query_start_loc[-1] + ql)
     query_start_loc = torch.tensor(query_start_loc, dtype=torch.long)
-    query_start_loc[-1] += padding_nums
 
     seq_lens_t = torch.tensor(seq_lens, dtype=torch.long)
     query_len_t = torch.tensor(query_lens, dtype=torch.long)
