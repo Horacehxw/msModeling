@@ -16,6 +16,7 @@
 - [3. 团队与职责](#3-团队与职责)
 - [4. 任务依赖总览](#4-任务依赖总览)
 - [5. Phase 1：核心集成 + Mini 验证（3.6-3.13）](#5-phase-1核心集成--mini-验证36-313)
+- [5.5 C10 后续计划：HCCL 数据入库与验证](#55-c10-后续计划hccl-数据入库与验证)
 - [6. Phase 2：数据扩充 + 融合 Pass + DSV3 深度匹配（3.16-3.20）](#6-phase-2数据扩充--融合-pass--dsv3-深度匹配316-320)
 - [7. Phase 3：端到端精度验证（3.19-3.23）](#7-phase-3端到端精度验证319-323)
 - [8. 风险与缓解](#8-风险与缓解)
@@ -290,7 +291,7 @@ HDY |C6+MC2查 |--- C9 --|--- C7 DSV3映射 ----|C8+C10-|
 | C9 | HCCL 数据采集方案：`generate_comm_microbench.py` 实现 | 3.10 | 脚本可运行 |
 | C7 | DSV3 W8A8 op_mapping 扩展：QuantBatchMatmulV3, AscendQuantV2, DequantSwigluQuant, GroupedMatmul, TransposeBatchMatMul, MoeGatingTopK 等 | 3.12 | op_mapping 覆盖 DSV3 Top-15 |
 | C8 | W8A8 量化场景映射验证 | 3.13 | 验证报告 |
-| C10 | HCCL 集群数据采集（4 种通信算子 x 各 topology_tier） | 3.13 | CSV 产出 |
+| C10 | HCCL 集群数据采集（4 种通信算子 x 各 topology_tier） | 3.13 | CSV 产出（见 §C10 后续计划） |
 
 **插值 override 标注**：分析 op_mapping 时顺便确认各 kernel_type 是否需要插值特殊处理（`interpolation_policy.kernel_overrides`）。预期结果：仅 FusedInferAttentionScore 需要 sqrt 变换，其余算子均适用默认线性插值。
 
@@ -366,6 +367,65 @@ HDY |C6+MC2查 |--- C9 --|--- C7 DSV3映射 ----|C8+C10-|
 
 ---
 
+## 5.5 C10 后续计划：HCCL 数据入库与验证
+
+> **背景**：C10 初次采集（2026.3.11）已产出 4 个通信算子 CSV（all_reduce / all_gather / reduce_scatter / all_to_all），覆盖 tier=1（intra_pod，16 卡）。数据分析发现若干质量问题，需在 H3 交叉验证前完成修复和补采。
+
+### 数据质量现状
+
+| 文件 | 行数 | 问题 |
+|------|------|------|
+| `hcom_allReduce_.csv` | 22（重复） | 两次 torchrun append，需去重；1MB/256MB/512MB 有异常值 |
+| `hcom_allGather_.csv` | 11 | 4KB/16KB 高延迟（HCCL JIT 初始化）；1MB/4MB 偏慢 |
+| `hcom_reduceScatter_.csv` | 10 | 缺 512MB；4KB/16MB 异常 |
+| `hcom_allToAll_.csv` | 11 | 文件名错误（应为 `hcom_alltoallv_.csv`）；4KB/16KB 高延迟 |
+
+**根本原因**：旧脚本每个 op 独立 torchrun，HCCL 每次重新初始化，小消息命中 JIT 编译开销。
+
+### 脚本修复（已完成，commit f16a6ac）
+
+| 修复项 | 说明 |
+|--------|------|
+| 单 session 运行 | 所有 op + message_sizes 合并为一次 torchrun，HCCL 只初始化一次 |
+| 全局预热 | 每个 (op, group) 先跑一次 1KB 触发 HCCL JIT 编译，再开始正式计时 |
+| WARMUP_ITERS 10→20 | 每个 message_size 的预热轮次加倍 |
+| tier=2 覆盖 | 新增 `--num-devices 2`，采集 die_level（同 node 内 2 卡）数据 |
+| 文件名修正 | `_OP_TO_CSV_FILENAME` 映射 `all_to_all → hcom_alltoallv_.csv` |
+
+### 后续任务清单
+
+| # | 任务 | 负责人 | 截止 | 验收标准 |
+|---|------|--------|------|---------|
+| C10-1 | 重新采集：`bash run_comm_bench.sh ./hccl_data_v2`（单 session，含 tier=2） | HDY | 3.14 | 4 个 CSV，每个 22 行（11 sizes × 2 tiers），无重复行 |
+| C10-2 | 数据入库：将 CSV 放入 `data/ATLAS_800_A3_752T_128G_DIE/hccl/v8.5/`（对应 `communication_data_ref: "../../hccl/v8.5/"`） | HDY | 3.14 | ProfilingDataSource `_lookup_comm` 能命中 |
+| C10-3 | 冒烟验证：`pytest tests/perf_database/ -k comm -v` | HDY | 3.14 | 通信查询单元测试通过 |
+| H3 | HCCL Test 交叉验证：用 hccl_test 工具对相同 message_sizes 跑一遍，与 Python benchmark 对比 | HDY | 3.18 | 偏差 <10%；重点验证 1MB/256MB/512MB 异常点 |
+| C10-4（可选）| tier=0（inter_pod）数据采集：需多节点（>16 卡）环境 | HDY | 视资源 | 有多节点资源时补采 |
+
+### 数据入库路径
+
+```
+tensor_cast/performance_model/perf_database/data/
+└── ATLAS_800_A3_752T_128G_DIE/
+    ├── vllm_ascend/vllm0.15.0_torch2.9.0_cann8.5/
+    │   └── op_mapping.yaml  ← communication_data_ref: "../../hccl/v8.5/"
+    └── hccl/
+        └── v8.5/            ← 新建目录，放 4 个 CSV
+            ├── hcom_allReduce_.csv
+            ├── hcom_allGather_.csv
+            ├── hcom_reduceScatter_.csv
+            └── hcom_alltoallv_.csv
+```
+
+### 异常值处理策略
+
+重新采集后若仍有异常值（单次测量抖动），处理优先级：
+1. **H3 交叉验证**：用 hccl_test 确认真实值，以 hccl_test 结果为准覆盖异常行
+2. **InterpolatingDataSource**：异常值会被插值平滑，对端到端精度影响有限
+3. **tier=0 缺失**：当前 DSV3 TP=4 EP=8 的 all_to_all 走 tier=0，暂时 fallback analytic，等多节点资源
+
+---
+
 ## 6. Phase 2：数据扩充 + 融合 Pass + DSV3 深度匹配（3.16-3.20，5 个工作日）
 
 **目标**：Microbenchmark 数据扩充 + KvRmsNormRopeCache Pass + DSV3 MoE/MLA 匹配 + Attention 插值升级 + DSV3 mini 验证。
@@ -428,7 +488,7 @@ HDY |C6+MC2查 |--- C9 --|--- C7 DSV3映射 ----|C8+C10-|
 |---|-------|-------|---------|---------|
 | H1 | HDY | DSV3 Decode Profiling 逐层耗时分析 | 3.16 | 分析报告 |
 | H2 | ZZY | TC vs Profiling 算子对齐表（Qwen3 + DSV3） | 3.18 | 对齐表格（匹配/不匹配/原因） |
-| H3 | HDY | HCCL Test 交叉验证 | 3.18 | Python benchmark 与 hccl_test 偏差 <10% |
+| H3 | HDY | HCCL Test 交叉验证 | 3.18 | Python benchmark 与 hccl_test 偏差 <10%（见 §C10 后续计划） |
 | H4 | ZZY | 未覆盖算子分析 + 耗时影响评估 | 3.20 | 缺口清单 + 优先级排序 |
 | H5 | TCX | `validate.py`：逐算子 + 端到端精度报告输出 | 3.20 | 精度报告可输出 |
 

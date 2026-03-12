@@ -34,7 +34,7 @@ Usage examples:
 
     # Run directly (requires torchrun + torch_npu)
     torchrun --nproc_per_node=16 generate_comm_microbench.py \\
-        --run --output-csv ./hccl_v8.5/hcom_allReduce_.csv \\
+        --do-run --output-csv ./hccl_v8.5/hcom_allReduce_.csv \\
         --ops all_reduce --grid-shape 48 8 2
 """
 
@@ -48,10 +48,18 @@ from pathlib import Path
 from textwrap import dedent
 from typing import List, Optional, Tuple
 
-WARMUP_ITERS = 10
+WARMUP_ITERS = 20
 BENCH_ITERS = 100
 
 _COMM_OPS = ["all_reduce", "all_gather", "reduce_scatter", "all_to_all"]
+
+# Maps op_type → canonical CSV filename expected by ProfilingDataSource / op_mapping.yaml
+_OP_TO_CSV_FILENAME = {
+    "all_reduce": "hcom_allReduce_.csv",
+    "all_gather": "hcom_allGather_.csv",
+    "reduce_scatter": "hcom_reduceScatter_.csv",
+    "all_to_all": "hcom_alltoallv_.csv",  # kernel_type in op_mapping.yaml is hcom_alltoallv_
+}
 
 # message_bytes grid: 1KB ~ 512MB, powers of 4 (covers typical LLM TP/EP sizes)
 _DEFAULT_BYTES_GRID = [
@@ -384,8 +392,14 @@ def run_benchmark(
     topology_tier: int,
     dtype_str: str,
     output_csv: Optional[str],
+    group=None,
 ) -> Optional[dict]:
-    """Run a single benchmark directly in the current process."""
+    """Run a single benchmark directly in the current process.
+
+    Args:
+        group: pre-created dist.ProcessGroup. If None, creates one internally
+               (only safe when called once per group_ranks combination).
+    """
     try:
         import torch
         import torch.distributed as dist
@@ -395,14 +409,22 @@ def run_benchmark(
 
     try:
         import torch_npu  # noqa: F401
-        device = "npu"
+        is_npu = True
     except ImportError:
-        device = "cpu"
+        is_npu = False
 
     rank = dist.get_rank()
-    world_size = dist.get_world_size()
+    local_rank = int(os.environ.get("LOCAL_RANK", rank))
 
-    group = dist.new_group(ranks=group_ranks)
+    # Bind each rank to its own NPU device (critical for HCCL init)
+    if is_npu:
+        torch.npu.set_device(local_rank)
+        device = f"npu:{local_rank}"
+    else:
+        device = "cpu"
+
+    if group is None:
+        group = dist.new_group(ranks=group_ranks)
     if rank not in group_ranks:
         return None
 
@@ -432,15 +454,15 @@ def run_benchmark(
 
     for _ in range(WARMUP_ITERS):
         run_op()
-    if device == "npu":
+    if is_npu:
         torch.npu.synchronize()
 
-    if device == "npu":
+    if is_npu:
         torch.npu.synchronize()
     start = time.perf_counter()
     for _ in range(BENCH_ITERS):
         run_op()
-    if device == "npu":
+    if is_npu:
         torch.npu.synchronize()
     elapsed = time.perf_counter() - start
 
@@ -492,21 +514,30 @@ def build_argparser() -> argparse.ArgumentParser:
               python generate_comm_microbench.py --output-dir ./scripts \\
                   --ops all_reduce --grid-shape 48 8 2 --num-devices 16 --topology-tier 2
 
-              # Generate for all 3 tiers
-              python generate_comm_microbench.py --output-dir ./scripts \\
-                  --ops all_reduce all_gather reduce_scatter \\
-                  --grid-shape 48 8 2 --num-devices 16 64 128 --topology-tier 0 1 2
-
-              # Run directly (requires torchrun + torch_npu)
+              # Run all ops + all tiers in ONE torchrun session (recommended)
+              # tier=1 (intra_pod): 16 devices; tier=2 (die_level): 2 devices
+              # Writes hcom_allReduce_.csv / hcom_allGather_.csv / etc. to --output-dir
               torchrun --nproc_per_node=16 generate_comm_microbench.py \\
-                  --run --output-csv ./hccl_v8.5/hcom_allReduce_.csv \\
+                  --do-run --output-dir ./hccl_data \\
+                  --ops all_reduce all_gather reduce_scatter all_to_all \\
+                  --grid-shape 48 8 2 --num-devices 16 2
+
+              # Single op, single CSV (legacy)
+              torchrun --nproc_per_node=16 generate_comm_microbench.py \\
+                  --do-run --output-csv ./hccl_v8.5/hcom_allReduce_.csv \\
                   --ops all_reduce --grid-shape 48 8 2
         """),
     )
     parser.add_argument(
         "--output-dir",
-        default="./comm_scripts",
-        help="Directory to write generated benchmark scripts (default: ./comm_scripts)",
+        default=None,
+        help=(
+            "Script generation mode: directory to write generated benchmark scripts "
+            "(default: ./comm_scripts). "
+            "Run mode (--do-run): directory to write per-op CSV files "
+            "(hcom_allReduce_.csv, hcom_allGather_.csv, etc.). "
+            "Ignored in run mode when --output-csv is given."
+        ),
     )
     parser.add_argument(
         "--ops",
@@ -557,8 +588,9 @@ def build_argparser() -> argparse.ArgumentParser:
         help="Custom message_bytes grid (default: 1KB~512MB powers-of-4)",
     )
     parser.add_argument(
-        "--run",
+        "--do-run",
         action="store_true",
+        dest="run",
         help="Run benchmarks directly instead of generating scripts (requires torchrun)",
     )
     parser.add_argument(
@@ -594,7 +626,7 @@ def _iter_configs(
                     group = list(range(num_devices))
                     tier = resolve_topology_tier(group, grid_shape)
                     tiers_to_run = [tier]
-                except Exception:
+                except ValueError:
                     tiers_to_run = [len(grid_shape) - 1]
 
             for tier in tiers_to_run:
@@ -629,16 +661,76 @@ def main() -> None:
                   file=sys.stderr)
             sys.exit(1)
 
+        import torch
         rank = dist.get_rank()
+        local_rank = int(os.environ.get("LOCAL_RANK", rank))
+        if _has_torch_npu():
+            import torch_npu  # noqa: F401
+            torch.npu.set_device(local_rank)
+
+        # Resolve per-op output CSV paths.
+        # Priority: --output-csv (single file, legacy) > --output-dir (per-op files) > None
+        if args.output_csv:
+            def _csv_for_op(op_type: str) -> Optional[str]:
+                return args.output_csv
+        elif args.output_dir:
+            run_out_dir = Path(args.output_dir)
+            run_out_dir.mkdir(parents=True, exist_ok=True)
+            def _csv_for_op(op_type: str) -> Optional[str]:
+                return str(run_out_dir / _OP_TO_CSV_FILENAME[op_type])
+        else:
+            def _csv_for_op(op_type: str) -> Optional[str]:
+                return None
+
+        # Pre-create one process group per unique group_ranks to avoid
+        # repeated hcclCommInitRootInfoConfig calls (HCCL error code 1).
+        # dist.new_group() must be called by ALL ranks in the world even if
+        # they are not in the group — so we call it unconditionally here.
+        group_cache: dict = {}
+        unique_groups = []
+        seen = set()
+        for _, _, _, _, group_ranks in configs:
+            key = tuple(group_ranks)
+            if key not in seen:
+                seen.add(key)
+                unique_groups.append(group_ranks)
+        for group_ranks in unique_groups:
+            key = tuple(group_ranks)
+            group_cache[key] = dist.new_group(ranks=list(group_ranks))
+
+        # Global warmup: run each (op, group) once with the smallest message size
+        # to trigger HCCL JIT compilation before actual benchmarking.
+        if rank == 0:
+            print("Running global warmup to trigger HCCL JIT compilation...")
+        warmed = set()
+        for op_type, _, _, _, group_ranks in configs:
+            wkey = (op_type, tuple(group_ranks))
+            if wkey not in warmed:
+                warmed.add(wkey)
+                run_benchmark(
+                    op_type, _DEFAULT_BYTES_GRID[0], group_ranks,
+                    resolve_topology_tier(list(group_ranks), grid_shape),
+                    args.dtype, output_csv=None,
+                    group=group_cache[tuple(group_ranks)],
+                )
+
+        if rank == 0:
+            print("Global warmup done. Starting benchmarks...\n")
+
         for op_type, msg_bytes, num_devices, tier, group_ranks in configs:
-            run_benchmark(op_type, msg_bytes, group_ranks, tier, args.dtype, args.output_csv)
+            run_benchmark(
+                op_type, msg_bytes, group_ranks, tier, args.dtype,
+                _csv_for_op(op_type),
+                group=group_cache[tuple(group_ranks)],
+            )
 
         dist.destroy_process_group()
         if rank == 0:
-            print(f"\nCompleted {len(configs)} benchmarks."
-                  + (f" Results saved to {args.output_csv}" if args.output_csv else ""))
+            n = len(configs)
+            out_info = args.output_csv or args.output_dir or "(no output)"
+            print(f"\nCompleted {n} benchmarks. Results saved to {out_info}")
     else:
-        output_dir = Path(args.output_dir)
+        output_dir = Path(args.output_dir or "./comm_scripts")
         output_dir.mkdir(parents=True, exist_ok=True)
 
         for op_type, msg_bytes, num_devices, tier, group_ranks in configs:
