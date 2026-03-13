@@ -6,7 +6,7 @@ try:
 except ImportError:
     # Fallback for Python 3.10
     from strenum import StrEnum
-from typing import Dict, List, Optional, Type, Union
+from typing import Dict, List, Optional, Type
 
 import torch
 from transformers import PretrainedConfig
@@ -381,7 +381,6 @@ class MoEConfig:
     enable_redundant_experts: bool = False
     enable_external_shared_experts: bool = False
     host_external_shared_experts: bool = False
-    num_experts_key: Union[str, List[str]] = "num_experts"
 
 
 @dataclasses.dataclass(frozen=True)

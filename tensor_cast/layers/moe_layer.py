@@ -189,10 +189,6 @@ class ParallelMoELayer(ModelWrapperBase):
         For EP: num_experts * tp_size — ensures that after slice by tp_size
         AND expert dispatch, each expert's token count is still divisible
         by tp_size (needed by RowParallelLinear.gather_slice_data path).
-        This is intentionally stricter than the old _get_padding_alignment()
-        in input_generator.py, which only used num_experts * tp_size when
-        moe_tp != tp. The stricter condition is correct because EP expert
-        dispatch always requires tokens divisible by num_experts after slice.
 
         For non-EP: tp_size — sufficient for all_gather/slice operations.
         """
@@ -207,7 +203,7 @@ class ParallelMoELayer(ModelWrapperBase):
         if self.transform_dp_group:
             origin_shape = hidden_states.shape
             if len(origin_shape) == 3:
-                hidden_states = hidden_states.view(-1, *origin_shape[2:])
+                hidden_states = hidden_states.reshape(-1, *origin_shape[2:])
 
             # Pad tokens so that slice/all_gather can divide evenly.
             # In real vLLM this alignment is guaranteed by the scheduler;
@@ -239,7 +235,7 @@ class ParallelMoELayer(ModelWrapperBase):
             hidden_states = hidden_states[:num_tokens]
 
             if len(origin_shape) == 3:
-                hidden_states = hidden_states.view(
+                hidden_states = hidden_states.reshape(
                     *origin_shape[:2], *hidden_states.shape[1:]
                 )
 

@@ -13,7 +13,7 @@ from ..layers.attention import AttentionMetadataTensorCast
 from ..layers.sampler import SamplingMetadata
 from ..performance_model import bytes_of_tensor
 from ..transformers.utils import get_attention_quant_config, logger
-from ..utils import exact_division, get_nested_attr
+from ..utils import exact_division
 
 
 @dataclass
@@ -27,26 +27,6 @@ class RequestInfo:
     image_batch_size: int = None
     image_height: int = None
     image_width: int = None
-
-
-def _get_padding_alignment(model_config) -> int:
-    # Deprecated: no longer called at runtime. TP padding is now handled
-    # locally in ParallelMoELayer.forward() via _get_dp_alignment().
-    # Kept for backward compatibility with existing tests.
-    parallel_config = model_config.parallel_config
-    if (
-        parallel_config.moe_tensor_parallel_size != parallel_config.tensor_parallel_size
-        and parallel_config.has_ep()
-    ):
-        num_experts = get_nested_attr(
-            model_config.hf_config, model_config.moe_config.num_experts_key
-        )
-        if num_experts is None:
-            raise ValueError("failed to access number of experts from model config")
-        division_num = num_experts * parallel_config.tensor_parallel_size
-    else:
-        division_num = parallel_config.tensor_parallel_size
-    return division_num
 
 
 def generate_inputs(model, requests: List[RequestInfo], block_size: int = 128):
