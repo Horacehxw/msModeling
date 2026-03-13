@@ -20,3 +20,4 @@ temp/
 # AI-generated plan artifacts (superpowers, brainstorming, etc.)
 docs/plans/
 docs/perf_database/plans/
+.worktrees
