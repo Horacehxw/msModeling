@@ -382,7 +382,7 @@ def generate_comm_script(
 
 
 # ============================================================================
-# Direct run mode (--run)
+# Direct run mode (--do-run)
 # ============================================================================
 
 def run_benchmark(
@@ -596,7 +596,7 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output-csv",
         default=None,
-        help="CSV file to append results to (used with --run, format per §4.7)",
+        help="CSV file to append results to (used with --do-run, format per §4.7)",
     )
     return parser
 
@@ -645,6 +645,15 @@ def main() -> None:
     bytes_grid = args.bytes_grid or _DEFAULT_BYTES_GRID
     grid_shape = args.grid_shape
 
+    # Validate: --output-csv only supports a single op to avoid silent data mixing
+    if args.output_csv and len(args.ops) > 1:
+        print(
+            "ERROR: --output-csv only supports a single --ops value. "
+            "Use --output-dir for multiple ops.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     configs = _iter_configs(
         args.ops, args.num_devices, args.topology_tier,
         grid_shape, bytes_grid, args.dtype,
@@ -657,7 +666,7 @@ def main() -> None:
                 dist.init_process_group(backend="hccl" if _has_torch_npu() else "gloo")
         except Exception as e:
             print(f"ERROR: Failed to initialize distributed: {e}", file=sys.stderr)
-            print("Hint: run with `torchrun --nproc_per_node=N generate_comm_microbench.py --run ...`",
+            print("Hint: run with `torchrun --nproc_per_node=N generate_comm_microbench.py --do-run ...`",
                   file=sys.stderr)
             sys.exit(1)
 

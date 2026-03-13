@@ -176,6 +176,13 @@ class ProfilingDataSource(DataSource):
         # Set after each lookup() miss to explain why
         self.last_miss_reason: str = ""
 
+        # Resolve communication_data_ref for bench CSV fallback (§4.7)
+        comm_ref = self._op_mapping.get("communication_data_ref")
+        if comm_ref:
+            self._comm_data_dir = (self.data_dir / comm_ref).resolve()
+        else:
+            self._comm_data_dir = None
+
     def _load_op_mapping(self) -> dict:
         yaml_path = self.data_dir / "op_mapping.yaml"
         if not yaml_path.exists():
@@ -188,6 +195,10 @@ class ProfilingDataSource(DataSource):
         if kernel_type in self._csv_cache:
             return self._csv_cache[kernel_type]
         csv_path = self.data_dir / f"{kernel_type}.csv"
+        if not csv_path.exists() and self._comm_data_dir and kernel_type.startswith("hcom_"):
+            alt_path = self._comm_data_dir / f"{kernel_type}.csv"
+            if alt_path.exists():
+                csv_path = alt_path
         if not csv_path.exists():
             logger.debug("CSV not found: %s", csv_path)
             self._csv_cache[kernel_type] = None
@@ -343,6 +354,7 @@ class ProfilingDataSource(DataSource):
             self.last_miss_reason = "unmapped"
             return None
 
+        # Priority 1: bench CSV (also searches _comm_data_dir via _load_csv)
         df = self._load_csv(kernel_type)
         if df is None:
             self.last_miss_reason = "csv_not_found"
