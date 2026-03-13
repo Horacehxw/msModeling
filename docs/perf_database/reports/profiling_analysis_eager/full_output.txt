@@ -1,0 +1,1029 @@
+
+====================================================================================================
+  MODEL: DSv3
+====================================================================================================
+  Scenarios: ['profiler_decode_batch1', 'profiler_decode_batch16', 'profiler_decode_batch32', 'profiler_decode_batch4', 'profiler_decode_batch8', 'profiler_prefill_input1024', 'profiler_prefill_input256', 'profiler_prefill_input4096']
+  Total kernel rows: 117,546
+  Total duration: 52,901,517.7 us (52.902 s)
+  Compute: 1,033,856.5 us (2.0%)
+  Comm: 29,354,783.7 us (55.5%)
+  Fused: 22,512,877.4 us (42.6%)
+
+── Per-Scenario Breakdown ──
+                  scenario     total_us  compute_us  compute_pct     comm_us  comm_pct    fused_us  fused_pct  n_kernels
+    profiler_decode_batch1  3848049.210   57137.920     1.484854 2976315.476 77.346087  814595.814  21.169059       7594
+   profiler_decode_batch16  8254042.382  176882.730     2.142983 4214060.288 51.054503 3863099.364  46.802514      18550
+   profiler_decode_batch32 12666045.512  182197.374     1.438471 9050842.740 71.457526 3433005.398  27.104003      22911
+    profiler_decode_batch4  6812329.324  128797.598     1.890654 2548396.348 37.408590 4135135.378  60.700756      15625
+    profiler_decode_batch8  6312745.104  129309.544     2.048388 1870848.588 29.636055 4312586.972  68.315557      14882
+profiler_prefill_input1024  5131003.270  101656.654     1.981224 3039989.730 59.247472 1989356.886  38.771304      11812
+ profiler_prefill_input256  5480593.448   86987.388     1.587189 3413323.106 62.280173 1980282.954  36.132637      11387
+profiler_prefill_input4096  4396709.410  170887.326     3.886710 2241007.456 50.970106 1984814.628  45.143184      14785
+
+── Communication Ops ──
+                  OP Type category  total_duration_us  pct_of_total  n_invocations  mean_duration_us  std_duration_us
+      hcom_reduceScatter_     comm        16088493.72         30.41           5015           3208.07          2729.62
+          hcom_allGather_     comm        13160107.46         24.88           9851           1335.92          1377.34
+ RINGMLAPrefillBF16Kernel     comm           58588.84          0.11            427            137.21            77.80
+reduce_scatterAicpuKernel     comm           34210.40          0.06            195            175.44            79.30
+     allgatherAicpuKernel     comm           13383.32          0.03             73            183.33            99.23
+
+── Fused Comm+Compute Ops ──
+           OP Type           category  total_duration_us  pct_of_total  n_invocations  mean_duration_us  std_duration_us
+DispatchFFNCombine comm+compute fused        22512877.39         42.56           4118           5466.94          6289.96
+
+── Compute Ops (top ops covering >=99% of compute time) ──
+                 OP Type category  total_duration_us  pct_of_total  pct_of_compute  cumul_pct_compute  n_invocations  mean_duration_us  std_duration_us  n_shape_groups  n_groups_with_cv  cv_min  cv_median  cv_max
+      QuantBatchMatmulV3  compute        407639.1820        0.7706         39.4290            39.4290          15616           26.1039          11.7416              50                50  0.0049     0.0271  0.0691
+                     Neg  compute         91750.0420        0.1734          8.8745            48.3035             38         2414.4748        3291.0663              10                 5  0.7912     1.4105  1.7274
+           AscendQuantV2  compute         69947.9520        0.1322          6.7657            55.0693           6954           10.0587           2.8309              26                26  0.0072     0.0672  0.1256
+                MatMulV2  compute         69075.2260        0.1306          6.6813            61.7506           4583           15.0721          20.7237              21                16  0.0017     0.0316  0.1685
+          AddRmsNormBias  compute         40627.8360        0.0768          3.9297            65.6803           8662            4.6904           3.7079               6                 6  0.0298     0.0612  0.0936
+            DynamicQuant  compute         37608.2380        0.0711          3.6377            69.3180           8662            4.3417           3.5383              23                23  0.0018     0.0526  0.1525
+               TransData  compute         35129.7860        0.0664          3.3979            72.7159           2074           16.9382           0.1519               1                 1  0.0090     0.0090  0.0090
+FusedInferAttentionScore  compute         32162.6360        0.0608          3.1109            75.8269           2074           15.5075           6.3692              10                10  0.0298     0.0348  0.5027
+           MoeGatingTopK  compute         27144.9380        0.0513          2.6256            78.4525           4118            6.5918           6.1445               6                 6  0.0903     0.1130  0.1263
+    TransposeBatchMatMul  compute         25890.1340        0.0489          2.5042            80.9567           2074           12.4832           0.9496              10                10  0.0649     0.0717  0.0775
+                   Slice  compute         23443.0060        0.0443          2.2675            83.2242           5551            4.2232           3.0964              24                24  0.0469     0.0867  0.2409
+          InterleaveRope  compute         22891.3460        0.0433          2.2142            85.4384           2318            9.8755           7.0539              14                14  0.0191     0.0361  0.0450
+                     Add  compute         21741.7380        0.0411          2.1030            87.5414           6545            3.3219          39.9064              28                19  0.0048     0.0562  0.2054
+           BatchMatMulV2  compute         17504.0640        0.0331          1.6931            89.2344           2074            8.4398           0.2704              10                10  0.0254     0.0312  0.0331
+                  SwiGlu  compute         17216.2340        0.0325          1.6652            90.8997           4331            3.9751           2.8721              12                12  0.0017     0.0536  0.1275
+               Transpose  compute         14610.4960        0.0276          1.4132            92.3129            868           16.8324           2.4335              18                13  0.0132     0.1207  0.2514
+      KvRmsNormRopeCache  compute         13574.4900        0.0257          1.3130            93.6259           2318            5.8561           5.2863              14                14  0.0379     0.0493  0.0988
+                 RmsNorm  compute         13438.7820        0.0254          1.2999            94.9258           2389            5.6253           4.7024              12                 8  0.0261     0.0607  0.0663
+                    Muls  compute         10020.8060        0.0189          0.9693            95.8950           4118            2.4334           1.7698               6                 6  0.0145     0.0228  0.0448
+                    Cast  compute          9500.0140        0.0180          0.9189            96.8139           7070            1.3437           0.5479              50                39  0.0015     0.0963  0.2719
+             BroadcastTo  compute          4677.3240        0.0088          0.4524            97.2663            509            9.1892           3.6657               6                 6  0.0549     0.0909  0.1331
+              TensorMove  compute          4343.0340        0.0082          0.4201            97.6864            492            8.8273           2.1576               8                 8  0.0797     0.0981  0.2306
+            GreaterEqual  compute          4007.6120        0.0076          0.3876            98.0740            109           36.7671         324.5595              16                 7  0.0053     0.0702  4.5732
+                    Fill  compute          3786.5320        0.0072          0.3663            98.4403           2227            1.7003           0.1362               4                 4  0.0435     0.0838  0.1846
+               AsStrided  compute          3401.7520        0.0064          0.3290            98.7693            854            3.9833           0.3599               9                 9  0.0753     0.0890  0.0961
+  PagedCacheLoadNdKernel  compute          2144.9740        0.0041          0.2075            98.9768            183           11.7212           1.2954               3                 3  0.0613     0.0633  0.1167
+              MaskedFill  compute          1840.5060        0.0035          0.1780            99.1548            109           16.8854           7.9028              16                 7  0.0057     0.0241  0.1558
+
+  Remaining 18 compute op types: 8,737.9 us (0.85% of compute)
+  Remaining ops: ArgMaxV2, SoftmaxV2, Index, DSARandomUniform, RealDiv, Mul, GatherV2, Log, Sub, Less, LogicalAnd, LogicalNot, ScatterElementsV2, SelectV2, LinearIndex, Triu, Equal, OnesLike
+
+── Per-Scenario Top Op Breakdown ──
+
+  profiler_decode_batch1 (total: 3,848,049.2 us)
+                    Type           category   total_us  count  mean_us   pct
+     hcom_reduceScatter_               comm 1580398.70    398  3970.85 41.07
+         hcom_allGather_               comm 1395916.77    770  1812.88 36.28
+      DispatchFFNCombine comm+compute fused  814595.81    232  3511.19 21.17
+      QuantBatchMatmulV3            compute   24948.53   1037    24.06  0.65
+           AscendQuantV2            compute    5065.40    549     9.23  0.13
+                MatMulV2            compute    3272.54    235    13.93  0.09
+               TransData            compute    3098.03    183    16.93  0.08
+                     Neg            compute    2834.94      3   944.98  0.07
+    TransposeBatchMatMul            compute    2282.91    183    12.47  0.06
+FusedInferAttentionScore            compute    2080.08    183    11.37  0.05
+          AddRmsNormBias            compute    1890.86    488     3.87  0.05
+            DynamicQuant            compute    1755.60    488     3.60  0.05
+           BatchMatMulV2            compute    1552.23    183     8.48  0.04
+          InterleaveRope            compute    1236.84    183     6.76  0.03
+           MoeGatingTopK            compute    1206.98    232     5.20  0.03
+
+  profiler_decode_batch16 (total: 8,254,042.4 us)
+                    Type           category   total_us  count  mean_us   pct
+      DispatchFFNCombine comm+compute fused 3863099.36    580  6660.52 46.80
+     hcom_reduceScatter_               comm 2596952.97    936  2774.52 31.46
+         hcom_allGather_               comm 1617107.32   1802   897.40 19.59
+      QuantBatchMatmulV3            compute   59310.63   2501    23.71  0.72
+                     Neg            compute   41288.46      7  5898.35  0.50
+           AscendQuantV2            compute   12014.63   1281     9.38  0.15
+                MatMulV2            compute    7951.82    587    13.55  0.10
+               TransData            compute    7235.71    427    16.95  0.09
+FusedInferAttentionScore            compute    5470.55    427    12.81  0.07
+    TransposeBatchMatMul            compute    5254.74    427    12.31  0.06
+          AddRmsNormBias            compute    4720.21   1220     3.87  0.06
+            DynamicQuant            compute    4371.76   1220     3.58  0.05
+               Transpose            compute    3945.59    248    15.91  0.05
+           BatchMatMulV2            compute    3607.17    427     8.45  0.04
+          InterleaveRope            compute    3354.95    427     7.86  0.04
+
+  profiler_decode_batch32 (total: 12,666,045.5 us)
+                    Type           category   total_us  count  mean_us   pct
+     hcom_reduceScatter_               comm 4691314.70   1082  4335.78 37.04
+         hcom_allGather_               comm 4359528.04   2074  2101.99 34.42
+      DispatchFFNCombine comm+compute fused 3433005.40    754  4553.06 27.10
+      QuantBatchMatmulV3            compute   73913.75   3050    24.23  0.58
+           AscendQuantV2            compute   14106.50   1464     9.64  0.11
+                MatMulV2            compute   10094.05    762    13.25  0.08
+               TransData            compute    8265.75    488    16.94  0.07
+FusedInferAttentionScore            compute    7378.70    488    15.12  0.06
+               Transpose            compute    6685.94    372    17.97  0.05
+                     Neg            compute    6624.82      8   828.10  0.05
+          AddRmsNormBias            compute    6161.03   1586     3.88  0.05
+    TransposeBatchMatMul            compute    6130.60    488    12.56  0.05
+            DynamicQuant            compute    5771.63   1586     3.64  0.05
+          InterleaveRope            compute    4422.51    488     9.06  0.03
+           BatchMatMulV2            compute    4109.25    488     8.42  0.03
+
+  profiler_decode_batch4 (total: 6,812,329.3 us)
+                    Type           category   total_us  count  mean_us   pct
+      DispatchFFNCombine comm+compute fused 4135135.38    580  7129.54 60.70
+     hcom_reduceScatter_               comm 1565840.26    692  2262.77 22.99
+         hcom_allGather_               comm  982556.08   1310   750.04 14.42
+      QuantBatchMatmulV3            compute   51546.28   2135    24.14  0.76
+                     Neg            compute   15927.70      5  3185.54  0.23
+           AscendQuantV2            compute    8398.10    915     9.18  0.12
+                MatMulV2            compute    7451.01    585    12.74  0.11
+               TransData            compute    5162.95    305    16.93  0.08
+                     Add            compute    5149.72    900     5.72  0.08
+          AddRmsNormBias            compute    4700.43   1220     3.85  0.07
+            DynamicQuant            compute    4345.90   1220     3.56  0.06
+    TransposeBatchMatMul            compute    3825.03    305    12.54  0.06
+FusedInferAttentionScore            compute    3473.13    305    11.39  0.05
+           MoeGatingTopK            compute    2969.35    580     5.12  0.04
+           BatchMatMulV2            compute    2580.72    305     8.46  0.04
+
+  profiler_decode_batch8 (total: 6,312,745.1 us)
+                    Type           category   total_us  count  mean_us   pct
+      DispatchFFNCombine comm+compute fused 4312586.97    522  8261.66 68.32
+     hcom_reduceScatter_               comm 1172452.66    682  1719.14 18.57
+         hcom_allGather_               comm  698395.93   1304   535.58 11.06
+      QuantBatchMatmulV3            compute   48794.90   2013    24.24  0.77
+                     Neg            compute   21323.29      5  4264.66  0.34
+           AscendQuantV2            compute    8470.41    915     9.26  0.13
+                MatMulV2            compute    6858.34    527    13.01  0.11
+               TransData            compute    5162.75    305    16.93  0.08
+          AddRmsNormBias            compute    4245.44   1098     3.87  0.07
+            DynamicQuant            compute    3930.03   1098     3.58  0.06
+FusedInferAttentionScore            compute    3840.09    305    12.59  0.06
+    TransposeBatchMatMul            compute    3831.42    305    12.56  0.06
+               Transpose            compute    3034.90    186    16.32  0.05
+           MoeGatingTopK            compute    2687.16    522     5.15  0.04
+           BatchMatMulV2            compute    2559.68    305     8.39  0.04
+
+  profiler_prefill_input1024 (total: 5,131,003.3 us)
+                     Type           category   total_us  count  mean_us   pct
+       DispatchFFNCombine comm+compute fused 1989356.89    464  4287.41 38.77
+      hcom_reduceScatter_               comm 1575211.78    365  4315.65 30.70
+          hcom_allGather_               comm 1443516.55    798  1808.92 28.13
+       QuantBatchMatmulV3            compute   41548.41   1525    27.24  0.81
+reduce_scatterAicpuKernel               comm   11286.20     65   173.63  0.22
+ RINGMLAPrefillBF16Kernel               comm    8846.30    122    72.51  0.17
+                 MatMulV2            compute    8594.81    589    14.59  0.17
+            AscendQuantV2            compute    6122.65    549    11.15  0.12
+           AddRmsNormBias            compute    5764.25    976     5.91  0.11
+             DynamicQuant            compute    5249.27    976     5.38  0.10
+            MoeGatingTopK            compute    4009.96    464     8.64  0.08
+                    Slice            compute    3958.23    793     4.99  0.08
+ FusedInferAttentionScore            compute    3424.45    122    28.07  0.07
+                      Add            compute    2418.41    658     3.68  0.05
+           InterleaveRope            compute    2373.04    183    12.97  0.05
+
+  profiler_prefill_input256 (total: 5,480,593.4 us)
+                    Type           category   total_us  count  mean_us   pct
+      DispatchFFNCombine comm+compute fused 1980282.95    464  4267.85 36.13
+     hcom_reduceScatter_               comm 1829485.41    430  4254.62 33.38
+         hcom_allGather_               comm 1581035.39    804  1966.46 28.85
+      QuantBatchMatmulV3            compute   39776.62   1525    26.08  0.73
+                MatMulV2            compute    6631.46    528    12.56  0.12
+           AscendQuantV2            compute    5562.79    549    10.13  0.10
+            DynamicQuant            compute    4481.87    976     4.59  0.08
+          AddRmsNormBias            compute    4355.38    976     4.46  0.08
+           MoeGatingTopK            compute    3368.07    464     7.26  0.06
+RINGMLAPrefillBF16Kernel               comm    2802.31     61    45.94  0.05
+FusedInferAttentionScore            compute    2300.08    122    18.85  0.04
+               TransData            compute    2063.95    122    16.92  0.04
+                     Add            compute    2003.12    658     3.04  0.04
+                   Slice            compute    1976.59    610     3.24  0.04
+          InterleaveRope            compute    1967.16    183    10.75  0.04
+
+  profiler_prefill_input4096 (total: 4,396,709.4 us)
+                     Type           category   total_us  count  mean_us   pct
+       DispatchFFNCombine comm+compute fused 1984814.63    522  3802.33 45.14
+          hcom_allGather_               comm 1082051.38    989  1094.09 24.61
+      hcom_reduceScatter_               comm 1076837.23    430  2504.27 24.49
+       QuantBatchMatmulV3            compute   67800.07   1830    37.05  1.54
+ RINGMLAPrefillBF16Kernel               comm   46940.22    244   192.38  1.07
+reduce_scatterAicpuKernel               comm   22924.20    130   176.34  0.52
+                 MatMulV2            compute   18221.20    770    23.66  0.41
+     allgatherAicpuKernel               comm   12254.42     69   177.60  0.28
+                    Slice            compute   10210.02   1342     7.61  0.23
+            AscendQuantV2            compute   10207.47    732    13.94  0.23
+           AddRmsNormBias            compute    8790.23   1098     8.01  0.20
+             DynamicQuant            compute    7702.18   1098     7.01  0.18
+            MoeGatingTopK            compute    5958.69    522    11.42  0.14
+           InterleaveRope            compute    5115.60    244    20.97  0.12
+ FusedInferAttentionScore            compute    4195.54    122    34.39  0.10
+
+── CV Detail for Compute Ops ──
+
+  QuantBatchMatmulV3: 50 shape groups, 50 with CV
+                     Input Shapes        Input Data Types    n  mean_us  std_us     cv    total_us
+    "1,7168;128,448,16,32;4096;1" INT8;INT8;DT_BF16;FLOAT 3770  32.2231  1.7423 0.0541 121481.0460
+    "1,2048;224,128,16,32;7168;1" INT8;INT8;DT_BF16;FLOAT 3770  19.8709  0.6800 0.0342  74913.3620
+  "1,7168;66,448,16,32;2112;2112"   INT8;INT8;FLOAT;INT32 1952  28.2906  0.7511 0.0265  55223.3480
+      "8,2048;224,128,16,32;7168"         INT8;INT8;FLOAT 1952  21.4489  0.6733 0.0314  41868.1560
+   "1,1536;96,96,16,32;3072;3072"   INT8;INT8;FLOAT;INT32 1220  15.7686  0.4345 0.0276  19237.6800
+   "2048,2048;224,128,16,32;7168"         INT8;INT8;FLOAT   61 131.3902  2.1581 0.0164   8014.8020
+    "8,7168;144,448,16,32;4608;8" INT8;INT8;DT_BF16;FLOAT  195  34.4162  1.0444 0.0303   6711.1620
+   "1024,2048;224,128,16,32;7168"         INT8;INT8;FLOAT   61  77.6394  2.2738 0.0293   4736.0040
+"256,7168;128,448,16,32;4096;256" INT8;INT8;DT_BF16;FLOAT   58  78.6320  4.5442 0.0578   4560.6540
+    "8,2304;224,144,16,32;7168;8" INT8;INT8;DT_BF16;FLOAT  195  21.9003  0.8071 0.0369   4270.5540
+
+  Neg: 10 shape groups, 5 with CV
+Input Shapes Input Data Types  n    mean_us    std_us     cv   total_us
+  "1,129280"            FLOAT 24  1734.4412 2664.3673 1.5362 41626.5880
+  "7,129280"            FLOAT  1 11628.7480    0.0000    NaN 11628.7480
+  "5,129280"            FLOAT  3  3242.1473 5600.3236 1.7274  9726.4420
+  "4,129280"            FLOAT  2  4061.2590 3213.0861 0.7912  8122.5180
+  "3,129280"            FLOAT  1  7132.5580    0.0000    NaN  7132.5580
+  "6,129280"            FLOAT  2  3456.7910 4875.7714 1.4105  6913.5820
+  "8,129280"            FLOAT  2  1512.3290 2126.3960 1.4060  3024.6580
+ "12,129280"            FLOAT  1  1812.2620    0.0000    NaN  1812.2620
+ "10,129280"            FLOAT  1  1755.0860    0.0000    NaN  1755.0860
+  "2,129280"            FLOAT  1     7.6000    0.0000    NaN     7.6000
+
+  AscendQuantV2: 26 shape groups, 26 with CV
+         Input Shapes        Input Data Types    n  mean_us  std_us     cv   total_us
+   "1,7168;7168;7168" DT_BF16;DT_BF16;DT_BF16 1952  10.2172  1.2362 0.1210 19943.9500
+   "8,2048;2048;2048" DT_BF16;DT_BF16;DT_BF16 1952   9.3971  0.9631 0.1025 18343.1900
+   "1,1536;1536;1536" DT_BF16;DT_BF16;DT_BF16 1220   7.8413  0.7795 0.0994  9566.3680
+   "5,1536;1536;1536" DT_BF16;DT_BF16;DT_BF16  183   8.5618  0.6566 0.0767  1566.8040
+"2048,2048;2048;2048" DT_BF16;DT_BF16;DT_BF16   61  25.6761  0.8977 0.0350  1566.2400
+   "8,1536;1536;1536" DT_BF16;DT_BF16;DT_BF16  122  11.0867  0.4785 0.0432  1352.5780
+"2048,1536;1536;1536" DT_BF16;DT_BF16;DT_BF16   61  21.1350  0.8201 0.0388  1289.2320
+  "16,2048;2048;2048" DT_BF16;DT_BF16;DT_BF16  122  10.4923  1.2822 0.1222  1280.0660
+   "2,7168;7168;7168" DT_BF16;DT_BF16;DT_BF16  122  10.0493  1.1550 0.1149  1226.0120
+"1024,2048;2048;2048" DT_BF16;DT_BF16;DT_BF16   61  18.4569  0.1323 0.0072  1125.8700
+
+  MatMulV2: 21 shape groups, 16 with CV
+           Input Shapes Input Data Types    n  mean_us  std_us     cv   total_us
+      "1,7168;256,7168"  DT_BF16;DT_BF16 3770  11.1071  0.5586 0.0503 41873.6780
+    "1,7168;16160,7168"  DT_BF16;DT_BF16   24 225.8547 38.0655 0.1685  5420.5120
+"1024,512;32,256,16,16"  DT_BF16;DT_BF16  122  30.1501  1.4227 0.0472  3678.3100
+"3072,512;32,256,16,16"  DT_BF16;DT_BF16   61  56.6408  0.4461 0.0079  3455.0860
+"2048,512;32,256,16,16"  DT_BF16;DT_BF16   61  53.5649  0.8105 0.0151  3267.4560
+ "768,512;32,256,16,16"  DT_BF16;DT_BF16   61  25.4132  0.8813 0.0347  1550.2060
+ "256,512;32,256,16,16"  DT_BF16;DT_BF16  122  12.6867  0.5992 0.0472  1547.7820
+      "2,7168;256,7168"  DT_BF16;DT_BF16  116  10.8927  0.5980 0.0549  1263.5580
+    "256,7168;256,7168"  DT_BF16;DT_BF16   58  21.1323  0.5503 0.0260  1225.6720
+    "128,7168;256,7168"  DT_BF16;DT_BF16   58  18.1803  0.3875 0.0213  1054.4600
+
+  AddRmsNormBias: 6 shape groups, 6 with CV
+                 Input Shapes                Input Data Types    n  mean_us  std_us     cv   total_us
+    "1,7168;1,7168;7168;7168" DT_BF16;DT_BF16;DT_BF16;DT_BF16 7930   3.8553  0.1150 0.0298 30572.7640
+"256,7168;256,7168;7168;7168" DT_BF16;DT_BF16;DT_BF16;DT_BF16  122  25.4940  1.3807 0.0542  3110.2620
+  "96,7168;96,7168;7168;7168" DT_BF16;DT_BF16;DT_BF16;DT_BF16  122  20.3879  1.3905 0.0682  2487.3180
+"128,7168;128,7168;7168;7168" DT_BF16;DT_BF16;DT_BF16;DT_BF16  122  19.6770  1.8413 0.0936  2400.5980
+  "32,7168;32,7168;7168;7168" DT_BF16;DT_BF16;DT_BF16;DT_BF16  122   8.8532  0.7496 0.0847  1080.0900
+    "2,7168;2,7168;7168;7168" DT_BF16;DT_BF16;DT_BF16;DT_BF16  244   4.0033  0.1740 0.0435   976.8040
+
+  DynamicQuant: 23 shape groups, 23 with CV
+Input Shapes Input Data Types    n  mean_us  std_us     cv   total_us
+    "1,7168"          DT_BF16 3770   3.6155  0.3261 0.0902 13630.5280
+    "1,2048"          DT_BF16 3770   3.3246  0.1150 0.0346 12533.8300
+  "256,7168"          DT_BF16   61  24.5379  1.0112 0.0412  1496.8140
+   "96,7168"          DT_BF16   58  23.0157  1.3954 0.0606  1334.9100
+  "128,7168"          DT_BF16   58  19.7606  0.6813 0.0345  1146.1160
+    "8,2304"          DT_BF16  195   5.5116  0.2203 0.0400  1074.7580
+    "8,7168"          DT_BF16  195   5.3060  0.7326 0.1381  1034.6620
+  "256,2048"          DT_BF16   58  15.3470  0.9639 0.0628   890.1240
+   "32,7168"          DT_BF16   58  15.1300  1.3617 0.0900   877.5420
+  "128,2048"          DT_BF16   58  13.3721  0.7040 0.0526   775.5840
+
+  TransData: 1 shape groups, 1 with CV
+   Input Shapes Input Data Types    n  mean_us  std_us     cv   total_us
+"16,32,8,16,16"          DT_BF16 2074  16.9382  0.1519 0.0090 35129.7860
+
+  FusedInferAttentionScore: 10 shape groups, 10 with CV
+                                                Input Shapes                         Input Data Types    n  mean_us  std_us     cv   total_us
+"1,16,1,512;891,1,128,512;891,1,128,512;;;;1;;;;;;;;1,512;;; DT_BF16;DT_BF16;DT_BF16;DT_UNDEFINED;DT_ 1220  16.0475  8.0671 0.5027 19577.9120
+"5,16,1,512;891,1,128,512;891,1,128,512;;;;5;;;;;;;;5,512;;; DT_BF16;DT_BF16;DT_BF16;DT_UNDEFINED;DT_  183  13.6539  0.4313 0.0316  2498.6580
+"8,16,1,512;891,1,128,512;891,1,128,512;;;;8;;;;;;;;8,512;;; DT_BF16;DT_BF16;DT_BF16;DT_UNDEFINED;DT_  122  16.2616  0.4850 0.0298  1983.9180
+"6,16,1,512;891,1,128,512;891,1,128,512;;;;6;;;;;;;;6,512;;; DT_BF16;DT_BF16;DT_BF16;DT_UNDEFINED;DT_  122  14.5543  0.4603 0.0316  1775.6220
+"4,16,1,512;891,1,128,512;891,1,128,512;;;;4;;;;;;;;4,512;;; DT_BF16;DT_BF16;DT_BF16;DT_UNDEFINED;DT_  122  13.3091  0.4151 0.0312  1623.7140
+"12,16,1,512;891,1,128,512;891,1,128,512;;;;12;;;;;;;;12,512 DT_BF16;DT_BF16;DT_BF16;DT_UNDEFINED;DT_   61  19.7189  0.8553 0.0434  1202.8520
+"10,16,1,512;891,1,128,512;891,1,128,512;;;;10;;;;;;;;10,512 DT_BF16;DT_BF16;DT_BF16;DT_UNDEFINED;DT_   61  17.7729  0.6260 0.0352  1084.1460
+"7,16,1,512;891,1,128,512;891,1,128,512;;;;7;;;;;;;;7,512;;; DT_BF16;DT_BF16;DT_BF16;DT_UNDEFINED;DT_   61  15.2902  0.5269 0.0345   932.7040
+"3,16,1,512;891,1,128,512;891,1,128,512;;;;3;;;;;;;;3,512;;; DT_BF16;DT_BF16;DT_BF16;DT_UNDEFINED;DT_   61  12.4490  0.6167 0.0495   759.3860
+"2,16,1,512;891,1,128,512;891,1,128,512;;;;2;;;;;;;;2,512;;; DT_BF16;DT_BF16;DT_BF16;DT_UNDEFINED;DT_   61  11.8643  0.5175 0.0436   723.7240
+
+  MoeGatingTopK: 6 shape groups, 6 with CV
+ Input Shapes Input Data Types    n  mean_us  std_us     cv   total_us
+  "1,256;256"  DT_BF16;DT_BF16 3770   5.1209  0.4623 0.0903 19305.8640
+"256,256;256"  DT_BF16;DT_BF16   58  35.6515  3.7615 0.1055  2067.7880
+ "96,256;256"  DT_BF16;DT_BF16   58  33.7630  4.2636 0.1263  1958.2560
+"128,256;256"  DT_BF16;DT_BF16   58  31.6399  3.8120 0.1205  1835.1120
+ "32,256;256"  DT_BF16;DT_BF16   58  22.6926  2.8082 0.1238  1316.1720
+  "2,256;256"  DT_BF16;DT_BF16  116   5.7047  0.5784 0.1014   661.7460
+
+  TransposeBatchMatMul: 10 shape groups, 10 with CV
+          Input Shapes Input Data Types    n  mean_us  std_us     cv   total_us
+ "16,1,512;16,512,128"  DT_BF16;DT_BF16 1220  12.4701  0.9612 0.0771 15213.5020
+ "16,5,512;16,512,128"  DT_BF16;DT_BF16  183  12.3150  0.9541 0.0775  2253.6360
+ "16,4,512;16,512,128"  DT_BF16;DT_BF16  122  12.8440  0.8444 0.0657  1566.9720
+ "16,8,512;16,512,128"  DT_BF16;DT_BF16  122  12.5822  0.9599 0.0763  1535.0300
+ "16,6,512;16,512,128"  DT_BF16;DT_BF16  122  12.4387  0.8203 0.0659  1517.5160
+ "16,2,512;16,512,128"  DT_BF16;DT_BF16   61  12.8723  0.8349 0.0649   785.2100
+ "16,7,512;16,512,128"  DT_BF16;DT_BF16   61  12.7999  0.9627 0.0752   780.7940
+"16,10,512;16,512,128"  DT_BF16;DT_BF16   61  12.5546  0.9032 0.0719   765.8320
+"16,12,512;16,512,128"  DT_BF16;DT_BF16   61  12.2259  0.8711 0.0713   745.7820
+ "16,3,512;16,512,128"  DT_BF16;DT_BF16   61  11.8993  0.8493 0.0714   725.8600
+
+  Slice: 24 shape groups, 24 with CV
+     Input Shapes    Input Data Types    n  mean_us  std_us     cv  total_us
+     "16,192;2;2" DT_BF16;INT64;INT64 2440   2.4934  0.1515 0.0608 6083.9340
+"2048,16,192;3;3" DT_BF16;INT64;INT64  183  13.1520  2.3795 0.1809 2406.8220
+"1024,16,256;3;3" DT_BF16;INT64;INT64  244   7.7797  0.5237 0.0673 1898.2540
+"1024,16,192;3;3" DT_BF16;INT64;INT64  183   9.6268  1.7010 0.1767 1761.7080
+ "768,16,192;3;3" DT_BF16;INT64;INT64  183   8.6899  2.0931 0.2409 1590.2600
+"3072,16,256;3;3" DT_BF16;INT64;INT64  122  11.8801  0.5574 0.0469 1449.3720
+"2048,16,256;3;3" DT_BF16;INT64;INT64  122  10.4916  0.7197 0.0686 1279.9700
+ "256,16,256;3;3" DT_BF16;INT64;INT64  244   3.9739  0.3395 0.0854  969.6420
+ "768,16,256;3;3" DT_BF16;INT64;INT64  122   7.3176  0.5190 0.0709  892.7520
+   "5,16,192;3;3" DT_BF16;INT64;INT64  183   3.1066  0.2750 0.0885  568.5120
+
+  InterleaveRope: 14 shape groups, 14 with CV
+                          Input Shapes        Input Data Types    n  mean_us  std_us     cv  total_us
+         "1,16,1,64;1,1,1,64;1,1,1,64" DT_BF16;DT_BF16;DT_BF16 1220   6.7634  0.3041 0.0450 8251.3880
+"2048,16,1,64;2048,1,1,64;2048,1,1,64" DT_BF16;DT_BF16;DT_BF16   61  40.7787  1.0830 0.0266 2487.5020
+"1024,16,1,64;1024,1,1,64;1024,1,1,64" DT_BF16;DT_BF16;DT_BF16   61  29.5430  1.0312 0.0349 1802.1220
+         "5,16,1,64;5,1,1,64;5,1,1,64" DT_BF16;DT_BF16;DT_BF16  183   8.4598  0.3152 0.0373 1548.1500
+   "768,16,1,64;768,1,1,64;768,1,1,64" DT_BF16;DT_BF16;DT_BF16   61  25.3503  0.8468 0.0334 1546.3680
+         "8,16,1,64;8,1,1,64;8,1,1,64" DT_BF16;DT_BF16;DT_BF16  122   9.6714  0.1845 0.0191 1179.9100
+   "256,16,1,64;256,1,1,64;256,1,1,64" DT_BF16;DT_BF16;DT_BF16   61  18.7899  0.7666 0.0408 1146.1840
+         "6,16,1,64;6,1,1,64;6,1,1,64" DT_BF16;DT_BF16;DT_BF16  122   9.1222  0.3662 0.0401 1112.9060
+         "4,16,1,64;4,1,1,64;4,1,1,64" DT_BF16;DT_BF16;DT_BF16  122   8.1177  0.3058 0.0377  990.3600
+      "12,16,1,64;12,1,1,64;12,1,1,64" DT_BF16;DT_BF16;DT_BF16   61  11.4758  0.2958 0.0258  700.0240
+
+  Add: 28 shape groups, 19 with CV
+       Input Shapes Input Data Types    n   mean_us  std_us     cv  total_us
+    "1,7168;1,7168"  DT_BF16;DT_BF16 3770    2.3015  0.1070 0.0465 8676.5440
+      "1,1536;1536"  DT_BF16;DT_BF16 1952    1.7359  0.0910 0.0524 3388.5400
+        "2,129280;"      FLOAT;FLOAT    1 3226.2540  0.0000    NaN 3226.2540
+      "2,1536;1536"  DT_BF16;DT_BF16  122    7.6970  1.1827 0.1537  939.0380
+"256,7168;256,7168"  DT_BF16;DT_BF16   58   11.5456  0.7603 0.0659  669.6420
+    "256,1536;1536"  DT_BF16;DT_BF16   61   10.8964  0.4099 0.0376  664.6800
+     "96,1536;1536"  DT_BF16;DT_BF16   61   10.5037  0.6642 0.0632  640.7240
+"128,7168;128,7168"  DT_BF16;DT_BF16   58   10.4433  0.9904 0.0948  605.7120
+    "128,1536;1536"  DT_BF16;DT_BF16   61    9.6997  0.5450 0.0562  591.6840
+  "96,7168;96,7168"  DT_BF16;DT_BF16   58    9.8813  0.7544 0.0763  573.1160
+
+  BatchMatMulV2: 10 shape groups, 10 with CV
+          Input Shapes Input Data Types    n  mean_us  std_us     cv   total_us
+ "16,1,128;16,128,512"  DT_BF16;DT_BF16 1220   8.4624  0.2752 0.0325 10324.0860
+ "16,5,128;16,128,512"  DT_BF16;DT_BF16  183   8.3702  0.2774 0.0331  1531.7460
+ "16,6,128;16,128,512"  DT_BF16;DT_BF16  122   8.3861  0.2659 0.0317  1023.1020
+ "16,8,128;16,128,512"  DT_BF16;DT_BF16  122   8.3691  0.2130 0.0254  1021.0360
+ "16,4,128;16,128,512"  DT_BF16;DT_BF16  122   8.3654  0.2565 0.0307  1020.5840
+ "16,3,128;16,128,512"  DT_BF16;DT_BF16   61   8.5941  0.2763 0.0322   524.2420
+"16,12,128;16,128,512"  DT_BF16;DT_BF16   61   8.4859  0.2702 0.0318   517.6420
+"16,10,128;16,128,512"  DT_BF16;DT_BF16   61   8.4719  0.2189 0.0258   516.7880
+ "16,7,128;16,128,512"  DT_BF16;DT_BF16   61   8.4576  0.2162 0.0256   515.9120
+ "16,2,128;16,128,512"  DT_BF16;DT_BF16   61   8.3430  0.2329 0.0279   508.9260
+
+  SwiGlu: 12 shape groups, 12 with CV
+Input Shapes Input Data Types    n  mean_us  std_us     cv   total_us
+    "1,4096"          DT_BF16 3770   3.2889  0.1705 0.0518 12399.3140
+  "256,4096"          DT_BF16   58  17.8525  1.0583 0.0593  1035.4460
+  "128,4096"          DT_BF16   58  17.4493  1.3172 0.0755  1012.0580
+   "96,4096"          DT_BF16   58  14.8673  1.0699 0.0720   862.3020
+    "8,4608"          DT_BF16  195   4.2413  0.5407 0.1275   827.0440
+   "32,4096"          DT_BF16   58   6.8670  0.2683 0.0391   398.2880
+    "2,4096"          DT_BF16  116   3.2529  0.1800 0.0553   377.3360
+ "2048,4608"          DT_BF16    3  29.3667  0.0503 0.0017    88.1000
+ "1024,4608"          DT_BF16    3  22.3587  0.3664 0.0164    67.0760
+  "768,4608"          DT_BF16    3  20.6787  0.5779 0.0279    62.0360
+
+  Transpose: 18 shape groups, 13 with CV
+ Input Shapes Input Data Types   n  mean_us  std_us     cv  total_us
+ "16,5,512;3"    DT_BF16;INT64 183  15.7915  1.9590 0.1241 2889.8440
+ "16,8,512;3"    DT_BF16;INT64 122  18.6843  2.1216 0.1135 2279.4800
+ "16,4,512;3"    DT_BF16;INT64 122  16.6830  2.0207 0.1211 2035.3220
+ "16,6,512;3"    DT_BF16;INT64 122  16.1147  2.1093 0.1309 1965.9880
+"16,12,512;3"    DT_BF16;INT64  61  19.6147  2.1825 0.1113 1196.4980
+"16,10,512;3"    DT_BF16;INT64  61  18.4284  1.7472 0.0948 1124.1320
+ "16,3,512;3"    DT_BF16;INT64  61  16.6545  2.1635 0.1299 1015.9220
+ "16,7,512;3"    DT_BF16;INT64  61  15.5825  1.8814 0.1207  950.5320
+ "16,2,512;3"    DT_BF16;INT64  61  15.2935  2.0147 0.1317  932.9020
+"8,5,16160;3"    DT_BF16;INT64   3  14.6993  0.1940 0.0132   44.0980
+
+  KvRmsNormRopeCache: 14 shape groups, 14 with CV
+                                                Input Shapes                         Input Data Types    n  mean_us  std_us     cv  total_us
+"1,1,1,576;512;1,1,1,64;1,1,1,64;1;891,128,1,64;891,128,1,51 DT_BF16;DT_BF16;DT_BF16;DT_BF16;INT64;DT 1220   3.7196  0.1883 0.0506 4537.8980
+"2048,1,1,576;512;2048,1,1,64;2048,1,1,64;2048;891,128,1,64; DT_BF16;DT_BF16;DT_BF16;DT_BF16;INT64;DT   61  27.5139  1.9733 0.0717 1678.3460
+"1024,1,1,576;512;1024,1,1,64;1024,1,1,64;1024;891,128,1,64; DT_BF16;DT_BF16;DT_BF16;DT_BF16;INT64;DT   61  21.5901  1.3446 0.0623 1316.9980
+"768,1,1,576;512;768,1,1,64;768,1,1,64;768;891,128,1,64;891, DT_BF16;DT_BF16;DT_BF16;DT_BF16;INT64;DT   61  18.2564  1.8028 0.0988 1113.6420
+"256,1,1,576;512;256,1,1,64;256,1,1,64;256;891,128,1,64;891, DT_BF16;DT_BF16;DT_BF16;DT_BF16;INT64;DT   61  14.1168  1.3106 0.0928  861.1220
+"5,1,1,576;512;5,1,1,64;5,1,1,64;5;891,128,1,64;891,128,1,51 DT_BF16;DT_BF16;DT_BF16;DT_BF16;INT64;DT  183   4.4783  0.1954 0.0436  819.5220
+"8,1,1,576;512;8,1,1,64;8,1,1,64;8;891,128,1,64;891,128,1,51 DT_BF16;DT_BF16;DT_BF16;DT_BF16;INT64;DT  122   5.1120  0.2291 0.0448  623.6700
+"4,1,1,576;512;4,1,1,64;4,1,1,64;4;891,128,1,64;891,128,1,51 DT_BF16;DT_BF16;DT_BF16;DT_BF16;INT64;DT  122   5.0339  0.2422 0.0481  614.1400
+"6,1,1,576;512;6,1,1,64;6,1,1,64;6;891,128,1,64;891,128,1,51 DT_BF16;DT_BF16;DT_BF16;DT_BF16;INT64;DT  122   4.6643  0.1805 0.0387  569.0480
+"10,1,1,576;512;10,1,1,64;10,1,1,64;10;891,128,1,64;891,128, DT_BF16;DT_BF16;DT_BF16;DT_BF16;INT64;DT   61   5.5251  0.2095 0.0379  337.0320
+
+  RmsNorm: 12 shape groups, 8 with CV
+   Input Shapes Input Data Types    n  mean_us  std_us     cv  total_us
+  "1,1536;1536"  DT_BF16;DT_BF16 1952   4.0208  0.2563 0.0637 7848.5360
+ "96,1536;1536"  DT_BF16;DT_BF16   61  21.7471  1.3965 0.0642 1326.5760
+"256,1536;1536"  DT_BF16;DT_BF16   61  20.1310  1.2677 0.0630 1227.9920
+"128,1536;1536"  DT_BF16;DT_BF16   61  19.5482  1.0671 0.0546 1192.4380
+ "32,1536;1536"  DT_BF16;DT_BF16   61  15.6453  1.0378 0.0663  954.3660
+  "2,1536;1536"  DT_BF16;DT_BF16  122   4.3352  0.2530 0.0584  528.8900
+  "1,7168;7168"  DT_BF16;DT_BF16   65   4.4810  0.2410 0.0538  291.2660
+"256,7168;7168"  DT_BF16;DT_BF16    1  18.2400  0.0000    NaN   18.2400
+ "96,7168;7168"  DT_BF16;DT_BF16    1  15.4800  0.0000    NaN   15.4800
+"128,7168;7168"  DT_BF16;DT_BF16    1  14.8980  0.0000    NaN   14.8980
+
+  Muls: 6 shape groups, 6 with CV
+Input Shapes Input Data Types    n  mean_us  std_us     cv  total_us
+    "1,7168"          DT_BF16 3770   1.9720  0.0884 0.0448 7434.3340
+  "256,7168"          DT_BF16   58  10.5526  0.1608 0.0152  612.0500
+  "128,7168"          DT_BF16   58   9.8071  0.1505 0.0153  568.8100
+   "96,7168"          DT_BF16   58   9.2350  0.1343 0.0145  535.6300
+   "32,7168"          DT_BF16   58   8.7863  0.2938 0.0334  509.6080
+    "2,7168"          DT_BF16  116   3.1067  0.0941 0.0303  360.3740
+
+  Cast: 50 shape groups, 39 with CV
+Input Shapes Input Data Types    n  mean_us  std_us     cv  total_us
+       "1,8"          DT_BF16 3770   1.2835  0.1254 0.0977 4838.6560
+         "1"            INT32 1244   1.2695  0.1308 0.1030 1579.2900
+         "8"            INT32  354   1.3029  0.1704 0.1308  461.2320
+         "5"            INT32  190   1.2355  0.0729 0.0590  234.7360
+  "1,129280"          DT_BF16   24   7.9915  0.1140 0.0143  191.7960
+         "8"             BOOL  130   1.3320  0.1357 0.1018  173.1580
+         "6"            INT32  128   1.2856  0.1728 0.1344  164.5560
+         "4"            INT32  129   1.2738  0.1561 0.1226  164.3160
+       "2,8"          DT_BF16  116   1.3000  0.1252 0.0963  150.7960
+      "2048"            INT32   64   1.9937  0.1156 0.0580  127.6000
+
+  BroadcastTo: 6 shape groups, 6 with CV
+ Input Shapes Input Data Types   n  mean_us  std_us     cv  total_us
+"1024,1,64;3"    DT_BF16;INT64 122  10.7587  0.5904 0.0549 1312.5560
+ "256,1,64;3"    DT_BF16;INT64 122   9.2650  1.2332 0.1331 1130.3260
+"3072,1,64;3"    DT_BF16;INT64  61  12.4214  1.5047 0.1211  757.7080
+"2048,1,64;3"    DT_BF16;INT64  61  11.3884  1.0749 0.0944  694.6920
+ "768,1,64;3"    DT_BF16;INT64  61  10.8906  0.9519 0.0874  664.3240
+        "1;1"      INT32;INT64  82   1.4356  0.0827 0.0576  117.7180
+
+  TensorMove: 8 shape groups, 8 with CV
+Input Shapes Input Data Types  n  mean_us  std_us     cv  total_us
+ "2048,2048"          DT_BF16 61  11.8510  1.1208 0.0946  722.9080
+ "1024,2048"          DT_BF16 61  10.3565  1.2143 0.1173  631.7460
+  "768,2048"          DT_BF16 61   9.7730  0.9386 0.0960  596.1500
+  "256,7168"          DT_BF16 62   9.3814  0.8455 0.0901  581.6460
+  "256,2048"          DT_BF16 61   9.4582  1.5199 0.1607  576.9520
+   "32,7168"          DT_BF16 62   6.9995  0.7016 0.1002  433.9700
+  "128,7168"          DT_BF16 62   6.7044  0.5346 0.0797  415.6720
+   "96,7168"          DT_BF16 62   6.1934  1.4284 0.2306  383.9900
+
+  GreaterEqual: 16 shape groups, 7 with CV
+Input Shapes Input Data Types  n  mean_us   std_us     cv  total_us
+ "1,129280;"      FLOAT;FLOAT 24 151.0419 690.7416 4.5732 3625.0060
+        "8;"      INT64;INT64 65   3.0772   0.2161 0.0702  200.0160
+ "5,129280;"      FLOAT;FLOAT  3  10.6593   0.2562 0.0240   31.9780
+ "4,129280;"      FLOAT;FLOAT  2  12.7980   1.0465 0.0818   25.5960
+ "8,129280;"      FLOAT;FLOAT  2  11.1900   1.2021 0.1074   22.3800
+ "6,129280;"      FLOAT;FLOAT  2  10.7800   0.5091 0.0472   21.5600
+ "7,129280;"      FLOAT;FLOAT  1  13.6580   0.0000    NaN   13.6580
+"12,129280;"      FLOAT;FLOAT  1  12.5200   0.0000    NaN   12.5200
+"10,129280;"      FLOAT;FLOAT  1  12.1200   0.0000    NaN   12.1200
+ "3,129280;"      FLOAT;FLOAT  1  11.4200   0.0000    NaN   11.4200
+
+  Fill: 4 shape groups, 4 with CV
+Input Shapes Input Data Types    n  mean_us  std_us     cv  total_us
+        "2;"    INT64;DT_BF16 2013   1.7245  0.0965 0.0560 3471.3860
+        "1;"       INT64;BOOL  142   1.4298  0.1596 0.1116  203.0320
+        "1;"      INT64;INT32   70   1.5645  0.2888 0.1846  109.5140
+        "1;"      INT64;INT64    2   1.3000  0.0566 0.0435    2.6000
+
+  AsStrided: 9 shape groups, 9 with CV
+ Input Shapes          Input Data Types   n  mean_us  std_us     cv  total_us
+"15360;3;3;1" DT_BF16;INT64;INT64;INT64 183   3.9502  0.3618 0.0916  722.8840
+"24576;3;3;1" DT_BF16;INT64;INT64;INT64 122   3.9955  0.3557 0.0890  487.4520
+"18432;3;3;1" DT_BF16;INT64;INT64;INT64 122   3.9873  0.3795 0.0952  486.4520
+"12288;3;3;1" DT_BF16;INT64;INT64;INT64 122   3.9232  0.3771 0.0961  478.6280
+"36864;3;3;1" DT_BF16;INT64;INT64;INT64  61   4.1393  0.3175 0.0767  252.4960
+"30720;3;3;1" DT_BF16;INT64;INT64;INT64  61   4.0911  0.3318 0.0811  249.5580
+ "9216;3;3;1" DT_BF16;INT64;INT64;INT64  61   4.0035  0.3683 0.0920  244.2160
+"21504;3;3;1" DT_BF16;INT64;INT64;INT64  61   3.9789  0.2996 0.0753  242.7120
+ "6144;3;3;1" DT_BF16;INT64;INT64;INT64  61   3.8910  0.3451 0.0887  237.3540
+
+  PagedCacheLoadNdKernel: 3 shape groups, 3 with CV
+                                               Input Shapes                         Input Data Types  n  mean_us  std_us     cv  total_us
+"891,128,1,512;891,128,1,64;1,512;1;3072,1,512;3072,1,64;1" DT_BF16;DT_BF16;INT32;INT32;DT_BF16;DT_B 61  12.8650  0.7887 0.0613  784.7660
+"891,128,1,512;891,128,1,64;1,512;1;1024,1,512;1024,1,64;1" DT_BF16;DT_BF16;INT32;INT32;DT_BF16;DT_B 61  11.5759  0.7326 0.0633  706.1280
+  "891,128,1,512;891,128,1,64;1,512;1;256,1,512;256,1,64;1" DT_BF16;DT_BF16;INT32;INT32;DT_BF16;DT_B 61  10.7226  1.2514 0.1167  654.0800
+
+  MaskedFill: 16 shape groups, 7 with CV
+        Input Shapes     Input Data Types  n  mean_us  std_us     cv  total_us
+       "8,7168;8,1;" DT_BF16;BOOL;DT_BF16 65  16.2043  2.1211 0.1309 1053.2820
+"1,129280;1,129280;"     FLOAT;BOOL;FLOAT 24  12.5797  1.9594 0.1558  301.9140
+ "2048,7168;2048,1;" DT_BF16;BOOL;DT_BF16  1  79.4580  0.0000    NaN   79.4580
+"5,129280;5,129280;"     FLOAT;BOOL;FLOAT  3  18.5400  0.1058 0.0057   55.6200
+ "1024,7168;1024,1;" DT_BF16;BOOL;DT_BF16  1  53.6400  0.0000    NaN   53.6400
+"8,129280;8,129280;"     FLOAT;BOOL;FLOAT  2  19.9300  0.2121 0.0106   39.8600
+   "768,7168;768,1;" DT_BF16;BOOL;DT_BF16  1  38.8600  0.0000    NaN   38.8600
+"6,129280;6,129280;"     FLOAT;BOOL;FLOAT  2  19.0680  0.3818 0.0200   38.1360
+"4,129280;4,129280;"     FLOAT;BOOL;FLOAT  2  16.9900  0.4101 0.0241   33.9800
+     "16,7168;16,1;" DT_BF16;BOOL;DT_BF16  2  15.6200  1.2445 0.0797   31.2400
+
+====================================================================================================
+  MODEL: Qwen3-32B
+====================================================================================================
+  Scenarios: ['profiler_decode_batch1', 'profiler_decode_batch16', 'profiler_decode_batch32', 'profiler_decode_batch4', 'profiler_decode_batch8', 'profiler_prefill_input1024', 'profiler_prefill_input256', 'profiler_prefill_input4096']
+  Total kernel rows: 76,806
+  Total duration: 44,055,942.2 us (44.056 s)
+  Compute: 700,211.6 us (1.6%)
+  Comm: 43,355,730.5 us (98.4%)
+  Fused: 0.0 us (0.0%)
+
+── Per-Scenario Breakdown ──
+                  scenario     total_us  compute_us  compute_pct      comm_us  comm_pct  fused_us  fused_pct  n_kernels
+    profiler_decode_batch1  2234101.182   28931.106     1.294977  2205170.076 98.705023       0.0        0.0       3661
+   profiler_decode_batch16  9774411.896  130837.392     1.338570  9643574.504 98.661430       0.0        0.0      16329
+   profiler_decode_batch32 15190356.158  214746.482     1.413703 14975609.676 98.586297       0.0        0.0      26531
+    profiler_decode_batch4  4116033.842   58471.862     1.420587  4057561.980 98.579413       0.0        0.0       7526
+    profiler_decode_batch8  6510876.920   88972.360     1.366519  6421904.560 98.633481       0.0        0.0      11327
+profiler_prefill_input1024  2160827.876   48794.368     2.258133  2112033.508 97.741867       0.0        0.0       3724
+ profiler_prefill_input256  2164437.916   36799.032     1.700166  2127638.884 98.299834       0.0        0.0       3726
+profiler_prefill_input4096  1904896.362   92659.038     4.864256  1812237.324 95.135744       0.0        0.0       3982
+
+── Communication Ops ──
+                  OP Type category  total_duration_us  pct_of_total  n_invocations  mean_duration_us  std_duration_us
+          hcom_allReduce_     comm        42820278.20         97.20          15494           2763.67          1483.12
+          hcom_allGather_     comm          255630.38          0.58            251           1018.45           622.74
+      hcom_reduceScatter_     comm          217324.60          0.49            129           1684.69           874.38
+     allgatherAicpuKernel     comm           33975.52          0.08            129            263.38           188.32
+reduce_scatterAicpuKernel     comm           28521.81          0.06            129            221.10            73.00
+
+── Fused Comm+Compute Ops ──
+  (none)
+
+── Compute Ops (top ops covering >=99% of compute time) ──
+                 OP Type category  total_duration_us  pct_of_total  pct_of_compute  cumul_pct_compute  n_invocations  mean_duration_us  std_duration_us  n_shape_groups  n_groups_with_cv  cv_min  cv_median  cv_max
+                MatMulV2  compute        294198.5840        0.6678         42.0157            42.0157          15549           18.9207          13.8436              27                24  0.0024     0.0265  0.1252
+FusedInferAttentionScore  compute         98439.9980        0.2234         14.0586            56.0743           3904           25.2152          15.9202              17                17  0.0193     0.0750  0.3425
+                 RmsNorm  compute         93367.3940        0.2119         13.3342            69.4084           7869           11.8652           6.4826              12                 9  0.0324     0.0614  0.0840
+          AddRmsNormBias  compute         47939.8320        0.1088          6.8465            76.2549           7808            6.1398           4.2074               4                 4  0.0647     0.0774  0.0937
+                MatMulV3  compute         35540.4120        0.0807          5.0757            81.3306            128          277.6595          74.0808               2                 2  0.0077     0.0147  0.0217
+                   Slice  compute         28647.9100        0.0650          4.0913            85.4219          11066            2.5888           0.6188              12                12  0.0065     0.0903  0.1501
+                  SwiGlu  compute         21811.5080        0.0495          3.1150            88.5369           3904            5.5870           3.6822               4                 4  0.0381     0.0622  0.1198
+            _triton_rope  compute         21493.9680        0.0488          3.0696            91.6065           3904            5.5056           6.7258               8                 8  0.0142     0.0492  0.0793
+ ReshapeAndCacheNdKernel  compute         15041.8660        0.0341          2.1482            93.7547           3904            3.8529           3.4347              16                16  0.0139     0.0710  0.1379
+                    Sort  compute         13648.1280        0.0310          1.9491            95.7039             61          223.7398          13.5525              13                10  0.0030     0.0078  0.0134
+                ArgMaxV2  compute          5380.3800        0.0122          0.7684            96.4723             61           88.2030          54.0548              13                10  0.0000     0.0035  0.0085
+        DSARandomUniform  compute          5380.2280        0.0122          0.7684            97.2406             61           88.2005          63.6466               0                 0     NaN        NaN     NaN
+               SoftmaxV2  compute          3192.3760        0.0072          0.4559            97.6965             61           52.3340           1.5505              13                10  0.0059     0.0131  0.0344
+              MaskedFill  compute          2168.8260        0.0049          0.3097            98.0063            122           17.7773          12.6383              17                11  0.0133     0.0361  0.1292
+     ApplyTopKTopPCustom  compute          1829.8780        0.0042          0.2613            98.2676             61           29.9980           2.1338              13                10  0.0130     0.0239  0.0301
+                 RealDiv  compute          1518.3960        0.0034          0.2168            98.4845            122           12.4459           3.8732              26                20  0.0000     0.0197  0.1404
+              TensorMove  compute          1285.4620        0.0029          0.1836            98.6680            128           10.0427           1.1751               2                 2  0.1143     0.1158  0.1173
+                    Cast  compute          1158.6700        0.0026          0.1655            98.8335            488            2.3743           2.8022              46                38  0.0015     0.0315  0.1299
+                   Index  compute           942.9620        0.0021          0.1347            98.9682             93           10.1394           1.0692              41                16  0.0045     0.0196  0.2643
+                     Mul  compute           863.1040        0.0020          0.1233            99.0915            183            4.7164           3.9251              21                12  0.0012     0.0563  0.0888
+
+  Remaining 15 compute op types: 6,361.8 us (0.91% of compute)
+  Remaining ops: GreaterEqual, Tile, GatherV3, Add, Neg, Transpose, Log, GatherV2, ScatterElementsV2, Fill, Sub, Less, LogicalAnd, LogicalNot, LinearIndex
+
+── Per-Scenario Top Op Breakdown ──
+
+  profiler_decode_batch1 (total: 2,234,101.2 us)
+                    Type category   total_us  count  mean_us   pct
+         hcom_allReduce_     comm 2186202.09    774  2824.55 97.86
+         hcom_allGather_     comm   18967.98      6  3161.33  0.85
+                MatMulV2  compute   13989.83    771    18.15  0.63
+                 RmsNorm  compute    4406.59    387    11.39  0.20
+FusedInferAttentionScore  compute    3569.72    192    18.59  0.16
+          AddRmsNormBias  compute    2003.84    384     5.22  0.09
+                   Slice  compute    1120.00    454     2.47  0.05
+                  SwiGlu  compute     938.86    192     4.89  0.04
+            _triton_rope  compute     825.81    192     4.30  0.04
+                    Sort  compute     694.63      3   231.54  0.03
+ ReshapeAndCacheNdKernel  compute     533.46    192     2.78  0.02
+               SoftmaxV2  compute     151.28      3    50.43  0.01
+              MaskedFill  compute      99.80      6    16.63  0.00
+     ApplyTopKTopPCustom  compute      80.98      3    26.99  0.00
+                    Cast  compute      57.92     24     2.41  0.00
+
+  profiler_decode_batch16 (total: 9,774,411.9 us)
+                    Type category   total_us  count  mean_us   pct
+         hcom_allReduce_     comm 9617661.77   3358  2864.10 98.40
+                MatMulV2  compute   58332.21   3341    17.46  0.60
+         hcom_allGather_     comm   25912.73     26   996.64  0.27
+                 RmsNorm  compute   19119.43   1677    11.40  0.20
+FusedInferAttentionScore  compute   18940.69    832    22.77  0.19
+          AddRmsNormBias  compute    8703.60   1664     5.23  0.09
+                   Slice  compute    6010.74   2394     2.51  0.06
+                  SwiGlu  compute    4014.57    832     4.83  0.04
+            _triton_rope  compute    3573.64    832     4.30  0.04
+                    Sort  compute    2812.78     13   216.37  0.03
+ ReshapeAndCacheNdKernel  compute    2708.56    832     3.26  0.03
+        DSARandomUniform  compute    1385.79     13   106.60  0.01
+                ArgMaxV2  compute    1344.73     13   103.44  0.01
+               SoftmaxV2  compute     690.11     13    53.09  0.01
+              MaskedFill  compute     442.31     26    17.01  0.00
+
+  profiler_decode_batch32 (total: 15,190,356.2 us)
+                    Type category    total_us  count  mean_us   pct
+         hcom_allReduce_     comm 14930279.02   5422  2753.65 98.29
+                MatMulV2  compute    94577.59   5397    17.52  0.62
+         hcom_allGather_     comm    45330.66     42  1079.30  0.30
+FusedInferAttentionScore  compute    31345.66   1344    23.32  0.21
+                 RmsNorm  compute    31106.60   2709    11.48  0.20
+          AddRmsNormBias  compute    14143.19   2688     5.26  0.09
+                   Slice  compute    10124.66   4010     2.52  0.07
+                  SwiGlu  compute     6457.33   1344     4.80  0.04
+            _triton_rope  compute     5772.46   1344     4.29  0.04
+                    Sort  compute     4719.94     21   224.76  0.03
+ ReshapeAndCacheNdKernel  compute     4580.61   1344     3.41  0.03
+        DSARandomUniform  compute     2763.36     21   131.59  0.02
+                ArgMaxV2  compute     2561.01     21   121.95  0.02
+               SoftmaxV2  compute     1112.91     21    53.00  0.01
+              MaskedFill  compute      746.04     42    17.76  0.00
+
+  profiler_decode_batch4 (total: 4,116,033.8 us)
+                    Type category   total_us  count  mean_us   pct
+         hcom_allReduce_     comm 4043280.27   1550  2608.57 98.23
+                MatMulV2  compute   26562.63   1542    17.23  0.65
+         hcom_allGather_     comm   14281.71     12  1190.14  0.35
+                 RmsNorm  compute    8892.34    774    11.49  0.22
+FusedInferAttentionScore  compute    7913.72    384    20.61  0.19
+          AddRmsNormBias  compute    4043.65    768     5.27  0.10
+                   Slice  compute    2715.15   1100     2.47  0.07
+                  SwiGlu  compute    1832.77    384     4.77  0.04
+            _triton_rope  compute    1647.99    384     4.29  0.04
+                    Sort  compute    1319.79      6   219.97  0.03
+ ReshapeAndCacheNdKernel  compute    1126.13    384     2.93  0.03
+                ArgMaxV2  compute     423.45      6    70.58  0.01
+        DSARandomUniform  compute     349.75      6    58.29  0.01
+               SoftmaxV2  compute     312.43      6    52.07  0.01
+              MaskedFill  compute     178.50     12    14.87  0.00
+
+  profiler_decode_batch8 (total: 6,510,876.9 us)
+                    Type category   total_us  count  mean_us   pct
+         hcom_allReduce_     comm 6400907.11   2324  2754.26 98.31
+                MatMulV2  compute   40110.36   2313    17.34  0.62
+         hcom_allGather_     comm   20997.45     18  1166.53  0.32
+                 RmsNorm  compute   13280.49   1161    11.44  0.20
+FusedInferAttentionScore  compute   12164.10    576    21.12  0.19
+          AddRmsNormBias  compute    6082.47   1152     5.28  0.09
+                   Slice  compute    4208.32   1682     2.50  0.06
+                  SwiGlu  compute    2786.89    576     4.84  0.04
+            _triton_rope  compute    2468.56    576     4.29  0.04
+                    Sort  compute    2016.70      9   224.08  0.03
+ ReshapeAndCacheNdKernel  compute    1757.68    576     3.05  0.03
+                ArgMaxV2  compute     822.78      9    91.42  0.01
+        DSARandomUniform  compute     694.95      9    77.22  0.01
+               SoftmaxV2  compute     471.77      9    52.42  0.01
+              MaskedFill  compute     283.82     18    15.77  0.00
+
+  profiler_prefill_input1024 (total: 2,160,827.9 us)
+                    Type category   total_us  count  mean_us   pct
+         hcom_allReduce_     comm 2105885.11    774  2720.78 97.46
+                MatMulV2  compute   24221.21    771    31.42  1.12
+         hcom_allGather_     comm    6148.40      6  1024.73  0.28
+FusedInferAttentionScore  compute    5511.74    192    28.71  0.26
+          AddRmsNormBias  compute    5449.76    384    14.19  0.25
+                 RmsNorm  compute    5178.65    387    13.38  0.24
+            _triton_rope  compute    1833.75    192     9.55  0.08
+                  SwiGlu  compute    1720.64    192     8.96  0.08
+ ReshapeAndCacheNdKernel  compute    1334.85    192     6.95  0.06
+                   Slice  compute    1317.70    454     2.90  0.06
+                    Sort  compute     695.55      3   231.85  0.03
+              TensorMove  compute     630.17     64     9.85  0.03
+               SoftmaxV2  compute     150.06      3    50.02  0.01
+              MaskedFill  compute     109.74      6    18.29  0.01
+     ApplyTopKTopPCustom  compute      81.52      3    27.17  0.00
+
+  profiler_prefill_input256 (total: 2,164,437.9 us)
+                    Type category   total_us  count  mean_us   pct
+         hcom_allReduce_     comm 2121420.44    776  2733.79 98.01
+                MatMulV2  compute   16663.10    771    21.61  0.77
+         hcom_allGather_     comm    6218.44      6  1036.41  0.29
+                 RmsNorm  compute    5079.84    387    13.13  0.23
+FusedInferAttentionScore  compute    4419.61    192    23.02  0.20
+          AddRmsNormBias  compute    3737.38    384     9.73  0.17
+                  SwiGlu  compute    1597.35    192     8.32  0.07
+                   Slice  compute    1422.32    518     2.75  0.07
+            _triton_rope  compute    1328.15    192     6.92  0.06
+ ReshapeAndCacheNdKernel  compute    1007.52    192     5.25  0.05
+                    Sort  compute     694.69      3   231.56  0.03
+               SoftmaxV2  compute     151.76      3    50.59  0.01
+              MaskedFill  compute      91.74      6    15.29  0.00
+     ApplyTopKTopPCustom  compute      84.36      3    28.12  0.00
+                ArgMaxV2  compute      56.82      3    18.94  0.00
+
+  profiler_prefill_input4096 (total: 1,904,896.4 us)
+                     Type category   total_us  count  mean_us   pct
+          hcom_allReduce_     comm 1414642.39    516  2741.56 74.26
+      hcom_reduceScatter_     comm  217324.60    129  1684.69 11.41
+          hcom_allGather_     comm  117773.00    135   872.39  6.18
+                 MatMulV3  compute   35540.41    128   277.66  1.87
+     allgatherAicpuKernel     comm   33975.52    129   263.38  1.78
+reduce_scatterAicpuKernel     comm   28521.81    129   221.10  1.50
+                 MatMulV2  compute   19741.65    643    30.70  1.04
+ FusedInferAttentionScore  compute   14574.76    192    75.91  0.77
+                  RmsNorm  compute    6303.44    387    16.29  0.33
+             _triton_rope  compute    4043.60    192    21.06  0.21
+           AddRmsNormBias  compute    3775.92    384     9.83  0.20
+                   SwiGlu  compute    2463.11    192    12.83  0.13
+  ReshapeAndCacheNdKernel  compute    1993.05    192    10.38  0.10
+                    Slice  compute    1729.02    454     3.81  0.09
+                     Sort  compute     694.05      3   231.35  0.04
+
+── CV Detail for Compute Ops ──
+
+  MatMulV2: 27 shape groups, 24 with CV
+            Input Shapes Input Data Types    n  mean_us  std_us     cv    total_us
+ "16,5120;320,200,16,16"  DT_BF16;DT_BF16 3712  31.3731  3.9280 0.1252 116456.9120
+ "16,1600;100,320,16,16"  DT_BF16;DT_BF16 3712  18.2100  1.7772 0.0976  67595.6320
+  "16,5120;320,48,16,16"  DT_BF16;DT_BF16 3712  10.7807  1.0335 0.0959  40018.1440
+   "16,512;32,320,16,16"  DT_BF16;DT_BF16 3712   8.3994  0.9142 0.1088  31178.5680
+"768,5120;320,200,16,16"  DT_BF16;DT_BF16   64 104.4860  2.2940 0.0220   6687.1060
+"3072,5120;320,48,16,16"  DT_BF16;DT_BF16   64  97.2043  0.9409 0.0097   6221.0720
+"768,1600;100,320,16,16"  DT_BF16;DT_BF16   64  79.9789  0.7871 0.0098   5118.6500
+ "3072,512;32,320,16,16"  DT_BF16;DT_BF16   64  69.5047  0.7841 0.0113   4448.2980
+"256,5120;320,200,16,16"  DT_BF16;DT_BF16   64  51.8357  2.4915 0.0481   3317.4860
+"256,1600;100,320,16,16"  DT_BF16;DT_BF16   64  37.1112  0.9845 0.0265   2375.1140
+
+  FusedInferAttentionScore: 17 shape groups, 17 with CV
+                                                Input Shapes                         Input Data Types   n  mean_us  std_us     cv   total_us
+"16,4,128;12235,128,128;12235,128,128;;2048,2048;2;2;;;;;;;; DT_BF16;DT_BF16;DT_BF16;DT_UNDEFINED;INT 832  24.0341  8.2313 0.3425 19996.3720
+"16,4,128;12235,128,128;12235,128,128;;2048,2048;12;12;;;;;; DT_BF16;DT_BF16;DT_BF16;DT_UNDEFINED;INT 448  24.0800  1.8490 0.0768 10787.8540
+"3072,4,128;12235,128,128;12235,128,128;;2048,2048;2;2;;;;;; DT_BF16;DT_BF16;DT_BF16;DT_UNDEFINED;INT  64 142.4430  2.7437 0.0193  9116.3540
+"16,4,128;12235,128,128;12235,128,128;;2048,2048;8;8;;;;;;;; DT_BF16;DT_BF16;DT_BF16;DT_UNDEFINED;INT 384  22.2980  1.6628 0.0746  8562.4480
+"16,4,128;12235,128,128;12235,128,128;;2048,2048;10;10;;;;;; DT_BF16;DT_BF16;DT_BF16;DT_UNDEFINED;INT 320  23.1388  1.7364 0.0750  7404.4240
+"16,4,128;12235,128,128;12235,128,128;;2048,2048;9;9;;;;;;;; DT_BF16;DT_BF16;DT_BF16;DT_UNDEFINED;INT 320  22.7779  1.6382 0.0719  7288.9420
+"16,4,128;16,1,128;16,1,128;;2048,2048;2;2;;;;;;;;;;;;;;;;;; DT_BF16;DT_BF16;DT_BF16;DT_UNDEFINED;INT 320  18.3814  1.6254 0.0884  5882.0600
+"16,4,128;12235,128,128;12235,128,128;;2048,2048;6;6;;;;;;;; DT_BF16;DT_BF16;DT_BF16;DT_UNDEFINED;INT 256  21.5823  1.5232 0.0706  5525.0660
+"16,4,128;12235,128,128;12235,128,128;;2048,2048;13;13;;;;;; DT_BF16;DT_BF16;DT_BF16;DT_UNDEFINED;INT 192  24.4150  1.9635 0.0804  4687.6880
+"16,4,128;12235,128,128;12235,128,128;;2048,2048;7;7;;;;;;;; DT_BF16;DT_BF16;DT_BF16;DT_UNDEFINED;INT 192  22.0366  1.4082 0.0639  4231.0240
+
+  RmsNorm: 12 shape groups, 9 with CV
+    Input Shapes Input Data Types    n  mean_us  std_us     cv   total_us
+  "16,4,128;128"  DT_BF16;DT_BF16 3712  17.2851  1.4522 0.0840 64162.3440
+  "16,1,128;128"  DT_BF16;DT_BF16 3712   5.6649  0.4072 0.0719 21028.0760
+"3072,4,128;128"  DT_BF16;DT_BF16   64  37.1519  1.2491 0.0336  2377.7200
+ "768,4,128;128"  DT_BF16;DT_BF16   64  26.4967  1.3239 0.0500  1695.7880
+ "256,4,128;128"  DT_BF16;DT_BF16   64  25.1966  1.5629 0.0620  1612.5840
+"3072,1,128;128"  DT_BF16;DT_BF16   64  15.0366  0.9226 0.0614   962.3400
+ "768,1,128;128"  DT_BF16;DT_BF16   64   8.4892  0.4843 0.0571   543.3060
+ "256,1,128;128"  DT_BF16;DT_BF16   64   7.9866  0.6584 0.0824   511.1420
+  "16,5120;5120"  DT_BF16;DT_BF16   58   7.0696  0.2293 0.0324   410.0340
+ "768,5120;5120"  DT_BF16;DT_BF16    1  27.5000  0.0000    NaN    27.5000
+
+  AddRmsNormBias: 4 shape groups, 4 with CV
+             Input Shapes                     Input Data Types    n  mean_us  std_us     cv   total_us
+  "16,5120;16,5120;5120;" DT_BF16;DT_BF16;DT_BF16;DT_UNDEFINED 7424   5.2454  0.3726 0.0710 38942.0700
+"768,5120;768,5120;5120;" DT_BF16;DT_BF16;DT_BF16;DT_UNDEFINED  128  32.2380  2.6993 0.0837  4126.4660
+"192,5120;192,5120;5120;" DT_BF16;DT_BF16;DT_BF16;DT_UNDEFINED  128  19.1962  1.2416 0.0647  2457.1160
+"256,5120;256,5120;5120;" DT_BF16;DT_BF16;DT_BF16;DT_UNDEFINED  128  18.8608  1.7674 0.0937  2414.1800
+
+  MatMulV3: 2 shape groups, 2 with CV
+             Input Shapes Input Data Types  n  mean_us  std_us     cv   total_us
+"3072,5120;320,200,16,16"  DT_BF16;DT_BF16 64 351.3608  2.7030 0.0077 22487.0920
+"3072,1600;100,320,16,16"  DT_BF16;DT_BF16 64 203.9581  4.4164 0.0217 13053.3200
+
+  Slice: 12 shape groups, 12 with CV
+    Input Shapes    Input Data Types    n  mean_us  std_us     cv   total_us
+    "16,768;2;2" DT_BF16;INT64;INT64 6592   2.4772  0.2333 0.0942 16329.6700
+  "16,6,128;3;3" DT_BF16;INT64;INT64 3712   2.5541  0.2588 0.1013  9480.6580
+"3072,6,128;3;3" DT_BF16;INT64;INT64   64   9.4173  1.4134 0.1501   602.7080
+   "256,768;2;2" DT_BF16;INT64;INT64  192   2.8533  0.2630 0.0922   547.8260
+  "3072,768;2;2" DT_BF16;INT64;INT64  128   3.8187  0.2470 0.0647   488.7880
+   "768,768;2;2" DT_BF16;INT64;INT64  128   3.1115  0.2070 0.0665   398.2740
+    "16,256;2;2" DT_BF16;INT64;INT64  116   2.7846  0.2465 0.0885   323.0080
+ "768,6,128;3;3" DT_BF16;INT64;INT64   64   3.8787  0.2885 0.0744   248.2380
+ "256,6,128;3;3" DT_BF16;INT64;INT64   64   3.2109  0.3026 0.0942   205.5000
+  "3072,256;2;2" DT_BF16;INT64;INT64    2   4.3400  0.0283 0.0065     8.6800
+
+  SwiGlu: 4 shape groups, 4 with CV
+Input Shapes Input Data Types    n  mean_us  std_us     cv   total_us
+   "16,3200"          DT_BF16 3712   4.8176  0.5770 0.1198 17882.7620
+ "3072,3200"          DT_BF16   64  28.8038  1.0989 0.0381  1843.4400
+  "768,3200"          DT_BF16   64  17.2519  0.9046 0.0524  1104.1240
+  "256,3200"          DT_BF16   64  15.3310  1.1039 0.0720   981.1820
+
+  _triton_rope: 8 shape groups, 8 with CV
+                     Input Shapes           Input Data Types    n  mean_us  std_us     cv   total_us
+    "16,4,128;16,1,128;81920,128"      DT_BF16;65534;DT_BF16 3439   4.2844  0.3178 0.0742 14733.9980
+"3072,4,128;3072,1,128;81920,128"      DT_BF16;FLOAT;DT_BF16   64  54.5695  1.1624 0.0213  3492.4480
+  "768,4,128;768,1,128;81920,128"      DT_BF16;65534;DT_BF16   62  20.0961  1.0128 0.0504  1245.9580
+    "16,4,128;16,1,128;81920,128"      DT_BF16;FLOAT;DT_BF16  271   4.4044  0.3491 0.0793  1193.6000
+  "256,4,128;256,1,128;81920,128"      DT_BF16;65534;DT_BF16   59  12.1713  0.8523 0.0700   718.1040
+  "256,4,128;256,1,128;81920,128"      DT_BF16;FLOAT;DT_BF16    5  12.1560  0.5847 0.0481    60.7800
+  "768,4,128;768,1,128;81920,128"      DT_BF16;FLOAT;DT_BF16    2  19.9800  0.2828 0.0142    39.9600
+    "16,4,128;16,1,128;81920,128" DT_BF16;1552307963;DT_BF16    2   4.5600  0.1131 0.0248     9.1200
+
+  ReshapeAndCacheNdKernel: 16 shape groups, 16 with CV
+                                                Input Shapes                      Input Data Types    n  mean_us  std_us     cv  total_us
+         "1,1,128;1,1,128;12235,128,1,128;12235,128,1,128;1" DT_BF16;DT_BF16;DT_BF16;DT_BF16;INT32 1152   2.6610  0.3669 0.1379 3065.4600
+"3072,1,128;3072,1,128;12235,128,1,128;12235,128,1,128;3072" DT_BF16;DT_BF16;DT_BF16;DT_BF16;INT32   64  25.9653  0.3598 0.0139 1661.7800
+      "11,1,128;11,1,128;12235,128,1,128;12235,128,1,128;11" DT_BF16;DT_BF16;DT_BF16;DT_BF16;INT32  448   3.5916  0.2590 0.0721 1609.0420
+         "7,1,128;7,1,128;12235,128,1,128;12235,128,1,128;7" DT_BF16;DT_BF16;DT_BF16;DT_BF16;INT32  384   3.2611  0.2815 0.0863 1252.2440
+         "9,1,128;9,1,128;12235,128,1,128;12235,128,1,128;9" DT_BF16;DT_BF16;DT_BF16;DT_BF16;INT32  320   3.3281  0.2245 0.0675 1064.9920
+         "8,1,128;8,1,128;12235,128,1,128;12235,128,1,128;8" DT_BF16;DT_BF16;DT_BF16;DT_BF16;INT32  320   3.2958  0.2317 0.0703 1054.6600
+   "768,1,128;768,1,128;12235,128,1,128;12235,128,1,128;768" DT_BF16;DT_BF16;DT_BF16;DT_BF16;INT32   64  15.6628  1.1201 0.0715 1002.4180
+         "5,1,128;5,1,128;12235,128,1,128;12235,128,1,128;5" DT_BF16;DT_BF16;DT_BF16;DT_BF16;INT32  256   2.9353  0.2069 0.0705  751.4420
+      "12,1,128;12,1,128;12235,128,1,128;12235,128,1,128;12" DT_BF16;DT_BF16;DT_BF16;DT_BF16;INT32  192   3.6454  0.2629 0.0721  699.9120
+   "256,1,128;256,1,128;12235,128,1,128;12235,128,1,128;256" DT_BF16;DT_BF16;DT_BF16;DT_BF16;INT32   64  10.6017  0.7234 0.0682  678.5080
+
+  Sort: 13 shape groups, 10 with CV
+Input Shapes Input Data Types  n  mean_us  std_us     cv  total_us
+  "1,151936"            FLOAT 21 231.9534  1.5702 0.0068 4871.0220
+ "11,151936"            FLOAT  7 203.9531  0.7708 0.0038 1427.6720
+  "7,151936"            FLOAT  6 230.0953  1.8228 0.0079 1380.5720
+  "9,151936"            FLOAT  5 236.0468  1.2479 0.0053 1180.2340
+  "8,151936"            FLOAT  5 231.3672  0.6886 0.0030 1156.8360
+  "5,151936"            FLOAT  4 211.8760  2.2797 0.0108  847.5040
+  "6,151936"            FLOAT  3 214.6227  2.8696 0.0134  643.8680
+ "12,151936"            FLOAT  3 206.2027  1.5654 0.0076  618.6080
+ "14,151936"            FLOAT  2 236.3960  3.1678 0.0134  472.7920
+  "3,151936"            FLOAT  2 186.9360  1.6971 0.0091  373.8720
+
+  ArgMaxV2: 13 shape groups, 10 with CV
+Input Shapes Input Data Types  n  mean_us  std_us     cv  total_us
+"11,151936;"      FLOAT;INT64  7 139.1886  0.4644 0.0033  974.3200
+ "7,151936;"      FLOAT;INT64  6 121.9243  0.4817 0.0040  731.5460
+ "9,151936;"      FLOAT;INT64  5 139.1936  0.1713 0.0012  695.9680
+ "8,151936;"      FLOAT;INT64  5 139.0008  0.2823 0.0020  695.0040
+"12,151936;"      FLOAT;INT64  3 138.7180  0.4200 0.0030  416.1540
+ "1,151936;"      FLOAT;INT64 21  19.0550  0.1620 0.0085  400.1540
+ "5,151936;"      FLOAT;INT64  4  87.6835  0.3290 0.0038  350.7340
+ "6,151936;"      FLOAT;INT64  3 104.7987  0.8832 0.0084  314.3960
+"14,151936;"      FLOAT;INT64  2 139.4870  1.0875 0.0078  278.9740
+"10,151936;"      FLOAT;INT64  1 139.3960  0.0000    NaN  139.3960
+
+  DSARandomUniform: 0 shape groups, 0 with CV
+    (no shape groups with data)
+
+  SoftmaxV2: 13 shape groups, 10 with CV
+Input Shapes Input Data Types  n  mean_us  std_us     cv  total_us
+  "1,151936"            FLOAT 21  50.5850  0.5285 0.0104 1062.2840
+ "11,151936"            FLOAT  7  54.4106  1.0180 0.0187  380.8740
+  "7,151936"            FLOAT  6  53.1253  0.7369 0.0139  318.7520
+  "9,151936"            FLOAT  5  53.0468  0.6313 0.0119  265.2340
+  "8,151936"            FLOAT  5  53.0268  1.1990 0.0226  265.1340
+  "5,151936"            FLOAT  4  52.5635  0.3083 0.0059  210.2540
+  "6,151936"            FLOAT  3  53.5667  1.8406 0.0344  160.7000
+ "12,151936"            FLOAT  3  53.1847  0.6543 0.0123  159.5540
+ "14,151936"            FLOAT  2  53.3580  1.2728 0.0239  106.7160
+  "3,151936"            FLOAT  2  52.2890  0.3239 0.0062  104.5780
+
+  MaskedFill: 17 shape groups, 11 with CV
+          Input Shapes     Input Data Types  n  mean_us  std_us     cv  total_us
+       "16,5120;16,1;" DT_BF16;BOOL;DT_BF16 58  16.6563  1.9014 0.1142  966.0660
+  "1,151936;1,151936;"     FLOAT;BOOL;FLOAT 21  10.7255  1.3856 0.1292  225.2360
+"11,151936;11,151936;"     FLOAT;BOOL;FLOAT  7  21.9480  0.5149 0.0235  153.6360
+   "3072,5120;3072,1;" DT_BF16;BOOL;DT_BF16  1 146.9580  0.0000    NaN  146.9580
+  "7,151936;7,151936;"     FLOAT;BOOL;FLOAT  6  17.3030  0.7405 0.0428  103.8180
+  "9,151936;9,151936;"     FLOAT;BOOL;FLOAT  5  18.9040  0.8860 0.0469   94.5200
+  "8,151936;8,151936;"     FLOAT;BOOL;FLOAT  5  18.0756  0.6530 0.0361   90.3780
+"12,151936;12,151936;"     FLOAT;BOOL;FLOAT  3  21.7400  0.7856 0.0361   65.2200
+  "5,151936;5,151936;"     FLOAT;BOOL;FLOAT  4  15.2000  0.2020 0.0133   60.8000
+"14,151936;14,151936;"     FLOAT;BOOL;FLOAT  2  24.9590  1.7522 0.0702   49.9180
+
+  ApplyTopKTopPCustom: 13 shape groups, 10 with CV
+               Input Shapes        Input Data Types  n  mean_us  std_us     cv  total_us
+    "1,151936;1,151936;1;1" FLOAT;INT32;FLOAT;INT32 21  27.3516  0.6950 0.0254  574.3840
+"11,151936;11,151936;11;11" FLOAT;INT32;FLOAT;INT32  7  31.7049  0.7088 0.0224  221.9340
+    "7,151936;7,151936;7;7" FLOAT;INT32;FLOAT;INT32  6  31.5363  0.6023 0.0191  189.2180
+    "8,151936;8,151936;8;8" FLOAT;INT32;FLOAT;INT32  5  31.7432  0.4840 0.0152  158.7160
+    "9,151936;9,151936;9;9" FLOAT;INT32;FLOAT;INT32  5  31.4596  0.9296 0.0295  157.2980
+    "5,151936;5,151936;5;5" FLOAT;INT32;FLOAT;INT32  4  30.9895  0.4019 0.0130  123.9580
+"12,151936;12,151936;12;12" FLOAT;INT32;FLOAT;INT32  3  32.0800  0.7158 0.0223   96.2400
+    "6,151936;6,151936;6;6" FLOAT;INT32;FLOAT;INT32  3  31.0847  0.8505 0.0274   93.2540
+"14,151936;14,151936;14;14" FLOAT;INT32;FLOAT;INT32  2  31.9400  0.9617 0.0301   63.8800
+    "3,151936;3,151936;3;3" FLOAT;INT32;FLOAT;INT32  2  28.1790  0.7934 0.0282   56.3580
+
+  RealDiv: 26 shape groups, 20 with CV
+         Input Shapes Input Data Types  n  mean_us  std_us     cv  total_us
+  "1,151936;1,151936"      FLOAT;FLOAT 21   9.2027  1.2923 0.1404  193.2560
+       "1,151936;1,1"      FLOAT;FLOAT 21   7.1779  0.0454 0.0063  150.7360
+     "11,151936;11,1"      FLOAT;FLOAT  7  17.7143  0.2979 0.0168  124.0000
+       "7,151936;7,1"      FLOAT;FLOAT  6  16.2667  0.7230 0.0444   97.6000
+"11,151936;11,151936"      FLOAT;FLOAT  7  13.0023  0.2458 0.0189   91.0160
+       "8,151936;8,1"      FLOAT;FLOAT  5  17.3880  0.3571 0.0205   86.9400
+       "9,151936;9,1"      FLOAT;FLOAT  5  16.9080  0.3574 0.0211   84.5400
+  "7,151936;7,151936"      FLOAT;FLOAT  6  11.6830  1.1045 0.0945   70.0980
+       "5,151936;5,1"      FLOAT;FLOAT  4  15.8700  0.4426 0.0279   63.4800
+  "9,151936;9,151936"      FLOAT;FLOAT  5  12.0876  0.1414 0.0117   60.4380
+
+  TensorMove: 2 shape groups, 2 with CV
+Input Shapes Input Data Types  n  mean_us  std_us     cv  total_us
+"3072,4,128"          DT_BF16 64  10.2389  1.1708 0.1143  655.2880
+ "768,4,128"          DT_BF16 64   9.8465  1.1553 0.1173  630.1740
+
+  Cast: 46 shape groups, 38 with CV
+Input Shapes Input Data Types   n  mean_us  std_us     cv  total_us
+        "16"            INT32 175   1.2116  0.0725 0.0598  212.0360
+  "1,151936"          DT_BF16  21   9.5768  1.2442 0.1299  201.1120
+        "16"             BOOL 116   1.3134  0.1319 0.1005  152.3600
+ "11,151936"          DT_BF16   7   9.9483  0.0985 0.0099   69.6380
+  "7,151936"          DT_BF16   6   9.3960  0.1296 0.0138   56.3760
+  "9,151936"          DT_BF16   5  10.0716  0.5485 0.0545   50.3580
+  "8,151936"          DT_BF16   5   9.4920  0.0415 0.0044   47.4600
+  "5,151936"          DT_BF16   4   9.8045  0.3639 0.0371   39.2180
+         "1"            INT64  21   1.5733  0.0495 0.0315   33.0400
+ "12,151936"          DT_BF16   3  10.1400  0.1562 0.0154   30.4200
+
+  Index: 41 shape groups, 16 with CV
+    Input Shapes          Input Data Types  n  mean_us  std_us     cv  total_us
+ "16,5120;1;2;1" DT_BF16;INT64;INT64;INT32 18   9.2443  0.1382 0.0149  166.3980
+"16,5120;1;2;11" DT_BF16;INT64;INT64;INT32  7  11.2086  0.4556 0.0406   78.4600
+ "16,5120;1;2;7" DT_BF16;INT64;INT64;INT32  6  11.0497  2.9205 0.2643   66.2980
+ "16,5120;1;2;9" DT_BF16;INT64;INT64;INT32  5  10.3036  0.3371 0.0327   51.5180
+ "16,5120;1;2;8" DT_BF16;INT64;INT64;INT32  5  10.1720  0.4237 0.0417   50.8600
+ "16,5120;1;2;5" DT_BF16;INT64;INT64;INT32  4   9.2450  0.0597 0.0065   36.9800
+"16,5120;1;2;12" DT_BF16;INT64;INT64;INT32  3  11.7593  0.0525 0.0045   35.2780
+ "16,5120;1;2;6" DT_BF16;INT64;INT64;INT32  3   9.9587  0.0724 0.0073   29.8760
+       "5;1;1;4"   INT32;INT64;INT64;INT64  3   9.8800  0.1908 0.0193   29.6400
+"16,5120;1;2;14" DT_BF16;INT64;INT64;INT32  2  12.0000  0.3960 0.0330   24.0000
+
+  Mul: 21 shape groups, 12 with CV
+Input Shapes Input Data Types  n  mean_us  std_us     cv  total_us
+ "1,151936;"      FLOAT;FLOAT 21   7.6247  0.6768 0.0888  160.1180
+     "16;16"      INT64;INT64 58   2.1034  0.1573 0.0748  121.9960
+       "16;"      INT64;INT64 58   1.8758  0.0915 0.0488  108.7960
+"11,151936;"      FLOAT;FLOAT  7  12.8311  0.9533 0.0743   89.8180
+ "7,151936;"      FLOAT;FLOAT  6  10.1830  0.6335 0.0622   61.0980
+ "9,151936;"      FLOAT;FLOAT  5  11.1080  0.7234 0.0651   55.5400
+ "8,151936;"      FLOAT;FLOAT  5  10.6236  0.5346 0.0503   53.1180
+"12,151936;"      FLOAT;FLOAT  3  12.8733  0.8732 0.0678   38.6200
+ "5,151936;"      FLOAT;FLOAT  4   9.3650  0.1482 0.0158   37.4600
+ "6,151936;"      FLOAT;FLOAT  3   9.5933  0.0115 0.0012   28.7800
+
+Exported DSv3 CSVs to /home/horacehxw/Projects/msmodeling-perf-db-profiling-analysis/profiling_analysis_output
+
+Exported Qwen3-32B CSVs to /home/horacehxw/Projects/msmodeling-perf-db-profiling-analysis/profiling_analysis_output
+
+
+========================================================================================================================
+  COMBINED SUMMARY FOR REPORT
+========================================================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+  DSv3
+  Total: 52.902s | Compute: 2.0% | Comm: 55.5% | Fused: 42.6%
+────────────────────────────────────────────────────────────────────────────────
+                  OP Type Category   Total(us)  % Total % Compute  Invocations  Mean(us)    CV Range
+      hcom_reduceScatter_     comm 16088493.72    30.41                   5015   3208.07            
+          hcom_allGather_     comm 13160107.46    24.88                   9851   1335.92            
+ RINGMLAPrefillBF16Kernel     comm    58588.84     0.11                    427    137.21            
+reduce_scatterAicpuKernel     comm    34210.40     0.06                    195    175.44            
+     allgatherAicpuKernel     comm    13383.32     0.03                     73    183.33            
+       DispatchFFNCombine    fused 22512877.39    42.56                   4118   5466.94            
+       QuantBatchMatmulV3  compute   407639.18     0.77     39.43        15616     26.10 0.005-0.069
+                      Neg  compute    91750.04     0.17      8.87           38   2414.47 0.791-1.727
+            AscendQuantV2  compute    69947.95     0.13      6.77         6954     10.06 0.007-0.126
+                 MatMulV2  compute    69075.23     0.13      6.68         4583     15.07 0.002-0.169
+           AddRmsNormBias  compute    40627.84     0.08      3.93         8662      4.69 0.030-0.094
+             DynamicQuant  compute    37608.24     0.07      3.64         8662      4.34 0.002-0.152
+                TransData  compute    35129.79     0.07      3.40         2074     16.94 0.009-0.009
+ FusedInferAttentionScore  compute    32162.64     0.06      3.11         2074     15.51 0.030-0.503
+            MoeGatingTopK  compute    27144.94     0.05      2.63         4118      6.59 0.090-0.126
+     TransposeBatchMatMul  compute    25890.13     0.05      2.50         2074     12.48 0.065-0.077
+                    Slice  compute    23443.01     0.04      2.27         5551      4.22 0.047-0.241
+           InterleaveRope  compute    22891.35     0.04      2.21         2318      9.88 0.019-0.045
+                      Add  compute    21741.74     0.04      2.10         6545      3.32 0.005-0.205
+            BatchMatMulV2  compute    17504.06     0.03      1.69         2074      8.44 0.025-0.033
+                   SwiGlu  compute    17216.23     0.03      1.67         4331      3.98 0.002-0.127
+                Transpose  compute    14610.50     0.03      1.41          868     16.83 0.013-0.251
+       KvRmsNormRopeCache  compute    13574.49     0.03      1.31         2318      5.86 0.038-0.099
+                  RmsNorm  compute    13438.78     0.03      1.30         2389      5.63 0.026-0.066
+                     Muls  compute    10020.81     0.02      0.97         4118      2.43 0.015-0.045
+                     Cast  compute     9500.01     0.02      0.92         7070      1.34 0.002-0.272
+              BroadcastTo  compute     4677.32     0.01      0.45          509      9.19 0.055-0.133
+               TensorMove  compute     4343.03     0.01      0.42          492      8.83 0.080-0.231
+             GreaterEqual  compute     4007.61     0.01      0.39          109     36.77 0.005-4.573
+                     Fill  compute     3786.53     0.01      0.37         2227      1.70 0.044-0.185
+                AsStrided  compute     3401.75     0.01      0.33          854      3.98 0.075-0.096
+   PagedCacheLoadNdKernel  compute     2144.97     0.00      0.21          183     11.72 0.061-0.117
+               MaskedFill  compute     1840.51     0.00      0.18          109     16.89 0.006-0.156
+
+────────────────────────────────────────────────────────────────────────────────
+  Qwen3-32B
+  Total: 44.056s | Compute: 1.6% | Comm: 98.4% | Fused: 0.0%
+────────────────────────────────────────────────────────────────────────────────
+                  OP Type Category   Total(us)  % Total % Compute  Invocations  Mean(us)    CV Range
+          hcom_allReduce_     comm 42820278.20    97.20                  15494   2763.67            
+          hcom_allGather_     comm   255630.38     0.58                    251   1018.45            
+      hcom_reduceScatter_     comm   217324.60     0.49                    129   1684.69            
+     allgatherAicpuKernel     comm    33975.52     0.08                    129    263.38            
+reduce_scatterAicpuKernel     comm    28521.81     0.06                    129    221.10            
+                 MatMulV2  compute   294198.58     0.67     42.02        15549     18.92 0.002-0.125
+ FusedInferAttentionScore  compute    98440.00     0.22     14.06         3904     25.22 0.019-0.342
+                  RmsNorm  compute    93367.39     0.21     13.33         7869     11.87 0.032-0.084
+           AddRmsNormBias  compute    47939.83     0.11      6.85         7808      6.14 0.065-0.094
+                 MatMulV3  compute    35540.41     0.08      5.08          128    277.66 0.008-0.022
+                    Slice  compute    28647.91     0.07      4.09        11066      2.59 0.007-0.150
+                   SwiGlu  compute    21811.51     0.05      3.11         3904      5.59 0.038-0.120
+             _triton_rope  compute    21493.97     0.05      3.07         3904      5.51 0.014-0.079
+  ReshapeAndCacheNdKernel  compute    15041.87     0.03      2.15         3904      3.85 0.014-0.138
+                     Sort  compute    13648.13     0.03      1.95           61    223.74 0.003-0.013
+                 ArgMaxV2  compute     5380.38     0.01      0.77           61     88.20 0.000-0.009
+         DSARandomUniform  compute     5380.23     0.01      0.77           61     88.20         N/A
+                SoftmaxV2  compute     3192.38     0.01      0.46           61     52.33 0.006-0.034
+               MaskedFill  compute     2168.83     0.00      0.31          122     17.78 0.013-0.129
+      ApplyTopKTopPCustom  compute     1829.88     0.00      0.26           61     30.00 0.013-0.030
+                  RealDiv  compute     1518.40     0.00      0.22          122     12.45 0.000-0.140
+               TensorMove  compute     1285.46     0.00      0.18          128     10.04 0.114-0.117
+                     Cast  compute     1158.67     0.00      0.17          488      2.37 0.001-0.130
+                    Index  compute      942.96     0.00      0.13           93     10.14 0.004-0.264
+                      Mul  compute      863.10     0.00      0.12          183      4.72 0.001-0.089
