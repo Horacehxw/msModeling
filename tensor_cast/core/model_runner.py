@@ -70,7 +70,7 @@ class ModelRunner:
 
             db_path = Path(perf_db_path)
             data_source = ProfilingDataSource(
-                db_path, comm_grid=self.device_profile.comm_grid
+                db_path, device_profile=self.device_profile
             )
             self.perf_model = EmpiricalPerformanceModel(
                 self.device_profile, data_source=data_source
