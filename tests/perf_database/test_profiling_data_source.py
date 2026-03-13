@@ -686,6 +686,50 @@ def test_comm_no_csv_returns_none(comm_data_dir):
     assert result is None
 
 
+# --- _comm_data_dir fallback tests ---
+
+COMM_DATA_REF_OP_MAPPING_YAML = """
+version: "test"
+device: TEST_DEVICE
+
+communication_data_ref: "../hccl_ref/"
+
+operator_mappings:
+  "tensor_cast.all_reduce.default":
+    kernel_type: hcom_allReduce_
+    category: communication
+"""
+
+
+@pytest.fixture
+def comm_data_ref_dir(tmp_path):
+    """Data dir with communication_data_ref pointing to a sibling hccl dir."""
+    data_dir = tmp_path / "main"
+    data_dir.mkdir()
+    (data_dir / "op_mapping.yaml").write_text(COMM_DATA_REF_OP_MAPPING_YAML)
+    # CSV lives in the referenced dir, not in data_dir
+    hccl_dir = tmp_path / "hccl_ref"
+    hccl_dir.mkdir()
+    (hccl_dir / "hcom_allReduce_.csv").write_text(COMM_ALLREDUCE_CSV.strip())
+    return data_dir
+
+
+def test_comm_data_ref_fallback(comm_data_ref_dir):
+    """_load_csv should find CSV via communication_data_ref when not in data_dir."""
+    ds = ProfilingDataSource(comm_data_ref_dir)
+    op = _make_op_info(
+        torch.ops.tensor_cast.all_reduce.default,
+        [
+            torch.empty(1, 640, 1024, device="meta", dtype=torch.bfloat16),
+            0,
+            list(range(16)),
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is not None
+    assert abs(result.latency_us - 689.96) < 0.01
+
+
 # --- Attention special query tests (design doc §4.8) ---
 
 ATTN_OP_MAPPING_YAML = """
