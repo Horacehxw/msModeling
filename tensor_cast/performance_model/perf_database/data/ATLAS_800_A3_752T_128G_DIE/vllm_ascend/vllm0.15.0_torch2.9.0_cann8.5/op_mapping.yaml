@@ -213,6 +213,8 @@ operator_mappings:
 
   "tensor_cast.permute_tokens.default":
     kernel_type: MoeDistributeDispatchV2
+    csv_file: MoeTokenPermute
+    tc_input_count: 2
     alternate_kernel_types: [DispatchFFNCombine]
     notes: >
       [MEDIUM] op-plugin: MoeDistributeDispatchV2KernelOpApi.cpp.
@@ -221,6 +223,8 @@ operator_mappings:
 
   "tensor_cast.unpermute_tokens.default":
     kernel_type: MoeDistributeCombineV2
+    csv_file: MoeTokenUnpermute
+    tc_input_count: 1
     alternate_kernel_types: [DispatchFFNCombine]
     notes: >
       [MEDIUM] op-plugin: MoeDistributeCombineKernelV2OpApi.cpp.
@@ -494,24 +498,28 @@ operator_mappings:
   "tensor_cast.static_quant_linear_all_reduce.default":
     composite: true
     sub_kernels: [QuantBatchMatmulV3, hcom_allReduce_]
+    tc_input_count: 2
     notes: >
       [MEDIUM] op-plugin: npu_mm_all_reduce_base → aclnnQuantMatmulAllReduce/V2/V3 (MC2 with quant).
 
   "tensor_cast.static_quant_linear_int4_all_reduce.default":
     composite: true
     sub_kernels: [QuantBatchMatmulV3, hcom_allReduce_]
+    tc_input_count: 2
     notes: >
       [MEDIUM] W4A8 quant linear + all_reduce via MC2.
 
   "tensor_cast.fp8_linear_all_reduce.default":
     composite: true
     sub_kernels: [QuantBatchMatmulV3, hcom_allReduce_]
+    tc_input_count: 2
     notes: >
       [LOW] FP8 linear + all_reduce via MC2.
 
   "tensor_cast.mxfp4_linear_all_reduce.default":
     composite: true
     sub_kernels: [QuantBatchMatmulV3, hcom_allReduce_]
+    tc_input_count: 2
     notes: >
       [LOW] MXFP4 linear + all_reduce via MC2.
 

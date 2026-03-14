@@ -253,6 +253,8 @@ operator_mappings:
 
   "tensor_cast.permute_tokens.default":
     kernel_type: MoeDistributeDispatchV2
+    csv_file: MoeTokenPermute
+    tc_input_count: 2
     notes: >
       [MEDIUM] op-plugin: YAML:6146 (npu_moe_distribute_dispatch_v2) / MoeDistributeDispatchV2KernelOpApi.cpp.
       aclnn: aclnnMoeDistributeDispatchV2/V3 (no V4 in op-plugin 7.2.0).
@@ -263,6 +265,8 @@ operator_mappings:
 
   "tensor_cast.unpermute_tokens.default":
     kernel_type: MoeDistributeCombineV2
+    csv_file: MoeTokenUnpermute
+    tc_input_count: 1
     notes: >
       [MEDIUM] op-plugin: YAML:6152 (npu_moe_distribute_combine_v2) / MoeDistributeCombineKernelV2OpApi.cpp.
       aclnn: aclnnMoeDistributeCombineV2/V3 (no V4 in op-plugin 7.2.0).
@@ -570,7 +574,8 @@ operator_mappings:
       TC standalone all_gather → hcom_allGather_; 聚合查询时应包含所有变体.
 
   "tensor_cast.reduce_scatter.default":
-    kernel_type: HcomReduceScatter
+    kernel_type: hcom_reduceScatter_
+    alternate_kernel_types: [HcomReduceScatter]
     category: communication
     notes: >
       [MEDIUM] HCCL direct; op-plugin 仅有 fused npu_mm_reduce_scatter_base (MC2).

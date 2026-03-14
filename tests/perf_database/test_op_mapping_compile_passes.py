@@ -13,7 +13,7 @@ OP_MAPPING_PATH = (
 class CompilePassOpMappingTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        with open(OP_MAPPING_PATH) as f:
+        with open(OP_MAPPING_PATH, encoding="utf-8") as f:
             full = yaml.safe_load(f)
         cls.mapping = full.get("operator_mappings", {})
         cls.torch_npu_ref = full.get("torch_npu_reference", {})
