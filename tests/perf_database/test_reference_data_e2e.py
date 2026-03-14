@@ -138,17 +138,26 @@ def test_add_hit(ds):
     assert result.details["kernel_type"] == "Add"
 
 
-def test_matmul_all_reduce_composite_hit(ds):
-    """Composite: matmul_all_reduce decomposes to MatMulV2 sub-kernel."""
+def test_matmul_all_reduce_composite_comm_miss(ds):
+    """Composite: matmul_all_reduce compute hits MatMulV2 but comm CSV is raw
+    profiling format (no message_bytes column) in v0.13.0 → graceful None.
+
+    Trade-off: prior to B2, composite returned compute-only partial results
+    (confidence=0.8). Now it returns None when comm sub-kernel misses,
+    preferring correctness over partial hit rate — the analytic fallback
+    handles the full op instead of silently ignoring comm latency.
+    """
     op = _make_op(
         torch.ops.tensor_cast.matmul_all_reduce.default,
         (144, 512),
         (512, 5120),
     )
+    # Add rank_group so _lookup_comm_for_composite can extract it
+    op.args = (*op.args, None, 0, [0, 1])
     result = ds.lookup(op)
-    assert result is not None
-    assert result.details.get("composite") is True
-    assert result.details["kernel_type"] == "MatMulV2"
+    # v0.13.0 hcom_allReduce_.csv is raw format → comm sub-kernel miss
+    assert result is None
+    assert ds.last_miss_reason == "comm_sub_kernel_miss"
 
 
 # === Known MISSes (structural mismatches) ===

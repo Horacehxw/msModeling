@@ -3,10 +3,12 @@ from unittest.mock import MagicMock
 import pytest
 import torch
 
+from tensor_cast.device import CommGrid, InterconnectTopology
 from tensor_cast.performance_model.perf_database.data_source import QuerySource
 
 from tensor_cast.performance_model.perf_database.profiling_data_source import (
     DTYPE_MAP,
+    get_topology_tier,
     fractal_nz_to_nd,
     ProfilingDataSource,
 )
@@ -511,6 +513,13 @@ Input Shapes,Input Data Types,Input Formats,Output Shapes,Output Data Types,Outp
 "136,512;32,320,16,16","DT_BF16;DT_BF16","ND;FRACTAL_NZ","136,5120","DT_BF16","ND",14.156
 """
 
+# mat1[144,512] @ mat2[512,5120] -> output[144,5120]
+# message_bytes = 144 * 5120 * 2 (bfloat16) = 1474560, num_devices = 2
+COMPOSITE_COMM_CSV = """\
+message_bytes,num_devices,Duration(us)
+1474560,2,200.00
+"""
+
 
 @pytest.fixture
 def composite_data_dir(tmp_path):
@@ -525,11 +534,12 @@ def composite_data_dir(tmp_path):
     )
     (data_dir / "op_mapping.yaml").write_text(op_mapping)
     (data_dir / "MatMulV2.csv").write_text(COMPOSITE_MATMUL_CSV.strip())
+    (data_dir / "hcom_allReduce_.csv").write_text(COMPOSITE_COMM_CSV.strip())
     return data_dir
 
 
 def test_composite_decomposition_matmul(composite_data_dir):
-    """matmul_all_reduce should decompose and match MatMulV2 sub-kernel."""
+    """matmul_all_reduce decomposes to MatMulV2 + hcom_allReduce_; latency is summed."""
     ds = ProfilingDataSource(composite_data_dir)
     op = _make_op_info(
         torch.ops.tensor_cast.matmul_all_reduce.default,
@@ -542,10 +552,10 @@ def test_composite_decomposition_matmul(composite_data_dir):
         ],
     )
     result = ds.lookup(op)
-    assert result is not None, "Should match MatMulV2 sub-kernel via composite decomposition"
-    assert abs(result.latency_us - 14.156) < 0.01
+    assert result is not None, "Should match both MatMulV2 and hcom_allReduce_ sub-kernels"
+    assert abs(result.latency_us - (14.156 + 200.00)) < 0.01
     assert result.details.get("composite") is True
-    assert result.confidence < 1.0  # Lower confidence for partial match
+    assert result.confidence == 0.9
 
 
 def test_composite_no_sub_kernels(spike_data_dir):
@@ -557,6 +567,304 @@ def test_composite_no_sub_kernels(spike_data_dir):
     )
     result = ds.lookup(op)
     assert result is None
+
+
+# --- B2: composite sub-kernel sum tests ---
+
+# Fixture: compute CSV only (no comm CSV) — for comm-miss scenario
+@pytest.fixture
+def mc2_compute_only_dir(tmp_path):
+    data_dir = tmp_path / "mc2_compute_only"
+    data_dir.mkdir()
+    op_mapping = (
+        'version: "test"\n'
+        "operator_mappings:\n"
+        '  "tensor_cast.matmul_all_reduce.default":\n'
+        "    composite: true\n"
+        "    sub_kernels: [MatMulV2, hcom_allReduce_]\n"
+    )
+    (data_dir / "op_mapping.yaml").write_text(op_mapping)
+    (data_dir / "MatMulV2.csv").write_text(COMPOSITE_MATMUL_CSV.strip())
+    # No hcom_allReduce_.csv
+    return data_dir
+
+
+# Fixture: compute CSV with wrong shapes — for shape-mismatch scenario
+@pytest.fixture
+def mc2_wrong_shape_dir(tmp_path):
+    data_dir = tmp_path / "mc2_wrong_shape"
+    data_dir.mkdir()
+    op_mapping = (
+        'version: "test"\n'
+        "operator_mappings:\n"
+        '  "tensor_cast.matmul_all_reduce.default":\n'
+        "    composite: true\n"
+        "    sub_kernels: [MatMulV2, hcom_allReduce_]\n"
+    )
+    (data_dir / "op_mapping.yaml").write_text(op_mapping)
+    # CSV has different shapes — won't match mat1[144,512] @ mat2[512,5120]
+    wrong_csv = (
+        'Input Shapes,Input Data Types,Input Formats,Output Shapes,'
+        'Output Data Types,Output Formats,Average Duration(us)\n'
+        '"1,256;16,160,16,16","DT_BF16;DT_BF16","ND;FRACTAL_NZ",'
+        '"1,2560","DT_BF16","ND",99.0\n'
+    )
+    (data_dir / "MatMulV2.csv").write_text(wrong_csv.strip())
+    (data_dir / "hcom_allReduce_.csv").write_text(COMPOSITE_COMM_CSV.strip())
+    return data_dir
+
+
+def test_composite_mc2_compute_hit_comm_miss_returns_none(mc2_compute_only_dir):
+    """Compute sub-kernel hits but comm CSV absent → None + comm_sub_kernel_miss."""
+    ds = ProfilingDataSource(mc2_compute_only_dir)
+    op = _make_op_info(
+        torch.ops.tensor_cast.matmul_all_reduce.default,
+        [
+            torch.empty(144, 512, device="meta", dtype=torch.bfloat16),
+            torch.empty(512, 5120, device="meta", dtype=torch.bfloat16),
+            None, 0, [0, 1],
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is None
+    assert ds.last_miss_reason == "comm_sub_kernel_miss"
+
+
+def test_composite_mc2_compute_miss_returns_none(mc2_wrong_shape_dir):
+    """Compute CSV exists but shapes don't match → None + shape_mismatch."""
+    ds = ProfilingDataSource(mc2_wrong_shape_dir)
+    op = _make_op_info(
+        torch.ops.tensor_cast.matmul_all_reduce.default,
+        [
+            torch.empty(144, 512, device="meta", dtype=torch.bfloat16),
+            torch.empty(512, 5120, device="meta", dtype=torch.bfloat16),
+            None, 0, [0, 1],
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is None
+    assert ds.last_miss_reason == "shape_mismatch"
+
+
+def test_composite_mla_csv_not_found_returns_none(spike_data_dir):
+    """MLA composite: now returns mla_not_implemented placeholder miss reason."""
+    ds = ProfilingDataSource(spike_data_dir)
+    op = _make_op_info(
+        torch.ops.tensor_cast.multihead_latent_attention.default,
+        [torch.empty(136, 5120, device="meta", dtype=torch.bfloat16)],
+    )
+    result = ds.lookup(op)
+    assert result is None
+    assert ds.last_miss_reason == "mla_not_implemented"
+
+
+def test_composite_no_sub_kernels_miss_reason(tmp_path):
+    """Composite op with empty sub_kernels list → None + no_sub_kernels."""
+    data_dir = tmp_path / "empty_sub"
+    data_dir.mkdir()
+    op_mapping = (
+        'version: "test"\n'
+        "operator_mappings:\n"
+        '  "tensor_cast.matmul_all_reduce.default":\n'
+        "    composite: true\n"
+        "    sub_kernels: []\n"
+    )
+    (data_dir / "op_mapping.yaml").write_text(op_mapping)
+    ds = ProfilingDataSource(data_dir)
+    op = _make_op_info(
+        torch.ops.tensor_cast.matmul_all_reduce.default,
+        [
+            torch.empty(144, 512, device="meta", dtype=torch.bfloat16),
+            torch.empty(512, 5120, device="meta", dtype=torch.bfloat16),
+            None, 0, [0, 1],
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is None
+    assert ds.last_miss_reason == "no_sub_kernels"
+
+
+# --- B2: quant MC2 + MLA placeholder tests ---
+
+# QuantBatchMatmulV3 CSV: INT8 inputs, ND format
+# x[144,512] INT8, w[512,5120] INT8 → output[144,5120] BF16
+QUANT_MATMUL_CSV = """\
+Input Shapes,Input Data Types,Input Formats,Output Shapes,Output Data Types,Output Formats,Average Duration(us)
+"144,512;512,5120","INT8;INT8","ND;ND","144,5120","DT_BF16","ND",22.5
+"""
+
+# Comm CSV: message_bytes = 144 * 5120 * 2 (BF16 output) = 1474560
+QUANT_COMM_CSV = """\
+message_bytes,num_devices,Duration(us)
+1474560,2,200.00
+"""
+
+# Wrong comm CSV: message_bytes = 144 * 5120 * 1 (INT8 input) = 737280
+QUANT_COMM_WRONG_CSV = """\
+message_bytes,num_devices,Duration(us)
+737280,2,150.00
+"""
+
+
+@pytest.fixture
+def quant_mc2_data_dir(tmp_path):
+    """Quant MC2 fixture: static_quant_linear_all_reduce with tc_input_count=2."""
+    data_dir = tmp_path / "quant_mc2"
+    data_dir.mkdir()
+    op_mapping = (
+        'version: "test"\n'
+        "operator_mappings:\n"
+        '  "tensor_cast.static_quant_linear_all_reduce.default":\n'
+        "    composite: true\n"
+        "    sub_kernels: [QuantBatchMatmulV3, hcom_allReduce_]\n"
+        "    tc_input_count: 2\n"
+    )
+    (data_dir / "op_mapping.yaml").write_text(op_mapping)
+    (data_dir / "QuantBatchMatmulV3.csv").write_text(QUANT_MATMUL_CSV.strip())
+    (data_dir / "hcom_allReduce_.csv").write_text(QUANT_COMM_CSV.strip())
+    return data_dir
+
+
+def test_composite_quant_mc2_hit(quant_mc2_data_dir):
+    """static_quant_linear_all_reduce: tc_input_count=2 truncates 6 tensor args to x+w,
+    matches QuantBatchMatmulV3 + hcom_allReduce_, latency summed."""
+    ds = ProfilingDataSource(quant_mc2_data_dir)
+    # 6 tensor args: x, w, scale, zero_point, bias, per_token_scale
+    op = _make_op_info(
+        torch.ops.tensor_cast.static_quant_linear_all_reduce.default,
+        [
+            torch.empty(144, 512, device="meta", dtype=torch.int8),     # x
+            torch.empty(512, 5120, device="meta", dtype=torch.int8),    # w
+            torch.empty(5120, device="meta", dtype=torch.bfloat16),     # scale
+            torch.empty(5120, device="meta", dtype=torch.int8),         # zero_point
+            torch.empty(5120, device="meta", dtype=torch.bfloat16),     # bias
+            torch.empty(144, device="meta", dtype=torch.bfloat16),      # per_token_scale
+            0,      # rank
+            [0, 1], # rank_group
+        ],
+        output_tensors=[torch.empty(144, 5120, device="meta", dtype=torch.bfloat16)],
+    )
+    result = ds.lookup(op)
+    assert result is not None, "Should match with tc_input_count=2 truncation"
+    assert abs(result.latency_us - (22.5 + 200.00)) < 0.01
+    assert result.details.get("composite") is True
+
+
+def test_composite_quant_mc2_message_bytes_uses_output_dtype(tmp_path):
+    """message_bytes should use BF16 output (2B) not INT8 input (1B).
+    With INT8 input: 144*5120*1=737280. With BF16 output: 144*5120*2=1474560.
+    Only the BF16-sized comm CSV should match."""
+    data_dir = tmp_path / "quant_mc2_dtype"
+    data_dir.mkdir()
+    op_mapping = (
+        'version: "test"\n'
+        "operator_mappings:\n"
+        '  "tensor_cast.static_quant_linear_all_reduce.default":\n'
+        "    composite: true\n"
+        "    sub_kernels: [QuantBatchMatmulV3, hcom_allReduce_]\n"
+        "    tc_input_count: 2\n"
+    )
+    (data_dir / "op_mapping.yaml").write_text(op_mapping)
+    (data_dir / "QuantBatchMatmulV3.csv").write_text(QUANT_MATMUL_CSV.strip())
+    # Only provide INT8-sized comm CSV (737280) — should NOT match
+    (data_dir / "hcom_allReduce_.csv").write_text(QUANT_COMM_WRONG_CSV.strip())
+
+    ds = ProfilingDataSource(data_dir)
+    op = _make_op_info(
+        torch.ops.tensor_cast.static_quant_linear_all_reduce.default,
+        [
+            torch.empty(144, 512, device="meta", dtype=torch.int8),
+            torch.empty(512, 5120, device="meta", dtype=torch.int8),
+            torch.empty(5120, device="meta", dtype=torch.bfloat16),
+            torch.empty(5120, device="meta", dtype=torch.int8),
+            torch.empty(5120, device="meta", dtype=torch.bfloat16),
+            torch.empty(144, device="meta", dtype=torch.bfloat16),
+            0, [0, 1],
+        ],
+        output_tensors=[torch.empty(144, 5120, device="meta", dtype=torch.bfloat16)],
+    )
+    result = ds.lookup(op)
+    # BF16 output → message_bytes=1474560, but CSV only has 737280 → comm miss
+    assert result is None
+    assert ds.last_miss_reason == "comm_sub_kernel_miss"
+
+
+def test_composite_mla_placeholder_miss_reason(tmp_path):
+    """multihead_latent_attention → mla_not_implemented miss reason."""
+    data_dir = tmp_path / "mla_placeholder"
+    data_dir.mkdir()
+    op_mapping = (
+        'version: "test"\n'
+        "operator_mappings:\n"
+        '  "tensor_cast.multihead_latent_attention.default":\n'
+        "    composite: true\n"
+        "    sub_kernels: [BatchMatMulV2, FusedInferAttentionScore]\n"
+    )
+    (data_dir / "op_mapping.yaml").write_text(op_mapping)
+    ds = ProfilingDataSource(data_dir)
+    op = _make_op_info(
+        torch.ops.tensor_cast.multihead_latent_attention.default,
+        [torch.empty(136, 5120, device="meta", dtype=torch.bfloat16)],
+    )
+    result = ds.lookup(op)
+    assert result is None
+    assert ds.last_miss_reason == "mla_not_implemented"
+
+
+def test_composite_mlapo_placeholder_miss_reason(tmp_path):
+    """mlapo → mla_not_implemented miss reason."""
+    data_dir = tmp_path / "mlapo_placeholder"
+    data_dir.mkdir()
+    op_mapping = (
+        'version: "test"\n'
+        "operator_mappings:\n"
+        '  "tensor_cast.mlapo.default":\n'
+        "    composite: true\n"
+        "    sub_kernels: [MatMulV2, KvRmsNormRopeCache]\n"
+    )
+    (data_dir / "op_mapping.yaml").write_text(op_mapping)
+    ds = ProfilingDataSource(data_dir)
+    op = _make_op_info(
+        torch.ops.tensor_cast.mlapo.default,
+        [torch.empty(136, 5120, device="meta", dtype=torch.bfloat16)],
+    )
+    result = ds.lookup(op)
+    assert result is None
+    assert ds.last_miss_reason == "mla_not_implemented"
+
+
+def test_composite_tc_input_count_truncation(tmp_path):
+    """tc_input_count truncation: 4 tensor args truncated to 2, matches CSV with 2 inputs."""
+    data_dir = tmp_path / "tc_input_trunc"
+    data_dir.mkdir()
+    # Generic composite with tc_input_count=2 and compute-only sub_kernels
+    op_mapping = (
+        'version: "test"\n'
+        "operator_mappings:\n"
+        '  "tensor_cast.static_quant_linear_all_reduce.default":\n'
+        "    composite: true\n"
+        "    sub_kernels: [QuantBatchMatmulV3]\n"
+        "    tc_input_count: 2\n"
+    )
+    (data_dir / "op_mapping.yaml").write_text(op_mapping)
+    (data_dir / "QuantBatchMatmulV3.csv").write_text(QUANT_MATMUL_CSV.strip())
+
+    ds = ProfilingDataSource(data_dir)
+    # 4 tensor args — without truncation, len(tc_inputs)=4 != len(csv_shapes)=2 → miss
+    op = _make_op_info(
+        torch.ops.tensor_cast.static_quant_linear_all_reduce.default,
+        [
+            torch.empty(144, 512, device="meta", dtype=torch.int8),
+            torch.empty(512, 5120, device="meta", dtype=torch.int8),
+            torch.empty(5120, device="meta", dtype=torch.bfloat16),  # extra: scale
+            torch.empty(144, device="meta", dtype=torch.bfloat16),   # extra: per_token
+            0, [0, 1],
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is not None, "tc_input_count=2 should truncate to x+w and match"
+    assert abs(result.latency_us - 22.5) < 0.01
+    assert result.details.get("composite") is True
 
 
 # --- Communication query tests (design doc §4.7) ---
@@ -841,3 +1149,512 @@ def test_attention_miss_no_seq_lens(attn_data_dir):
     )
     result = ds.lookup(op)
     assert result is None, "No seq_lens -> can't compute batch/seq, return None"
+
+
+# --- topology_tier matching tests (design doc §4.7) ---
+#
+# Test grid: [2, 4] — 2 pods, 4 devices per pod
+#   tier 0 (inter_pod): ranks spanning different pods  (e.g. [0, 4])
+#   tier 1 (intra_pod): ranks within same pod          (e.g. [0, 1])
+#
+# Rank → coord mapping:
+#   rank 0 → [0, 0],  rank 1 → [0, 1],  rank 2 → [0, 2],  rank 3 → [0, 3]
+#   rank 4 → [1, 0],  rank 5 → [1, 1],  rank 6 → [1, 2],  rank 7 → [1, 3]
+
+def _make_test_comm_grid() -> CommGrid:
+    """2-tier grid [2, 4]: tier 0 = inter-pod, tier 1 = intra-pod."""
+    return CommGrid(
+        grid=torch.zeros([2, 4], dtype=torch.int32),
+        topologies={
+            0: InterconnectTopology(bandwidth_bytes_ps=196e9, latency_s=5.5e-6),
+            1: InterconnectTopology(bandwidth_bytes_ps=224e9, latency_s=0.2e-6),
+        },
+    )
+
+
+# CSV with two rows: same message_bytes+num_devices=2, different topology_tier
+# num_devices=2 matches rank_group size ([0,4] or [0,1] both have 2 elements)
+# message_bytes = torch.empty(4,1024,160,bfloat16).nelement()*2 = 655360*2 = 1310720
+COMM_TIERED_CSV = """\
+message_bytes,num_devices,dtype,topology_tier,Duration(us)
+1310720,2,DT_BF16,0,689.96
+1310720,2,DT_BF16,1,125.30
+"""
+
+COMM_TIER0_ONLY_CSV = """\
+message_bytes,num_devices,dtype,topology_tier,Duration(us)
+1310720,2,DT_BF16,0,689.96
+"""
+
+COMM_NO_TIER_COL_CSV = """\
+message_bytes,num_devices,dtype,Duration(us)
+1310720,2,DT_BF16,350.00
+"""
+
+
+@pytest.fixture
+def tiered_comm_dir(tmp_path):
+    data_dir = tmp_path / "tiered_comm"
+    data_dir.mkdir()
+    op_mapping = (
+        'version: "test"\n'
+        "operator_mappings:\n"
+        '  "tensor_cast.all_reduce.default":\n'
+        "    kernel_type: hcom_allReduce_\n"
+        "    category: communication\n"
+    )
+    (data_dir / "op_mapping.yaml").write_text(op_mapping)
+    (data_dir / "hcom_allReduce_.csv").write_text(COMM_TIERED_CSV.strip())
+    return data_dir
+
+
+@pytest.fixture
+def tier0_only_comm_dir(tmp_path):
+    data_dir = tmp_path / "tier0_only"
+    data_dir.mkdir()
+    op_mapping = (
+        'version: "test"\n'
+        "operator_mappings:\n"
+        '  "tensor_cast.all_reduce.default":\n'
+        "    kernel_type: hcom_allReduce_\n"
+        "    category: communication\n"
+    )
+    (data_dir / "op_mapping.yaml").write_text(op_mapping)
+    (data_dir / "hcom_allReduce_.csv").write_text(COMM_TIER0_ONLY_CSV.strip())
+    return data_dir
+
+
+@pytest.fixture
+def no_tier_col_comm_dir(tmp_path):
+    data_dir = tmp_path / "no_tier_col"
+    data_dir.mkdir()
+    op_mapping = (
+        'version: "test"\n'
+        "operator_mappings:\n"
+        '  "tensor_cast.all_reduce.default":\n'
+        "    kernel_type: hcom_allReduce_\n"
+        "    category: communication\n"
+    )
+    (data_dir / "op_mapping.yaml").write_text(op_mapping)
+    (data_dir / "hcom_allReduce_.csv").write_text(COMM_NO_TIER_COL_CSV.strip())
+    return data_dir
+
+
+# --- get_topology_tier unit tests ---
+
+def testget_topology_tier_inter_pod():
+    """Ranks spanning different pods → tier 0 (inter_pod)."""
+    comm_grid = _make_test_comm_grid()
+    # rank 0 → [0,0], rank 4 → [1,0]: differ at dim 0 → tier 0
+    assert get_topology_tier(comm_grid, [0, 4]) == 0
+
+
+def testget_topology_tier_intra_pod():
+    """Ranks within same pod → tier 1 (intra_pod)."""
+    comm_grid = _make_test_comm_grid()
+    # rank 0 → [0,0], rank 1 → [0,1]: differ at dim 1 → tier 1
+    assert get_topology_tier(comm_grid, [0, 1]) == 1
+
+
+def testget_topology_tier_multi_rank_intra():
+    """All ranks in same pod → tier 1."""
+    comm_grid = _make_test_comm_grid()
+    assert get_topology_tier(comm_grid, [0, 1, 2, 3]) == 1
+
+
+def testget_topology_tier_multi_rank_inter():
+    """Ranks spanning pods → tier 0."""
+    comm_grid = _make_test_comm_grid()
+    assert get_topology_tier(comm_grid, [0, 1, 4, 5]) == 0
+
+
+def _make_device_profile_with_comm_grid(comm_grid):
+    """Wrap a CommGrid in a mock DeviceProfile for ProfilingDataSource."""
+    mock_dp = MagicMock()
+    mock_dp.comm_grid = comm_grid
+    return mock_dp
+
+
+# --- _lookup_comm topology_tier integration tests ---
+
+def test_comm_topology_tier_selects_correct_row(tiered_comm_dir):
+    """With comm_grid, inter-pod group (tier 0) should match the tier=0 row (689.96 us)."""
+    comm_grid = _make_test_comm_grid()
+    ds = ProfilingDataSource(tiered_comm_dir, _make_device_profile_with_comm_grid(comm_grid))
+    # rank_group [0,4] spans pods → tier 0
+    # tensor: 4 devices, message_bytes = 4 * 1024 * 160 * 2 = 1310720
+    op = _make_op_info(
+        torch.ops.tensor_cast.all_reduce.default,
+        [
+            torch.empty(4, 1024, 160, device="meta", dtype=torch.bfloat16),
+            0,
+            [0, 4],
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is not None
+    assert abs(result.latency_us - 689.96) < 0.01
+    assert result.details.get("topology_tier") == 0
+
+
+def test_comm_topology_tier_intra_pod_row(tiered_comm_dir):
+    """Intra-pod group (tier 1) should match the tier=1 row (125.30 us)."""
+    comm_grid = _make_test_comm_grid()
+    ds = ProfilingDataSource(tiered_comm_dir, _make_device_profile_with_comm_grid(comm_grid))
+    # rank_group [0,1] within pod → tier 1
+    op = _make_op_info(
+        torch.ops.tensor_cast.all_reduce.default,
+        [
+            torch.empty(4, 1024, 160, device="meta", dtype=torch.bfloat16),
+            0,
+            [0, 1],
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is not None
+    assert abs(result.latency_us - 125.30) < 0.01
+    assert result.details.get("topology_tier") == 1
+
+
+def test_comm_topology_tier_miss_when_tier_absent(tier0_only_comm_dir):
+    """Intra-pod group (tier 1) should MISS when CSV only has tier=0 data."""
+    comm_grid = _make_test_comm_grid()
+    ds = ProfilingDataSource(tier0_only_comm_dir, _make_device_profile_with_comm_grid(comm_grid))
+    op = _make_op_info(
+        torch.ops.tensor_cast.all_reduce.default,
+        [
+            torch.empty(4, 1024, 160, device="meta", dtype=torch.bfloat16),
+            0,
+            [0, 1],  # intra-pod → tier 1, not in CSV
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is None, "tier=1 not in CSV, should miss"
+
+
+def test_comm_no_comm_grid_ignores_topology_tier(tiered_comm_dir):
+    """Without comm_grid, topology_tier column is ignored; first matching row returned."""
+    ds = ProfilingDataSource(tiered_comm_dir)  # no comm_grid
+    op = _make_op_info(
+        torch.ops.tensor_cast.all_reduce.default,
+        [
+            torch.empty(4, 1024, 160, device="meta", dtype=torch.bfloat16),
+            0,
+            [0, 1],
+        ],
+    )
+    result = ds.lookup(op)
+    # Both rows match on message_bytes+num_devices; first row (tier=0, 689.96) returned
+    assert result is not None
+    assert abs(result.latency_us - 689.96) < 0.01
+    assert result.details.get("topology_tier") is None
+
+
+def test_comm_csv_without_topology_tier_col(no_tier_col_comm_dir):
+    """CSV without topology_tier column works fine even when comm_grid is provided."""
+    comm_grid = _make_test_comm_grid()
+    ds = ProfilingDataSource(no_tier_col_comm_dir, _make_device_profile_with_comm_grid(comm_grid))
+    op = _make_op_info(
+        torch.ops.tensor_cast.all_reduce.default,
+        [
+            torch.empty(4, 1024, 160, device="meta", dtype=torch.bfloat16),
+            0,
+            [0, 1],
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is not None
+    assert abs(result.latency_us - 350.00) < 0.01
+
+
+# --- communication_data_ref path redirection tests (design doc §5/§6) ---
+#
+# Directory layout mirrors production:
+#   vllm_ascend/v0.13.0/op_mapping.yaml  ← communication_data_ref: "../../hccl/v8.1.RC1/"
+#   hccl/v8.1.RC1/hcom_allReduce_.csv
+#
+# message_bytes = torch.empty(4,1024,160,bfloat16).nelement()*2 = 1310720
+
+_COMM_REF_OP_MAPPING_WITH_REF = """\
+version: "test"
+communication_data_ref: "../../hccl/v8.1.RC1/"
+operator_mappings:
+  "tensor_cast.all_reduce.default":
+    kernel_type: hcom_allReduce_
+    category: communication
+"""
+
+_COMM_REF_OP_MAPPING_NO_REF = """\
+version: "test"
+operator_mappings:
+  "tensor_cast.all_reduce.default":
+    kernel_type: hcom_allReduce_
+    category: communication
+"""
+
+_COMM_REF_CSV = """\
+message_bytes,num_devices,dtype,topology_tier,Duration(us)
+1310720,16,DT_BF16,0,512.00
+"""
+
+
+@pytest.fixture
+def comm_ref_dir(tmp_path):
+    """Separate hccl dir; op_mapping.yaml points to it via communication_data_ref."""
+    vllm_dir = tmp_path / "vllm_ascend" / "v0.13.0"
+    vllm_dir.mkdir(parents=True)
+    hccl_dir = tmp_path / "hccl" / "v8.1.RC1"
+    hccl_dir.mkdir(parents=True)
+    (vllm_dir / "op_mapping.yaml").write_text(_COMM_REF_OP_MAPPING_WITH_REF)
+    (hccl_dir / "hcom_allReduce_.csv").write_text(_COMM_REF_CSV.strip())
+    return vllm_dir
+
+
+@pytest.fixture
+def comm_no_ref_dir(tmp_path):
+    """Legacy layout: CSV and op_mapping.yaml in the same directory, no communication_data_ref."""
+    data_dir = tmp_path / "legacy"
+    data_dir.mkdir()
+    (data_dir / "op_mapping.yaml").write_text(_COMM_REF_OP_MAPPING_NO_REF)
+    (data_dir / "hcom_allReduce_.csv").write_text(_COMM_REF_CSV.strip())
+    return data_dir
+
+
+def test_comm_data_ref_resolves_csv_from_separate_dir(comm_ref_dir):
+    """communication_data_ref points to a separate hccl dir; CSV should be found and hit."""
+    ds = ProfilingDataSource(comm_ref_dir)
+    op = _make_op_info(
+        torch.ops.tensor_cast.all_reduce.default,
+        [
+            torch.empty(4, 1024, 160, device="meta", dtype=torch.bfloat16),
+            0,
+            list(range(16)),
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is not None, f"Expected hit, got miss: {ds.last_miss_reason}"
+    assert abs(result.latency_us - 512.00) < 0.01
+    assert result.details.get("kernel_type") == "hcom_allReduce_"
+
+
+def test_comm_data_ref_missing_falls_back_to_data_dir(comm_no_ref_dir):
+    """Without communication_data_ref, _comm_data_dir falls back to data_dir (legacy layout)."""
+    ds = ProfilingDataSource(comm_no_ref_dir)
+    op = _make_op_info(
+        torch.ops.tensor_cast.all_reduce.default,
+        [
+            torch.empty(4, 1024, 160, device="meta", dtype=torch.bfloat16),
+            0,
+            list(range(16)),
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is not None, f"Expected hit in legacy layout, got: {ds.last_miss_reason}"
+    assert abs(result.latency_us - 512.00) < 0.01
+
+
+def test_comm_data_ref_csv_not_found_returns_none(comm_ref_dir):
+    """communication_data_ref dir exists but CSV is absent → None + csv_not_found."""
+    ds = ProfilingDataSource(comm_ref_dir)
+    op = _make_op_info(
+        torch.ops.tensor_cast.all_gather.default,  # no hcom_allGather_.csv in hccl dir
+        [
+            torch.empty(4, 1024, 160, device="meta", dtype=torch.bfloat16),
+            0,
+            0,
+            list(range(16)),
+        ],
+    )
+    # Need all_gather in op_mapping — patch the loaded mapping directly
+    ds._op_mapping.setdefault("operator_mappings", {})[
+        "tensor_cast.all_gather.default"
+    ] = {"kernel_type": "hcom_allGather_", "category": "communication"}
+    result = ds.lookup(op)
+    assert result is None
+    assert ds.last_miss_reason == "csv_not_found"
+
+
+# --- MoE csv_file + tc_input_count tests ---
+
+MOE_OP_MAPPING_YAML = """\
+version: "0.14.0"
+device: TEST_DEVICE
+
+operator_mappings:
+  "tensor_cast.permute_tokens.default":
+    kernel_type: MoeDistributeDispatchV2
+    csv_file: MoeTokenPermute
+    tc_input_count: 2
+  "tensor_cast.unpermute_tokens.default":
+    kernel_type: MoeDistributeCombineV2
+    csv_file: MoeTokenUnpermute
+    tc_input_count: 1
+"""
+
+# MoE permute CSV (simulates MoeTokenPermute.csv raw profiling format)
+MOE_PERMUTE_CSV = """\
+Input Shapes,Input Data Types,Input Formats,Output Shapes,Output Data Types,Output Formats,Average Duration(us)
+"4,7168;4,8","DT_BF16;INT32","ND;ND","32,7168","DT_BF16","ND",6.12
+"19,1;19","FLOAT;INT32","ND;ND","19,1;19","FLOAT","ND;ND",11.39
+"""
+
+# MoE unpermute CSV (simulates MoeTokenUnpermute.csv, contains NPU internal params)
+MOE_UNPERMUTE_CSV = """\
+Input Shapes,Input Data Types,Input Formats,Output Shapes,Output Data Types,Output Formats,Average Duration(us)
+"128,7168;128;","DT_BF16;INT32;DT_UNDEFINED","ND;ND;NULL","128,7168","DT_BF16","ND",7.01
+"256,7168;256;4,8","DT_BF16;INT32;DT_BF16","ND;ND;ND","4,7168","DT_BF16","ND",6.02
+"""
+
+
+@pytest.fixture
+def moe_data_dir(tmp_path):
+    d = tmp_path / "moe"
+    d.mkdir()
+    (d / "op_mapping.yaml").write_text(MOE_OP_MAPPING_YAML)
+    (d / "MoeTokenPermute.csv").write_text(MOE_PERMUTE_CSV.strip())
+    (d / "MoeTokenUnpermute.csv").write_text(MOE_UNPERMUTE_CSV.strip())
+    return d
+
+
+def test_moe_permute_hit(moe_data_dir):
+    """permute_tokens (4,7168)+(4,8) matches first CSV row -> 6.12 us."""
+    ds = ProfilingDataSource(moe_data_dir)
+    op = _make_op_info(
+        torch.ops.tensor_cast.permute_tokens.default,
+        [
+            torch.empty(4, 7168, device="meta", dtype=torch.bfloat16),
+            torch.empty(4, 8, device="meta", dtype=torch.int32),
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is not None
+    assert abs(result.latency_us - 6.12) < 0.01
+
+
+def test_moe_permute_dtype_filter(moe_data_dir):
+    """BF16 inputs should not match the FLOAT row."""
+    ds = ProfilingDataSource(moe_data_dir)
+    op = _make_op_info(
+        torch.ops.tensor_cast.permute_tokens.default,
+        [
+            torch.empty(19, 1, device="meta", dtype=torch.bfloat16),
+            torch.empty(19, device="meta", dtype=torch.int32),
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is None
+
+
+def test_moe_permute_shape_miss(moe_data_dir):
+    """(5,7168)+(5,8) has no matching row -> None."""
+    ds = ProfilingDataSource(moe_data_dir)
+    op = _make_op_info(
+        torch.ops.tensor_cast.permute_tokens.default,
+        [
+            torch.empty(5, 7168, device="meta", dtype=torch.bfloat16),
+            torch.empty(5, 8, device="meta", dtype=torch.int32),
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is None
+
+
+def test_moe_unpermute_hit_tc_input_count_1(moe_data_dir):
+    """tc_input_count=1: only first TC input (128,7168) compared -> 7.01 us."""
+    ds = ProfilingDataSource(moe_data_dir)
+    op = _make_op_info(
+        torch.ops.tensor_cast.unpermute_tokens.default,
+        [
+            torch.empty(128, 7168, device="meta", dtype=torch.bfloat16),
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is not None
+    assert abs(result.latency_us - 7.01) < 0.01
+
+
+def test_moe_unpermute_hit_with_extra_csv_inputs(moe_data_dir):
+    """tc_input_count=1: (256,7168) matches second row (which has 3 CSV inputs) -> 6.02 us."""
+    ds = ProfilingDataSource(moe_data_dir)
+    op = _make_op_info(
+        torch.ops.tensor_cast.unpermute_tokens.default,
+        [
+            torch.empty(256, 7168, device="meta", dtype=torch.bfloat16),
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is not None
+    assert abs(result.latency_us - 6.02) < 0.01
+
+
+def test_moe_unpermute_shape_miss(moe_data_dir):
+    """(512,7168) has no matching row -> None."""
+    ds = ProfilingDataSource(moe_data_dir)
+    op = _make_op_info(
+        torch.ops.tensor_cast.unpermute_tokens.default,
+        [
+            torch.empty(512, 7168, device="meta", dtype=torch.bfloat16),
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is None
+
+
+def test_csv_file_field_override(moe_data_dir):
+    """csv_file overrides kernel_type for CSV loading."""
+    ds = ProfilingDataSource(moe_data_dir)
+    assert not (moe_data_dir / "MoeDistributeDispatchV2.csv").exists()
+    assert (moe_data_dir / "MoeTokenPermute.csv").exists()
+    op = _make_op_info(
+        torch.ops.tensor_cast.permute_tokens.default,
+        [
+            torch.empty(4, 7168, device="meta", dtype=torch.bfloat16),
+            torch.empty(4, 8, device="meta", dtype=torch.int32),
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is not None
+
+
+def test_csv_file_field_fallback(moe_data_dir):
+    """Without csv_file, kernel_type is used as CSV filename (regression guard)."""
+    ds = ProfilingDataSource(moe_data_dir)
+    mappings = ds._op_mapping["operator_mappings"]
+    mappings["tensor_cast.permute_tokens.default"] = {
+        "kernel_type": "MoeTokenPermute",
+    }
+    op = _make_op_info(
+        torch.ops.tensor_cast.permute_tokens.default,
+        [
+            torch.empty(4, 7168, device="meta", dtype=torch.bfloat16),
+            torch.empty(4, 8, device="meta", dtype=torch.int32),
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is not None
+    assert abs(result.latency_us - 6.12) < 0.01
+
+
+# --- Integration tests: real CANN 8.3 / 8.5 data directories ---
+
+from pathlib import Path
+
+_CANN83_DATA_DIR = Path(__file__).resolve().parents[2] / (
+    "tensor_cast/performance_model/perf_database/data/"
+    "ATLAS_800_A3_752T_128G_DIE/vllm_ascend/vllm0.13.0_torch2.8.0_cann8.3"
+)
+_CANN85_DATA_DIR = Path(__file__).resolve().parents[2] / (
+    "tensor_cast/performance_model/perf_database/data/"
+    "ATLAS_800_A3_752T_128G_DIE/vllm_ascend/vllm0.15.0_torch2.9.0_cann8.5"
+)
+
+_skip_no_cann83 = pytest.mark.skipif(
+    not _CANN83_DATA_DIR.exists(), reason="CANN 8.3 data dir not present"
+)
+_skip_no_cann85 = pytest.mark.skipif(
+    not _CANN85_DATA_DIR.exists(), reason="CANN 8.5 data dir not present"
+)
+
+
+# MoE real CANN tests (permute_tokens, unpermute_tokens, moe_gating_topk)
+# moved to G1 PR — they depend on tensor_cast.ops.fused_moe which is G1 scope.

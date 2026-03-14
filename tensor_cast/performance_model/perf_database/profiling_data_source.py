@@ -16,6 +16,7 @@ from .data_source import DataSource, QueryResult, QuerySource
 
 if TYPE_CHECKING:
     from ..op_invoke_info import OpInvokeInfo
+    from ...device import CommGrid
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +154,53 @@ def _is_block_padded(tc_dim: int, csv_dim: int) -> bool:
     return False
 
 
+def get_topology_tier(comm_grid: "CommGrid", group: List[int]) -> int:
+    """Determine topology tier index for a communication group.
+
+    Finds the outermost grid dimension where ranks differ, then returns the
+    most specific (fastest) topology that covers that span.
+
+    Mirrors CommAnalyticModel._get_topology_idx_for_group logic, but operates
+    directly on CommGrid to avoid importing the model layer.
+
+    Args:
+        comm_grid: CommGrid with .grid (torch.Tensor) and .topologies (dict).
+        group: list of rank IDs in the communication group.
+
+    Returns:
+        topology tier index (key into comm_grid.topologies).
+    """
+
+    def _rank_to_coord(rank: int) -> List[int]:
+        coord = []
+        temp = rank
+        for dim_size in reversed(comm_grid.grid.shape):
+            coord.insert(0, temp % dim_size)
+            temp //= dim_size
+        return coord
+
+    coords = [_rank_to_coord(r) for r in group]
+
+    diff_dim = -1
+    for dim_idx in range(comm_grid.grid.dim()):
+        first = coords[0][dim_idx]
+        if any(c[dim_idx] != first for c in coords[1:]):
+            diff_dim = dim_idx
+            break
+
+    if diff_dim == -1:
+        # All ranks identical (shouldn't happen for group > 1); use fastest tier.
+        return max(comm_grid.topologies.keys())
+
+    for start_dim in sorted(comm_grid.topologies.keys(), reverse=True):
+        if start_dim <= diff_dim:
+            return start_dim
+
+    raise ValueError(
+        f"No topology found for group spanning grid dimension {diff_dim}"
+    )
+
+
 class ProfilingDataSource(DataSource):
     """CSV-backed data source with op_mapping.yaml + FRACTAL_NZ.
 
@@ -173,25 +221,30 @@ class ProfilingDataSource(DataSource):
         self.comm_grid = device_profile.comm_grid if device_profile else None
         self._op_mapping = self._load_op_mapping()
         self._csv_cache: Dict[str, Optional[pd.DataFrame]] = {}
-        # Set after each lookup() miss to explain why
-        self.last_miss_reason: str = ""
-
-        # Resolve communication_data_ref for bench CSV fallback (§4.7)
+        # Resolve communication data directory from op_mapping communication_data_ref.
+        # Falls back to data_dir when the field is absent (legacy layout).
+        # NOTE: when _comm_data_dir == data_dir, the fallback in _load_csv is
+        # redundant but harmless — kept for clarity over micro-optimization.
         comm_ref = self._op_mapping.get("communication_data_ref")
         if comm_ref:
             self._comm_data_dir = (self.data_dir / comm_ref).resolve()
         else:
-            self._comm_data_dir = None
+            self._comm_data_dir = self.data_dir
+        # Set after each lookup() miss to explain why
+        self.last_miss_reason: str = ""
 
     def _load_op_mapping(self) -> dict:
         yaml_path = self.data_dir / "op_mapping.yaml"
         if not yaml_path.exists():
             logger.warning("op_mapping.yaml not found at %s", yaml_path)
             return {}
-        with open(yaml_path) as f:
+        with open(yaml_path, encoding="utf-8") as f:
             return yaml.safe_load(f)
 
     def _load_csv(self, kernel_type: str) -> Optional[pd.DataFrame]:
+        # Convention: comm kernel_types use lowercase hcom_ prefix (e.g. hcom_allReduce_).
+        # CamelCase variants (HcomAllReduce) are graph-compiled names and should be
+        # listed in alternate_kernel_types, not as primary kernel_type.
         if kernel_type in self._csv_cache:
             return self._csv_cache[kernel_type]
         csv_path = self.data_dir / f"{kernel_type}.csv"
@@ -206,6 +259,62 @@ class ProfilingDataSource(DataSource):
         df = pd.read_csv(csv_path)
         self._csv_cache[kernel_type] = df
         return df
+
+    @staticmethod
+    def _latency_col(df: pd.DataFrame) -> str:
+        """Return the latency column name present in *df*."""
+        return (
+            "Average Duration(us)"
+            if "Average Duration(us)" in df.columns
+            else "Duration(us)"
+        )
+
+    def _query_comm_csv(
+        self,
+        kernel_type: str,
+        message_bytes: int,
+        num_devices: int,
+        topology_tier: Optional[int],
+    ) -> Optional[float]:
+        """Shared comm CSV query: load → validate columns → match → latency.
+
+        Returns latency in microseconds, or None on miss.
+        Sets self.last_miss_reason on failure.
+        """
+        df = self._load_csv(kernel_type)
+        if df is None:
+            self.last_miss_reason = "csv_not_found"
+            return None
+
+        required_cols = {"message_bytes", "num_devices"}
+        if not required_cols.issubset(df.columns):
+            logger.debug(
+                "MISS (comm) %s: CSV missing columns %s, need microbenchmark format",
+                kernel_type,
+                required_cols - set(df.columns),
+            )
+            self.last_miss_reason = "csv_format_raw"
+            return None
+
+        mask = (df["message_bytes"] == message_bytes) & (
+            df["num_devices"] == num_devices
+        )
+        if topology_tier is not None and "topology_tier" in df.columns:
+            mask = mask & (df["topology_tier"] == topology_tier)
+
+        matched = df[mask]
+        if matched.empty:
+            logger.debug(
+                "MISS (comm) %s: message_bytes=%d, num_devices=%d, topology_tier=%s",
+                kernel_type,
+                message_bytes,
+                num_devices,
+                topology_tier,
+            )
+            self.last_miss_reason = "shape_mismatch"
+            return None
+
+        return float(matched.iloc[0][self._latency_col(df)])
 
     # ---- Main lookup (design doc S4.2 dispatch logic) ----
 
@@ -252,97 +361,159 @@ class ProfilingDataSource(DataSource):
     def _lookup_composite(
         self, op_invoke_info: "OpInvokeInfo", mapping: dict
     ) -> Optional[QueryResult]:
-        """Decompose composite ops and look up compute sub-kernels.
+        """Decompose composite ops and sum sub-kernel latencies.
 
-        For matmul+comm composites (e.g., matmul_all_reduce), look up the
-        compute sub-kernel (MatMulV2) with the op's tensor inputs.
-        Communication sub-kernels are left to the analytic model.
-        Returns None if no sub_kernels or no match found.
+        For MC2 (matmul+comm): queries both compute (MatMulV2) and comm
+        (hcom_allReduce_) sub-kernels and returns their sum.
+        Returns None if any required sub-kernel misses.
         """
         sub_kernels = mapping.get("sub_kernels", [])
         if not sub_kernels:
             self.last_miss_reason = "no_sub_kernels"
             return None
 
-        # Extract tensor inputs from the composite op
+        # MLA placeholder: not yet decomposable, return explicit miss reason
+        func_name = _normalize_func_name(op_invoke_info.func)
+        if "multihead_latent_attention" in func_name or "mlapo" in func_name:
+            self.last_miss_reason = "mla_not_implemented"
+            return None
+
         tc_inputs = self._extract_tensor_inputs(op_invoke_info)
 
-        # Try each compute sub-kernel (skip communication kernels)
+        # tc_input_count truncation (same as _lookup_compute):
+        # quant MC2 ops have 6 tensor args but CSV only needs x + w
+        tc_input_count = mapping.get("tc_input_count")
+        if tc_input_count is not None:
+            tc_inputs = tc_inputs[:tc_input_count]
+
+        # --- Compute sub-kernels ---
+        compute_latency = None
+        compute_kernel_hit = None
+        any_compute_csv = False
+
         for kernel_type in sub_kernels:
             if kernel_type.startswith("hcom_"):
                 continue
             df = self._load_csv(kernel_type)
             if df is None:
                 continue
+            any_compute_csv = True
             for _, row in df.iterrows():
-                if self._inputs_match(tc_inputs, row, kernel_type=kernel_type):
-                    latency_col = (
-                        "Average Duration(us)"
-                        if "Average Duration(us)" in df.columns
-                        else "Duration(us)"
-                    )
+                if self._inputs_match(tc_inputs, row, kernel_type=kernel_type,
+                                      tc_input_count=tc_input_count):
+                    compute_latency = float(row[self._latency_col(df)])
+                    compute_kernel_hit = kernel_type
                     logger.debug(
-                        "HIT (composite) %s: tc_shapes=%s -> %s (%.1f us)",
-                        kernel_type,
-                        [s for s, _ in tc_inputs],
-                        row.get("Input Shapes", ""),
-                        float(row[latency_col]),
+                        "HIT (composite compute) %s: %.1f us", kernel_type, compute_latency
                     )
-                    return QueryResult(
-                        latency_us=float(row[latency_col]),
-                        confidence=0.8,  # Lower confidence: partial match
-                        source=QuerySource.MEASURED,
-                        details={
-                            "kernel_type": kernel_type,
-                            "composite": True,
-                            "note": "compute sub-kernel only; comm handled by analytic",
-                        },
-                    )
-        self.last_miss_reason = "shape_mismatch"
-        return None
+                    break
+            if compute_latency is not None:
+                break
+
+        if compute_latency is None:
+            self.last_miss_reason = "csv_not_found" if not any_compute_csv else "shape_mismatch"
+            return None
+
+        # --- Communication sub-kernels ---
+        # Convention: comm sub_kernels must use hcom_ prefix (lowercase).
+        # CamelCase names (HcomAllReduce) are graph-compiled variants and
+        # should only appear in alternate_kernel_types.
+        # NOTE: _lookup_comm_for_composite assumes matmul+comm arg layout:
+        #   args[0]=mat1, args[1]=mat2, args[-1]=rank_group.
+        # This holds for all current MC2 variants (matmul_all_reduce,
+        # static_quant_linear_all_reduce, fp8_linear_all_reduce, etc.).
+        # If a future composite op has a different arg layout, this will
+        # need per-op dispatch or a mapping-driven arg index scheme.
+        comm_latency = 0.0
+        has_comm = False
+        for kernel_type in sub_kernels:
+            if not kernel_type.startswith("hcom_"):
+                continue
+            has_comm = True
+            lat = self._lookup_comm_for_composite(op_invoke_info, kernel_type)
+            if lat is None:
+                self.last_miss_reason = "comm_sub_kernel_miss"
+                return None
+            comm_latency += lat
+            logger.debug("HIT (composite comm) %s: %.1f us", kernel_type, lat)
+
+        return QueryResult(
+            latency_us=compute_latency + comm_latency,
+            confidence=0.9 if has_comm else 0.8,
+            source=QuerySource.MEASURED,
+            details={
+                "kernel_type": compute_kernel_hit,
+                "composite": True,
+                "note": "compute + comm sub-kernels" if has_comm else "compute sub-kernel only",
+            },
+        )
+
+    def _lookup_comm_for_composite(
+        self, op_invoke_info: "OpInvokeInfo", kernel_type: str
+    ) -> Optional[float]:
+        """Look up comm sub-kernel latency for composite ops (e.g., MC2).
+
+        Computes message_bytes from the matmul output shape:
+          output = (mat1.shape[0], mat2.shape[-1])
+          message_bytes = output_elements * element_size
+
+        Args layout for matmul composites:
+          args[0]: mat1, args[1]: mat2, args[-1]: rank_group
+        """
+        args = op_invoke_info.args
+        rank_group = args[-1]
+        if not isinstance(rank_group, (list, tuple)):
+            return None
+        num_devices = len(rank_group)
+
+        mat1 = args[0]
+        mat2 = args[1]
+        if not isinstance(mat1, torch.Tensor) or not isinstance(mat2, torch.Tensor):
+            return None
+        # Determine output element size for message_bytes calculation.
+        # Quant MC2 ops (INT8/FP8/MXFP4 inputs) always accumulate and
+        # all_reduce in BF16. Non-quant MC2 (BF16 inputs) keeps the same dtype.
+        input_dtype = mat1.dtype
+        if input_dtype in (
+            torch.int8, torch.uint8,
+            torch.float8_e4m3fn, torch.float8_e5m2,
+        ):
+            output_elem_size = 2  # BF16
+        else:
+            output_elem_size = mat1.element_size()
+        message_bytes = mat1.shape[0] * mat2.shape[-1] * output_elem_size
+
+        topology_tier = self._resolve_topology_tier(list(rank_group))
+
+        return self._query_comm_csv(
+            kernel_type, message_bytes, num_devices, topology_tier
+        )
 
     # ---- Communication op lookup (design doc §4.7) ----
 
     def _resolve_topology_tier(self, group: list) -> Optional[int]:
-        """Resolve topology_tier from group using CommGrid, mirroring
-        CommAnalyticModel._get_topology_idx_for_group().
+        """Resolve topology_tier from group using CommGrid.
 
-        Returns start_dim (topology_tier) or None if comm_grid is not set.
+        Returns topology_tier or None if comm_grid is not set.
         """
         if self.comm_grid is None:
             return None
-        coords = [
-            self._rank_to_coord(r, self.comm_grid.grid.shape) for r in group
-        ]
-        diff_dim = -1
-        for dim_idx in range(self.comm_grid.grid.dim()):
-            first = coords[0][dim_idx]
-            if any(c[dim_idx] != first for c in coords[1:]):
-                diff_dim = dim_idx
-                break
-        if diff_dim == -1:
-            return max(self.comm_grid.topologies.keys())
-        for start_dim in sorted(self.comm_grid.topologies.keys(), reverse=True):
-            if start_dim <= diff_dim:
-                return start_dim
-        return None
-
-    @staticmethod
-    def _rank_to_coord(rank: int, grid_shape) -> list:
-        coord = []
-        temp = rank
-        for dim_size in reversed(grid_shape):
-            coord.insert(0, temp % dim_size)
-            temp //= dim_size
-        return coord
+        try:
+            return get_topology_tier(self.comm_grid, group)
+        except ValueError:
+            logger.debug("Could not resolve topology_tier for group %s", group)
+            return None
 
     def _lookup_comm(
         self, op_invoke_info: "OpInvokeInfo", mapping: dict
     ) -> Optional[QueryResult]:
         """Look up communication op latency by message_bytes + num_devices + topology_tier.
 
-        Communication CSV columns: message_bytes, num_devices, dtype,
-        topology_tier, Duration(us).
+        All TC comm ops have rank_group as the last arg:
+          all_reduce(x, rank, rank_group)
+          all_gather(x, dim, rank, rank_group)
+          reduce_scatter(x, dim, rank, rank_group)
+          all_to_all(x, out_splits, in_splits, rank, rank_group)
 
         Args are expected as (tensor, ..., rank, rank_group) where rank is
         second-to-last and rank_group (list of device ranks) is always last.
@@ -352,25 +523,6 @@ class ProfilingDataSource(DataSource):
         kernel_type = mapping.get("kernel_type")
         if not kernel_type:
             self.last_miss_reason = "unmapped"
-            return None
-
-        # Priority 1: bench CSV (also searches _comm_data_dir via _load_csv)
-        df = self._load_csv(kernel_type)
-        if df is None:
-            self.last_miss_reason = "csv_not_found"
-            return None
-
-        # Check that CSV has the expected microbenchmark columns.
-        # Raw profiling CSVs (from kernel_details.csv) have "Input Shapes" etc.
-        # and cannot be queried by structured fields — fall back to analytic.
-        required_cols = {"message_bytes", "num_devices"}
-        if not required_cols.issubset(df.columns):
-            logger.debug(
-                "MISS (comm) %s: CSV missing columns %s, need microbenchmark format",
-                kernel_type,
-                required_cols - set(df.columns),
-            )
-            self.last_miss_reason = "csv_format_raw"
             return None
 
         # Extract the first tensor arg for message_bytes
@@ -391,31 +543,12 @@ class ProfilingDataSource(DataSource):
         # Resolve topology_tier from group via CommGrid
         topology_tier = self._resolve_topology_tier(list(rank_group))
 
-        # Build match mask: always filter on message_bytes + num_devices;
-        # add topology_tier filter when the CSV has the column and tier is known.
-        mask = (df["message_bytes"] == message_bytes) & (df["num_devices"] == num_devices)
-        if topology_tier is not None and "topology_tier" in df.columns:
-            mask = mask & (df["topology_tier"] == topology_tier)
-
-        matched = df[mask]
-        if matched.empty:
-            logger.debug(
-                "MISS (comm) %s: message_bytes=%d, num_devices=%d, topology_tier=%s",
-                kernel_type,
-                message_bytes,
-                num_devices,
-                topology_tier,
-            )
-            self.last_miss_reason = "shape_mismatch"
+        latency = self._query_comm_csv(
+            kernel_type, message_bytes, num_devices, topology_tier
+        )
+        if latency is None:
             return None
 
-        row = matched.iloc[0]
-        latency_col = (
-            "Average Duration(us)"
-            if "Average Duration(us)" in df.columns
-            else "Duration(us)"
-        )
-        latency = float(row[latency_col])
         logger.debug(
             "HIT (comm) %s: message_bytes=%d, num_devices=%d, topology_tier=%s -> %.2f us",
             kernel_type,
@@ -535,12 +668,7 @@ class ProfilingDataSource(DataSource):
             return None
 
         row = matched.iloc[0]
-        latency_col = (
-            "Average Duration(us)"
-            if "Average Duration(us)" in df.columns
-            else "Duration(us)"
-        )
-        latency = float(row[latency_col])
+        latency = float(row[self._latency_col(df)])
         logger.debug(
             "HIT (attention) %s: batch=%d, avg_seq=%d, heads=%d, "
             "head_dim=%d -> %.2f us",
@@ -572,36 +700,55 @@ class ProfilingDataSource(DataSource):
         # Extract tensor shapes and dtypes from OpInvokeInfo.args
         tc_inputs = self._extract_tensor_inputs(op_invoke_info)
 
+        # tc_input_count: only compare the first N TC inputs (MoE ops have
+        # extra NPU-internal parameters in profiling CSVs)
+        tc_input_count = mapping.get("tc_input_count")
+        if tc_input_count is not None:
+            tc_inputs = tc_inputs[:tc_input_count]
+
+        # csv_file: decouple CSV filename from kernel_type (e.g., MoE ops
+        # where kernel_type != CSV filename)
+        csv_file = mapping.get("csv_file")
+
         # Try each kernel_type until one matches
         for kernel_type in kernel_types:
-            df = self._load_csv(kernel_type)
+            # csv_file override only applies to the primary kernel_type.
+            # alternate_kernel_types always use their own name as CSV filename.
+            # This is sufficient for current MoE ops; if a future alternate
+            # needs a different CSV name, extend csv_file to a per-kernel dict.
+            load_name = (
+                csv_file
+                if csv_file and kernel_type == kernel_types[0]
+                else kernel_type
+            )
+            df = self._load_csv(load_name)
             if df is None:
                 continue
 
             for _, row in df.iterrows():
-                if self._inputs_match(tc_inputs, row, kernel_type=kernel_type):
-                    latency_col = (
-                        "Average Duration(us)"
-                        if "Average Duration(us)" in df.columns
-                        else "Duration(us)"
-                    )
+                if self._inputs_match(
+                    tc_inputs, row, kernel_type=kernel_type,
+                    tc_input_count=tc_input_count,
+                ):
+                    _lat_col = self._latency_col(df)
                     logger.debug(
                         "HIT %s: tc_shapes=%s -> %s (%.1f us)",
                         kernel_type,
                         [s for s, _ in tc_inputs],
                         row.get("Input Shapes", ""),
-                        float(row[latency_col]),
+                        float(row[_lat_col]),
                     )
                     return QueryResult(
-                        latency_us=float(row[latency_col]),
+                        latency_us=float(row[_lat_col]),
                         confidence=1.0,
                         source=QuerySource.MEASURED,
                         details={"kernel_type": kernel_type},
                     )
 
-        # Log miss with shape details for debugging (use primary kernel_type)
+        # Log miss with shape details for debugging
         primary_kernel = kernel_types[0]
-        df = self._load_csv(primary_kernel)
+        load_name = csv_file if csv_file else primary_kernel
+        df = self._load_csv(load_name)
         csv_shapes_list = []
         if df is not None:
             for _, row in df.iterrows():
@@ -646,6 +793,7 @@ class ProfilingDataSource(DataSource):
         tc_inputs: List[Tuple[Tuple[int, ...], torch.dtype]],
         csv_row: pd.Series,
         kernel_type: str = "",
+        tc_input_count: Optional[int] = None,
     ) -> bool:
         """Match TensorCast input shapes/dtypes against a CSV row.
 
@@ -657,6 +805,18 @@ class ProfilingDataSource(DataSource):
         csv_shapes = _parse_shape_str(str(csv_row.get("Input Shapes", "")))
         csv_dtypes = _parse_str_list(str(csv_row.get("Input Data Types", "")))
         csv_formats = _parse_str_list(str(csv_row.get("Input Formats", "")))
+
+        # Truncate CSV shapes/dtypes/formats when tc_input_count is set.
+        # NPU profiling CSVs may include internal parameters beyond what TC passes;
+        # tc_input_count tells us to only compare the first N inputs.
+        # NOTE: when tc_input_count is set in a composite mapping, both tc_inputs
+        # (truncated above in _lookup_composite) and csv_shapes (truncated here)
+        # are shortened — this double truncation is intentional: tc_inputs is
+        # pre-filtered to the relevant tensors, csv_shapes is trimmed to match.
+        if tc_input_count is not None:
+            csv_shapes = csv_shapes[:tc_input_count]
+            csv_dtypes = csv_dtypes[:tc_input_count]
+            csv_formats = csv_formats[:tc_input_count]
 
         # RoPE input normalization: TC sends [Q(B,H,S,D), K(B,H,S,D), cos(1,S,D), sin(1,S,D)]
         # CSV expects [K(B,S,H,D), Q(B,S,H,D), cos(B,S,1,D), sin(B,S,1,D)]
