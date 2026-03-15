@@ -33,7 +33,7 @@ device: ATLAS_800_A3_752T_128G_DIE
 cann_version: "8.5"
 pytorch_version: "2.9.0"
 op_plugin_version: "7.3.0"
-collection_date: "2026-03-10"
+collection_date: "2026-03-15"
 
 communication_data_ref: "../../hccl/v8.5/"
 communication_fallback: analytic
@@ -55,13 +55,15 @@ operator_mappings:
 
   "aten.mm.default":
     kernel_type: MatMulV2
-    alternate_kernel_types: [MatMulV3]
+    alternate_kernel_types: [MatMulV3, MatMulCommon]
     notes: >
-      [HIGH] op-plugin: MmKernelNpuOpApi.cpp.
-      aclnn: aclnnMm (ND), aclnnMatmulWeightNz (NZ权重); 两者 Type 均为 MatMulV2.
-      Profiling: Qwen3-32B CANN 8.5 MatMulV2(7710x).
-      CANN 8.5 新增 MatMulV3: 大 M (Prefill) 场景下 GEMM 使用 MatMulV3, 小 M (Decode) 仍用 MatMulV2.
-      Qwen3-32B 新 profiling (1P+2D): MatMulV3(128x, FFN gate+up/down, M=4096), MatMulV2(643x, Decode+QKV/O).
+      [HIGH] op-plugin: MmKernelNpuOpApi.cpp → aclnnMm (ND) / aclnnMatmulWeightNz (NZ).
+      CANN 8.5 kernel dispatch (automatic, CANN internal):
+        - MatMulV2: small M (Decode, QKV/O projections)
+        - MatMulV3: large M (Prefill FFN, M > ~256-512)
+        - MatMulCommon: fallback for special shapes
+      0313 profiling: MatMulV2(35444x), MatMulV3(640x, Prefill FFN), MatMulCommon(536x).
+      alternate_kernel_types order: try V2 first (most common), then V3, then Common.
 
   "aten.addmm.default":
     kernel_type: MatMulV2
@@ -74,15 +76,19 @@ operator_mappings:
     kernel_type: BatchMatMulV2
     alternate_kernel_types: [TransposeBatchMatMul]
     notes: >
-      [HIGH] Path A. op-plugin: BmmKernelNpuOpApi.cpp → aclnnBatchMatMul → BatchMatMulV2.
-      TransposeBatchMatMul is the transposed variant (MLA attn_output @ W_UV).
+      [HIGH] op-plugin: BmmKernelNpuOpApi.cpp → aclnnBatchMatMul → BatchMatMulV2.
+      Dispatch: transpose_b parameter → TransposeBatchMatMul (MLA attn_output @ W_UV).
+      Standard BMM → BatchMatMulV2. 0313 profiling: BatchMatMulV2(305x), TransposeBatchMatMul(305x).
 
   "aten.embedding.default":
     kernel_type: GatherV2
     alternate_kernel_types: [GatherV3]
+    tc_input_count: 2
     notes: >
       [HIGH] op-plugin: EmbeddingKernelNpuOpApi.cpp.
       aclnn: aclnnEmbedding → GatherV2. Qwen3 CANN 8.5 中也出现 GatherV3, 已添加 alternate.
+      TC has (weight, indices, ...); NPU CSV has (weight, indices, axis) — tc_input_count=2.
+      Dispatch: aten.embedding → GatherV2; aten.index_select → GatherV3 (different API path).
 
   "aten.index_select.default":
     kernel_type: GatherV3
@@ -116,19 +122,22 @@ operator_mappings:
 
   "aten.to.dtype":
     kernel_type: Cast
-    alternate_kernel_types: [TensorMove]
+    alternate_kernel_types: [TensorMove, CastAiCore]
     notes: >
       [HIGH] op-plugin: CastKernelNpuOpApi.cpp → aclnnCast.
-      同 dtype 时产生 TensorMove. Profiling: CANN 8.5 Cast(240x).
+      Dispatch (CANN internal): src_dtype != dst_dtype → Cast; src_dtype == dst_dtype → TensorMove.
+      CastAiCore: AiCore-accelerated Cast variant (CANN 8.5+). 0313 profiling: Cast(1613x), CastAiCore(670x).
 
 
   # ========== 2. 量化线性 (Quantized Linear) ==========
 
   "tensor_cast.static_quant_linear.default":
     kernel_type: QuantBatchMatmulV3
+    tc_input_count: 2
     notes: >
       [HIGH] op-plugin: WeightQuantBatchMatmulV2KernelNpuOpApi.cpp.
       aclnn: aclnnWeightQuantBatchMatmulV2/V3. W8A8 path.
+      TC has (x, weight, scale, ...); NPU CSV has (x, weight_NZ, scale, scale) — tc_input_count=2 for (x, weight).
 
   "tensor_cast.static_quant_linear_int4.default":
     kernel_type: QuantBatchMatmulV3
@@ -288,14 +297,18 @@ operator_mappings:
 
   "tensor_cast.reshape_and_cache.default":
     kernel_type: ReshapeAndCacheNdKernel
+    tc_input_count: 4
     notes: >
       [MEDIUM] ATB ReshapeCacheOperation → ReshapeAndCacheNdKernel.
       Profiling: Qwen3 CANN 8.5 ReshapeAndCacheNdKernel(1920x).
+      TC has (key, value, cache_k, cache_v, slot_mapping); NPU CSV has 5 inputs — tc_input_count=4 to match first 4.
 
   "tensor_cast.concat_and_cache_mla.default":
     kernel_type: ReshapeAndCacheNdKernel
+    tc_input_count: 2
     notes: >
       [LOW] ATB ReshapeAndCacheSiso. MLA KV cache; 通常被 npu_mla_prolog 吸收.
+      TC has (kv_c, cache, slot_mapping, ...); NPU CSV needs first 2 (kv, cache) — tc_input_count=2.
 
   "tensor_cast.kv_rmsnorm_rope_cache.default":
     kernel_type: KvRmsNormRopeCache
@@ -419,8 +432,10 @@ operator_mappings:
 
   "tensor_cast.quantize.default":
     kernel_type: AscendQuantV2
+    tc_input_count: 1
     notes: >
       [HIGH] op-plugin: npu_quantize → aclnnAscendQuant/V3.
+      TC has (tensor, scale, zero_point); NPU kernel takes 1 tensor input (scale/zp are params).
 
   "tensor_cast.dynamic_quantize_symmetric.default":
     kernel_type: DynamicQuant
@@ -442,14 +457,20 @@ operator_mappings:
 
   "tensor_cast.apply_rope.default":
     kernel_type: _triton_rope
-    alternate_kernel_types: [split_qkv_rmsnorm_rope_kernel, InterleaveRope, ApplyRotaryPosEmb]
+    alternate_kernel_types: [_triton_rope_1, split_qkv_rmsnorm_rope_kernel, split_qkv_rmsnorm_rope_kernel_0, InterleaveRope, ApplyRotaryPosEmb]
+    tc_input_count: 2
     notes: >
-      [HIGH] CANN 8.5 变化: vllm-ascend v0.15.0 使用 Triton RoPE 替代 CANN aclnn RoPE.
-      Qwen3-32B: 63/64 layers 由 QKNormRopeFusionPass 融合为 split_qkv_rmsnorm_rope_kernel
-      (含 QKV split + RmsNorm + RoPE); 1/64 layers 回退到 _triton_rope (纯 RoPE).
-      _triton_rope 为 TC apply_rope 的 1:1 替换.
-      Profiling: _triton_rope(30x, 1 unfused layer), split_qkv_rmsnorm_rope_kernel(1890x, 63 fused layers).
-      CANN 8.3 alternates: InterleaveRope (DeepSeek interleave), ApplyRotaryPosEmb (neox).
+      [HIGH] CANN 8.5: vllm-ascend v0.15.0 uses Triton RoPE replacing CANN aclnn RoPE.
+      Dispatch (vllm-ascend QKNormRopeFusionPass):
+        - Per-head RmsNorm shape match → split_qkv_rmsnorm_rope_kernel (63/64 layers in Qwen3, fused QKV+Norm+RoPE)
+        - Shape mismatch → _triton_rope fallback (1/64 layers in Qwen3, pure RoPE)
+        - Triton JIT may produce _0/_1 suffix variants for different grid configs
+      Model-specific:
+        - DeepSeek (interleaved RoPE layout) → InterleaveRope
+        - Neox (pre-8.5) → ApplyRotaryPosEmb
+      0313 profiling: _triton_rope(5x), _triton_rope_1(134x), split_qkv_rmsnorm_rope_kernel(315x),
+        split_qkv_rmsnorm_rope_kernel_0(8442x), InterleaveRope(549x).
+      TC has (Q, K, cos, sin); NPU _triton_rope has (K, Q, cos) — tc_input_count=2 for safe match.
 
 
   # ========== 16. 通信 (Communication) ==========
@@ -535,8 +556,10 @@ operator_mappings:
 
   "aten.mul.Tensor":
     kernel_type: Mul
+    alternate_kernel_types: [MulAiCore]
     notes: >
-      [MEDIUM] op-plugin: MulKernelNpuOpApi.cpp → aclnnMul. Profiling: Qwen3 CANN 8.5 Mul(90x).
+      [MEDIUM] op-plugin: MulKernelNpuOpApi.cpp → aclnnMul.
+      MulAiCore: AiCore-accelerated variant (CANN 8.5+). 0313 profiling: Mul(176x), MulAiCore(268x).
 
   "aten.div.Tensor":
     kernel_type: Div
@@ -658,9 +681,45 @@ operator_mappings:
 
   "aten.copy_.default":
     kernel_type: TensorMove
+    tc_input_count: 1
     notes: >
       [LOW] op-plugin: CopyKernelNpuOpApi.cpp → aclnnInplaceCopy → TensorMove.
       Profiling: Qwen3 CANN 8.5 TensorMove(94x).
+      TC has (dst, src); NPU CSV has (src) — tc_input_count=1.
+
+  "aten.copy.default":
+    kernel_type: TensorMove
+    tc_input_count: 1
+    notes: >
+      [LOW] Non-inplace copy variant. Same kernel as copy_.default.
+
+  # --- Embedding TP row-mode auxiliary ops ---
+  # These are TC decomposition artifacts from ParallelEmbedding row mode.
+  # NPU fuses embedding lookup internally — these ops don't appear in profiling.
+  # Marked zero_cost as they're TC-internal index masking, not real NPU workload.
+
+  "aten.ge.Scalar":
+    zero_cost: true
+    notes: "TC row-mode embedding: x >= row_start. NPU fuses internally."
+
+  "aten.lt.Scalar":
+    zero_cost: true
+    notes: "TC row-mode embedding: x < row_end. NPU fuses internally."
+
+  "aten.bitwise_and.Tensor":
+    zero_cost: true
+    notes: "TC row-mode embedding: in_local_vocab mask. NPU fuses internally."
+
+  "aten.sub.Tensor":
+    zero_cost: true
+    notes: "TC row-mode embedding: x - row_start. NPU fuses internally."
+
+  "aten.constant_pad_nd.default":
+    kernel_type: TensorMove
+    tc_input_count: 1
+    notes: >
+      [LOW] Padding op. NPU uses TensorMove for zero-padded copies.
+      tc_input_count=1: match input tensor only (pad params are non-tensor).
 
   "aten.slice.Tensor":
     zero_cost: true
@@ -766,6 +825,93 @@ operator_mappings:
   "profiling.AsStrided":
     kernel_type: AsStrided
     notes: "[MEDIUM] Memory view / stride manipulation."
+
+  "profiling.RINGMLAPrefillBF16Kernel":
+    kernel_type: RINGMLAPrefillBF16Kernel
+    notes: >
+      [MEDIUM] vllm-ascend custom kernel for MLA prefill ring attention.
+      Appears only in eager-mode DSv3 Prefill. Fuses ring-attention for MLA.
+      0313 profiling: 366x. TC decomposes MLA differently — no direct TC equivalent.
+
+  "profiling.PagedCacheLoadNdKernel":
+    kernel_type: PagedCacheLoadNdKernel
+    notes: >
+      [LOW] CANN internal paged KV cache load kernel.
+      0313 profiling: 320x. Internal to FIA/attention pipeline.
+
+  "profiling.SoftmaxV2":
+    kernel_type: SoftmaxV2
+    notes: "[LOW] op-plugin: aclnnSoftmax. MoE routing softmax. 0313 profiling: 148x."
+
+  "profiling.Sort":
+    kernel_type: Sort
+    notes: "[LOW] op-plugin: aclnnSort. MoE routing. 0313 profiling: 139x."
+
+  "profiling.ArgMaxV2":
+    kernel_type: ArgMaxV2
+    notes: "[LOW] op-plugin: aclnnArgMax. Sampling. 0313 profiling: 148x."
+
+  "profiling.Fill":
+    kernel_type: Fill
+    notes: "[LOW] CANN internal tensor fill. 0313 profiling: 444x."
+
+  "profiling.Slice":
+    kernel_type: Slice
+    notes: "[LOW] CANN internal slice with data copy. 0313 profiling: 2433x."
+
+  "profiling.Sub":
+    kernel_type: Sub
+    notes: "[LOW] op-plugin: aclnnSub. 0313 profiling: 166x."
+
+  "profiling.Neg":
+    kernel_type: Neg
+    notes: "[LOW] op-plugin: aclnnNeg. 0313 profiling: 148x."
+
+  "profiling.Log":
+    kernel_type: Log
+    notes: "[LOW] op-plugin: aclnnLog. MoE routing. 0313 profiling: 148x."
+
+  "profiling.Tile":
+    kernel_type: Tile
+    notes: "[LOW] CANN internal broadcast tile. 0313 profiling: 278x."
+
+  "profiling.GreaterEqual":
+    kernel_type: GreaterEqual
+    notes: "[LOW] op-plugin: aclnnGeScalar. 0313 profiling: 296x."
+
+  "profiling.MaskedFill":
+    kernel_type: MaskedFill
+    notes: "[LOW] op-plugin: aclnnInplaceMaskedFillScalar. 0313 profiling: 162x."
+
+  "profiling.Less":
+    kernel_type: Less
+    notes: "[LOW] op-plugin: aclnnLtScalar. 0313 profiling: 14x."
+
+  "profiling.LogicalAnd":
+    kernel_type: LogicalAnd
+    notes: "[LOW] op-plugin: aclnnLogicalAnd. 0313 profiling: 14x."
+
+  "profiling.LogicalNot":
+    kernel_type: LogicalNot
+    notes: "[LOW] op-plugin: aclnnLogicalNot. 0313 profiling: 14x."
+
+  "profiling.split_qkv_rmsnorm_rope_kernel_0":
+    kernel_type: split_qkv_rmsnorm_rope_kernel_0
+    notes: >
+      [LOW] Variant of split_qkv_rmsnorm_rope_kernel with different Triton grid config.
+      CANN 8.5 Triton JIT may produce _0 suffix variants. 0313 profiling: 315x.
+
+  "profiling._triton_rope_1":
+    kernel_type: _triton_rope_1
+    notes: >
+      [LOW] Variant of _triton_rope with different Triton grid config.
+      0313 profiling: 134x.
+
+  "profiling.reshape_and_cache_200000000":
+    kernel_type: reshape_and_cache_200000000
+    notes: >
+      [LOW] vllm-ascend Triton KV cache kernel variant.
+      Number suffix is Triton JIT hash/config ID. 0313 profiling: 8576x.
 
 
 # ============================================================================

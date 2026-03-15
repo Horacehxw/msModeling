@@ -148,9 +148,10 @@ python serving_cast/main.py \
 
 ## Perf Database Subsystem
 
-Design doc: `docs/perf_database/OPERATOR_PERF_DATABASE_DESIGN_zh_v1.2.md`
-Work plan: `docs/perf_database/WORK_PLAN_Q1.md`
+Design doc: `docs/perf_database/OPERATOR_PERF_DATABASE_DESIGN_zh_v1.4.md`
+Work plan: `docs/perf_database/WORK_PLAN_Q1.md` (v3.2)
 Spike report: `docs/perf_database/reports/spike_executive_summary_zh.md`
+Phase 1 E2E report: `docs/perf_database/reports/phase1-e2e-20260314/phase1_e2e_v2_verification_report_zh.md`
 
 ### Architecture
 
@@ -204,18 +205,19 @@ tensor_cast.swiglu:
 
 References: `docs/perf_database/examples/op_mapping_example.yaml`, `docs/perf_database/tutorial/OP_PLUGIN_MAPPING_TUTORIAL.md`
 
-### TC vs NPU Shape Differences (8 types)
+### TC vs NPU Shape Differences (9 types)
 
 | # | Type | TC | NPU Profiling | Handling |
 |---|------|----|----|---|
 | 1 | Batch dim | `(1,S,D)` | `(S,D)` | `_strip_batch_dim()` |
-| 2 | Seq padding | `ceil(S/16)*16` | raw S | block-padding tolerance |
+| 2 | Seq padding | `ceil(S/16)*16` | raw S | block-padding tolerance (bs∈{16,32,64}) |
 | 3 | FRACTAL_NZ | ND `(K,N)` | `[H,W,bh,bw]` | `fractal_nz_to_nd()` |
-| 4 | ND transpose | `(K,N)` | `(N,K)` | MatMul-specific check |
+| 4 | ND transpose | `(K,N)` | `(N,K)` | MatMul-specific check (all `_MATMUL_KERNELS`) |
 | 5 | SwiGlu inputs | 2x`(S,D/2)` | 1x`(S,D)` | concat on last dim |
-| 6 | RoPE layout | `(B,H,S,D)` Q,K | `(B,S,H,D)` K,Q | normalize + reorder |
+| 6 | RoPE layout | `(B,H,S,D)` Q,K | `(B,S,H,D)` K,Q | normalize + reorder (supports tc_input_count=2) |
 | 7 | RoPE kernel | single TC op | multiple NPU kernels | `alternate_kernel_types` |
 | 8 | Composite ops | fused (matmul+allreduce) | may be separate | `_lookup_composite()` |
+| 9 | Flatten batch | `(B,M,D)` | `(B*M,D)` | `_FLATTEN_BATCH_KERNELS` (quantize/norm only) |
 
 ### Data Collection Tools (`tools/perf_data_collection/`)
 
