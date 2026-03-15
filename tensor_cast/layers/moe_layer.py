@@ -89,8 +89,16 @@ class MoELayer(torch.nn.Module):
                     "top_k must be specified if gate_returns_raw_logits is True"
                 )
             router_logits = self.gate(hidden_states)
-            topk_weights = F.softmax(router_logits, dim=-1, dtype=torch.float)
-            topk_weights, topk_indices = torch.topk(topk_weights, self.top_k, dim=-1)
+            # Use fused moe_gating_topk op to match NPU's MoeGatingTopK kernel
+            num_experts = router_logits.shape[-1]
+            expert_bias = torch.zeros(
+                num_experts, dtype=router_logits.dtype, device=router_logits.device
+            )
+            flat_logits = router_logits.view(-1, num_experts)
+            topk_weights, topk_indices = torch.ops.tensor_cast.moe_gating_topk(
+                flat_logits, expert_bias, self.top_k
+            )
+            topk_indices = topk_indices.to(torch.int64)
             if self.norm_topk_prob:
                 topk_weights /= topk_weights.sum(dim=-1, keepdim=True)
             topk_weights = topk_weights.to(hidden_states.dtype)

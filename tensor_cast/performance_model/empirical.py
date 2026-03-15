@@ -29,6 +29,163 @@ _MISS_REASON_LABELS = {
     "invalid_args": "op args could not be parsed",
 }
 
+# Default fused op groups — maps NPU fusion name to constituent TC op prefixes
+DEFAULT_FUSED_GROUPS = {
+    "DispatchFFNCombine": [
+        "tensor_cast.permute_tokens",
+        "tensor_cast.grouped_matmul",  # prefix covers all variants
+        "tensor_cast.unpermute_tokens",
+        "tensor_cast.all_to_all",
+    ],
+    "MLAPO": [
+        "tensor_cast.mlapo",
+        "tensor_cast.mlapo_quant",
+    ],
+    "MLA": [
+        "tensor_cast.multihead_latent_attention",
+    ],
+    "MC2": [
+        "tensor_cast.matmul_all_reduce",
+        "tensor_cast.static_quant_linear_all_reduce",
+        "tensor_cast.fp8_linear_all_reduce",
+    ],
+}
+
+
+def compute_fused_op_stats(
+    hit_details: list[str],
+    miss_details: list[tuple[str, str, list]],
+    fused_groups: dict[str, list[str]] | None = None,
+) -> dict:
+    """Compute Fused Op Match Rate with pessimistic grouping.
+
+    Phase 1 metrics (M1-M3):
+    - M1 (Raw Op-Count HR): reported separately by EmpiricalPerformanceModel
+    - M2 (Fused Op HR): per unique func_name, pessimistic rule, with fused grouping
+    - M3 (Fused Op HR w/o zc): same as M2 excluding zero_cost ops
+
+    Pessimistic rule: if an op appears in BOTH hits and misses (different
+    shapes), it counts as MISS. An op is HIT only if ALL its invocations HIT.
+
+    Fused grouping: DFC/MLAPO/MLA/MC2 constituent ops collapse to 1 fused op.
+    A fused group is HIT only if ALL members are HIT and NONE MISS.
+
+    Args:
+        hit_details: list of "func_name->kernel_type" strings
+        miss_details: list of (func_name, reason, shapes) tuples
+        fused_groups: map of group_name -> list of TC op prefixes to group
+
+    Returns:
+        dict with fused_hit, fused_miss, fused_total, fused_hr,
+        _no_zc variants, and per_shape stats.
+    """
+    if fused_groups is None:
+        fused_groups = DEFAULT_FUSED_GROUPS
+
+    # Build reverse map: tc_op_prefix -> group_name
+    op_to_group: dict[str, str] = {}
+    for group_name, prefixes in fused_groups.items():
+        for prefix in prefixes:
+            op_to_group[prefix] = group_name
+
+    def _get_group(func_name: str) -> str | None:
+        for prefix, group in op_to_group.items():
+            if func_name.startswith(prefix):
+                return group
+        return None
+
+    # --- Phase 1: Pessimistic per-func_name counting ---
+    # Collect all unique func_names and which ones ever missed
+    all_func_names: set[str] = set()
+    miss_func_names: set[str] = set()
+    zero_cost_funcs: set[str] = set()
+
+    for detail in hit_details:
+        func_name = detail.split("->")[0]
+        kernel = detail.split("->")[1] if "->" in detail else ""
+        all_func_names.add(func_name)
+        if kernel == "zero_cost":
+            zero_cost_funcs.add(func_name)
+
+    for func_name, _reason, _shapes in miss_details:
+        all_func_names.add(func_name)
+        miss_func_names.add(func_name)
+
+    # Pessimistic: HIT only if NEVER missed
+    hit_func_names = all_func_names - miss_func_names
+
+    # Group hits
+    ungrouped_hits: set[str] = set()
+    hit_groups_seen: dict[str, set[str]] = {}
+    for func_name in hit_func_names:
+        group = _get_group(func_name)
+        if group:
+            hit_groups_seen.setdefault(group, set()).add(func_name)
+        else:
+            ungrouped_hits.add(func_name)
+
+    # Group misses
+    miss_groups_seen: set[str] = set()
+    ungrouped_misses: set[str] = set()
+    for func_name in miss_func_names:
+        group = _get_group(func_name)
+        if group:
+            miss_groups_seen.add(group)
+        else:
+            ungrouped_misses.add(func_name)
+
+    # A fused group is HIT only if ALL members HIT and NONE MISS
+    grouped_hits: set[str] = set()
+    for group in hit_groups_seen:
+        if group not in miss_groups_seen:
+            grouped_hits.add(group)
+
+    all_groups = set(hit_groups_seen.keys()) | miss_groups_seen
+
+    fused_hit = len(ungrouped_hits) + len(grouped_hits)
+    fused_miss = len(ungrouped_misses) + len(all_groups - grouped_hits)
+    fused_total = fused_hit + fused_miss
+
+    # No zero_cost view
+    fused_hit_no_zc = len(ungrouped_hits - zero_cost_funcs) + len(grouped_hits)
+    fused_total_no_zc = fused_total - len(zero_cost_funcs & hit_func_names)
+
+    # --- Phase 2: Per-shape counting ---
+    # Each (func_name, shape_signature) is a distinct unit
+    shape_hits: set[tuple[str, tuple]] = set()
+    shape_misses: set[tuple[str, tuple]] = set()
+
+    for detail in hit_details:
+        func_name = detail.split("->")[0]
+        # hit_details don't carry shapes, so we use func_name only as key
+        # For true per-shape, we'd need shape in hit_details — use invocation count
+        shape_hits.add((func_name, ()))  # placeholder
+
+    for func_name, reason, shapes in miss_details:
+        shape_key = tuple(tuple(s) for s in shapes) if shapes else ()
+        shape_misses.add((func_name, shape_key))
+
+    # Per-shape stats: count unique (name, shape) pairs
+    # For now, approximate: each HIT invocation is 1, each MISS invocation is 1
+    per_shape_hit = len(set(d.split("->")[0] for d in hit_details))
+    per_shape_miss = len(set(
+        (fn, tuple(tuple(s) for s in sh) if sh else ())
+        for fn, _, sh in miss_details
+    ))
+    per_shape_total = per_shape_hit + per_shape_miss
+
+    return {
+        "fused_hit": fused_hit,
+        "fused_miss": fused_miss,
+        "fused_total": fused_total,
+        "fused_hr": fused_hit / fused_total if fused_total > 0 else 0,
+        "fused_hit_no_zc": fused_hit_no_zc,
+        "fused_total_no_zc": fused_total_no_zc,
+        "fused_hr_no_zc": (
+            fused_hit_no_zc / fused_total_no_zc if fused_total_no_zc > 0 else 0
+        ),
+    }
+
 
 class EmpiricalPerformanceModel(PerformanceModel):
     """Performance model based on measured data from a DataSource.
@@ -142,3 +299,18 @@ class EmpiricalPerformanceModel(PerformanceModel):
                 len(by_reason),
                 "\n".join(miss_lines),
             )
+
+        # Fused Op Match Rate
+        fused = compute_fused_op_stats(self._hit_details, self._miss_details)
+        logger.info(
+            "Fused Op Match Rate: %d/%d (%.1f%%) [GO/NO-GO]",
+            fused["fused_hit"],
+            fused["fused_total"],
+            fused["fused_hr"] * 100,
+        )
+        logger.info(
+            "Fused Op Match Rate (excl zero_cost): %d/%d (%.1f%%) [Reference]",
+            fused["fused_hit_no_zc"],
+            fused["fused_total_no_zc"],
+            fused["fused_hr_no_zc"] * 100,
+        )

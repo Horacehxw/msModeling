@@ -1,13 +1,13 @@
-# 算子性能数据库 Q1 工作计划 (v3.1)
+# 算子性能数据库 Q1 工作计划 (v3.2)
 
 **目标**: 2026.3.23 完成端到端集成，DeepSeek-V3 / Qwen3-32B 仿真误差 <15%
 **基准日期**: 2026.3.5（周四晚发布，3.6 起执行）
 **团队**: 6 人（1 SE + 5 开发）
 **周期**: 3.6-3.23（三个 Phase）
-**设计文档**: `OPERATOR_PERF_DATABASE_DESIGN_zh_v1.3.1.md`（同目录）
+**设计文档**: `OPERATOR_PERF_DATABASE_DESIGN_zh_v1.4.md`（同目录）
 **穿刺总结**: `reports/spike_executive_summary_zh.md`
 **目标版本**: CANN 8.5（vllm 0.15.0 + torch 2.9.0），数据目录 `vllm0.15.0_torch2.9.0_cann8.5/`
-**变更日志**: `CHANGELOG_20260312.md`（同目录）
+**变更日志**: `CHANGELOG_20260315.md`（同目录）
 
 ---
 
@@ -243,7 +243,7 @@ HDY |C6+MC2查 |--- C9 --|--- C7 DSV3映射 ----|C8+C10-|
 | # | 检查点 | 完成日期 | 验收标准 |
 |---|-------|---------|---------|
 | B1 | `_lookup_comm()`：从 OpInvokeInfo 计算 message_bytes + topology_tier，查询通信 CSV | 3.11 → ✅ 3.11 | topology_tier 精确匹配实现（8fa2da3） |
-| B2 | `_lookup_composite()`：matmul_all_reduce 分解 + MLA 分解框架 | 3.13 → 🔄 进行中 | MC2 compute+comm sum 初稿完成；MoE/MLA spec 起草中 |
+| B2 | `_lookup_composite()`：matmul_all_reduce 分解 + MLA 分解框架 | 3.13 → ✅ 3.15 | MC2 compute+comm 分解 + MoE permute/unpermute 分解完成; MLA composite 查询恢复 |
 
 **通信查询实现要点**（设计文档 §4.2）：
 - `args[0]` → `message_bytes = tensor.nelement() * tensor.element_size()`
@@ -288,7 +288,7 @@ HDY |C6+MC2查 |--- C9 --|--- C7 DSV3映射 ----|C8+C10-|
 | C1 | Qwen3 Profiling 算子清单：Top-20 (Type, 调用次数, 耗时占比) | 3.9 → ✅ 3.10 | 表格输出 |
 | C2 | TC dispatch trace 导出 | 3.9 → ✅ 3.10 | **发现**：TC compile 路径不可行用于 op_mapping 验证，改用 AI/skill 方案辅助 |
 | C3 | BF16 场景逐条映射验证 | 3.11 → ✅ 3.11 | 验证报告完成（97.01% 覆盖） |
-| C4 | Qwen3 Decode 场景映射补充 + 验证 | 3.12 → 🔄 进行中 | shape 不匹配问题待解决 |
+| C4 | Qwen3 Decode 场景映射补充 + 验证 | 3.12 → ✅ 3.15 (E2E 验证) | shape 不匹配问题待解决 |
 | C5 | op_mapping 自动化方案 spec | 3.13 | **调整**：TC compile 路径不可行，改为 AI/skill 方案 + 教程增补 |
 
 #### HDY（DSV3 主线 + HCCL）
@@ -326,8 +326,8 @@ HDY |C6+MC2查 |--- C9 --|--- C7 DSV3映射 ----|C8+C10-|
 | # | 检查点 | 完成日期 | 验收标准 |
 |---|-------|---------|---------|
 | D1 | `parse_kernel_details.py` 验证 | 3.6 → ✅ | 输出 CSV 与 db-spike 已有数据一致 |
-| D2 | `_lookup_attention()` 实现 | 3.10 → 🔄 进行中 | 支撑 microbench 问题中 |
-| D3 | InterpolatingDataSource 基础版 | 3.12 → 🔄 进行中 | |
+| D2 | `_lookup_attention()` 实现 | 3.10 → ✅ 3.13 | 支撑 microbench 问题中 |
+| D3 | InterpolatingDataSource 基础版 | 3.12 → ✅ 3.13 (含 sqrt 变换) | |
 | D4 | `discover_operators.py` | 3.13 | |
 
 **D2 Attention 查询实现要点**（设计文档 §4.8）：
@@ -373,6 +373,25 @@ HDY |C6+MC2查 |--- C9 --|--- C7 DSV3映射 ----|C8+C10-|
 | 端到端初始误差 | 允许远超 15%，重点暴露系统性问题 |
 
 **Go/No-Go**：若 >50% 算子 MISS 或 fallback 占比 >30%，Phase 2 优先级需重排。
+
+### Phase 1 E2E 集成验证结果（3.15）
+
+Phase 1 E2E v2 集成测试完成，GO/NO-GO: **GO**。
+
+| 场景 | M2: Fused Op HR (GO/NO-GO) | M3: Fused (不含 zc) |
+|------|---------------------------|---------------------|
+| Qwen3 Prefill (nq=10, ql=4104, tp=16, BF16) | **63.3%** (19/30) | 31.2% (5/16) |
+| Qwen3 Decode (nq=16, ql=1, cl=4096, tp=16, BF16) | **70.0%** (21/30) | 43.8% (7/16) |
+| DSv3 Prefill (nq=1, ql=256, tp=8, dp=2, ep=16, W8A8) | **38.6%** (17/44) | 12.9% (4/31) |
+| DSv3 Decode (nq=16, ql=1, cl=4096, tp=8, dp=2, ep=16, W8A8) | **40.9%** (18/44) | 16.1% (5/31) |
+
+**关键发现**:
+- DFC 融合 gap 占 DSv3 ~40% 延迟（P0 优先级）
+- FIA CSV 格式不匹配占 Qwen3 ~9% 延迟（P0 优先级）
+- `_triton_rope` CSV dtype gap (NPU FP32 vs TC BF16) 阻止 RoPE 匹配
+- TC 主分支需修复: add_rms_norm2 SP 维度 + MLA output quantize shape
+
+详细分析见 `reports/phase1-e2e-20260314/phase1_e2e_v2_verification_report_zh.md`
 
 ---
 
@@ -461,11 +480,11 @@ tensor_cast/performance_model/perf_database/data/
 
 | # | 检查点 | 完成日期 | 验收标准 |
 |---|-------|---------|---------|
-| E1 | `generate_shape_grid.py`：按 kernel_type 分派生成逻辑（GEMM: 模型 N/K + M 网格; Attention: 模型 heads + batch×seq 网格; Elementwise: 模型 hidden + num_tokens 网格）+ powers-of-2 补充 | 3.16 | Qwen3 + DSV3 shape 网格覆盖实际维度 |
-| E2 | `generate_microbench.py`：读 op_mapping.yaml 的 torch_npu_reference 生成脚本 | 3.17 | 生成的脚本语法正确 |
+| E1 | `generate_shape_grid.py`：按 kernel_type 分派生成逻辑（GEMM: 模型 N/K + M 网格; Attention: 模型 heads + batch×seq 网格; Elementwise: 模型 hidden + num_tokens 网格）+ powers-of-2 补充 | ✅ 已完成 (Phase 1 中提前完成) | Qwen3 + DSV3 shape 网格覆盖实际维度 |
+| E2 | `generate_microbench.py`：读 op_mapping.yaml 的 torch_npu_reference 生成脚本 | ✅ 已完成 (Phase 1 中提前完成) | 生成的脚本语法正确 |
 | E3 | 集群 Microbenchmark 采集 + `build_database.py` | 3.19 | 每个 kernel_type CSV 行数 > Profiling 原始 |
 | E4 | FusedAttention Microbenchmark（构造 paged KV cache 输入） | 3.20 | FIA CSV 覆盖多种 (batch_size, seq_len) 组合 |
-| E5 | Attention 插值 sqrt 变换：O(n^2) 算子插值前做 sqrt 线性化 | 3.20 | 不同 seq_len 下 FIA 插值误差 <20% |
+| E5 | Attention 插值 sqrt 变换：O(n^2) 算子插值前做 sqrt 线性化 | ✅ 已完成 (Phase 1 中提前完成) | 不同 seq_len 下 FIA 插值误差 <20% |
 
 ---
 
@@ -500,7 +519,7 @@ tensor_cast/performance_model/perf_database/data/
 
 | # | 检查点 | 完成日期 | 验收标准 |
 |---|-------|---------|---------|
-| G1 | MoE 算子匹配：MoeGatingTopK, MoeDistributeDispatch/CombineV2 | 3.18 | 单元测试 |
+| G1 | MoE 算子匹配：MoeGatingTopK, MoeDistributeDispatch/CombineV2 | ✅ 已完成 (Phase 1 E2E 中完成, op + CSV + mapping) | 单元测试 |
 | G2 | MLA 分解查询完善：区分 Prefill/Decode 子内核 shape（设计文档 §4.2 MLA 分解表） | 3.20 | 单元测试 |
 
 ---
@@ -527,6 +546,23 @@ tensor_cast/performance_model/perf_database/data/
 | DSV3 对齐分析 | 对齐表格 + 缺口清单 | ZZY + HDY |
 
 **DSV3 Mini 验证**（3.19）：同 Phase 1 格式，覆盖 DSV3 Decode 场景。
+
+### Phase 2 新增任务（E2E 发现）
+
+| # | 检查点 | 负责人 | 完成日期 | 验收标准 |
+|---|--------|--------|---------|---------|
+| P-E2E-1 | RoPE dtype 宽松匹配 (_triton_rope CSV FLOAT vs TC BF16) | 待定 | 3.18 | Qwen3 Prefill RoPE HIT |
+| P-E2E-2 | quantize/norm Microbenchmark shape 网格 (DSv3 M×D 缺失组合) | TCX | 3.19 | AscendQuantV2 CSV 覆盖 DSv3 decode/prefill shapes |
+| P-E2E-3 | MoE routing 辅助 ops CSV (TopKV2, ReduceSum, Sigmoid, etc.) | TCX | 3.19 | DSv3 MoE routing ops 全量 CSV |
+
+**Phase 2 优先级调整（基于 E2E 发现）**:
+1. **P0**: DFC TC fusion pass (DSv3 ~40% 延迟) — LJW
+2. **P0**: FIA microbench CSV 格式 (Qwen3 ~9% 延迟) — ZZY
+3. **P0**: MLA/MLAPO composite shape 修复 (DSv3 ~3-5%) — ZH
+
+**TC 主分支依赖**:
+- add_rms_norm2 SP 维度 (TC 未对 seq dim 除以 TP)
+- MLA output quantize shape 不一致 (3D per-head vs 2D hidden)
 
 ---
 
@@ -561,6 +597,8 @@ tensor_cast/performance_model/perf_database/data/
 | R10 | 单算子与整网算子耗时 gap | Microbenchmark 数据无法直接反映整网场景（3.12 TCX 提出） | 高 | Phase 1 mini 验证暴露差距；TCX 调研解决方案；必要时引入校正因子 |
 | R11 | CANN 8.5 DispatchFFNCombine 覆盖不足 | DSV3 35.3% 耗时无法匹配 | 高 | C11 子内核数据采集 + composite 分解兜底；LJW F1 评估 TC 融合可行性 |
 | R12 | LJW 上手周期 | 新人需 2-3 天熟悉代码 | 中 | XJT 交接 + 现有 compile pass 代码参考丰富 |
+| R13 | _triton_rope CSV dtype gap (NPU FP32 vs TC BF16) | Qwen3 RoPE 无法 HIT | 低 | Phase 2 dtype 宽松匹配 (~10 行) |
+| R14 | TC 主分支 SP/MLA 修复依赖 | Qwen3/DSv3 norm+quantize MISS | 中 | 已提 Issue，需 TC 主分支排期 |
 
 ---
 

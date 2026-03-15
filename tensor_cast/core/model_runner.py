@@ -35,6 +35,27 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _create_data_source(perf_db_path, device_profile):
+    """Create the appropriate DataSource, respecting TC_ENABLE_INTERPOLATION."""
+    import os
+    from pathlib import Path
+
+    from ..performance_model.perf_database import ProfilingDataSource
+
+    db_path = Path(perf_db_path)
+    data_source = ProfilingDataSource(db_path, device_profile=device_profile)
+
+    if os.environ.get("TC_ENABLE_INTERPOLATION", "0") == "1":
+        from ..performance_model.perf_database.interpolating_data_source import (
+            InterpolatingDataSource,
+        )
+
+        data_source = InterpolatingDataSource(data_source)
+        logger.info("InterpolatingDataSource enabled via TC_ENABLE_INTERPOLATION")
+
+    return data_source
+
+
 class ModelRunner:
     """
     corresponding to one data-parallel partition ('dp_rank')
@@ -69,8 +90,8 @@ class ModelRunner:
             from ..performance_model.perf_database import ProfilingDataSource
 
             db_path = Path(perf_db_path)
-            data_source = ProfilingDataSource(
-                db_path, device_profile=self.device_profile
+            data_source = _create_data_source(
+                perf_db_path, device_profile=self.device_profile
             )
             self.perf_model = EmpiricalPerformanceModel(
                 self.device_profile, data_source=data_source

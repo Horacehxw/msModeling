@@ -7,6 +7,7 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 
+import numpy as np
 import pandas as pd
 import torch
 import yaml
@@ -15,8 +16,8 @@ from ...device import DeviceProfile
 from .data_source import DataSource, QueryResult, QuerySource
 
 if TYPE_CHECKING:
-    from ..op_invoke_info import OpInvokeInfo
     from ...device import CommGrid
+    from ..op_invoke_info import OpInvokeInfo
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +77,17 @@ def _parse_str_list(s: str) -> List[str]:
 # Matmul kernel types where ND weight may be stored as (N,K)
 # while TC's aten.mm receives (K,N) after F.linear transpose.
 # FRACTAL_NZ weights restore to (K,N) directly — no transpose needed.
-_MATMUL_KERNELS = frozenset({"MatMulV2", "MatMul", "TransposeBatchMatMul"})
+_MATMUL_KERNELS = frozenset(
+    {
+        "MatMulV2",
+        "MatMulV3",
+        "MatMulCommon",
+        "MatMul",
+        "QuantBatchMatmulV3",
+        "BatchMatMulV2",
+        "TransposeBatchMatMul",
+    }
+)
 
 # SwiGlu kernel types: TC dispatches 2 inputs (gate, up) as separate tensors,
 # but profiling CSVs store 1 concatenated input along last dim.
@@ -85,7 +96,23 @@ _SWIGLU_KERNELS = frozenset({"SwiGlu"})
 # RoPE kernel types: TC dispatches (B,H,S,D) layout with [Q, K, cos, sin],
 # but profiling CSVs store (B,S,H,D) layout with [K, Q, cos, sin] and
 # cos/sin have an extra head dim (1).
-_ROPE_KERNELS = frozenset({"ApplyRotaryPosEmb"})
+_ROPE_KERNELS = frozenset(
+    {"ApplyRotaryPosEmb", "_triton_rope", "split_qkv_rmsnorm_rope_kernel"}
+)
+
+# Kernel types where TC may produce 3D (B, M, D) shapes that should
+# match CSV's 2D (B*M, D) shapes by flattening the leading two dims.
+# This happens when TC keeps an explicit batch dimension that profiling
+# absorbs into the token/sequence dimension.
+_FLATTEN_BATCH_KERNELS = frozenset(
+    {
+        "AscendQuantV2",
+        "DynamicQuant",
+        "RmsNorm",
+        "AddRmsNormBias",
+        "AddRmsNorm",
+    }
+)
 
 # Common NPU tile alignment sizes (Da Vinci Cube unit)
 # BF16: 16x16, INT8: 16x32
@@ -97,18 +124,21 @@ def _normalize_rope_inputs(
 ) -> List[Tuple[Tuple[int, ...], torch.dtype]]:
     """Normalize RoPE inputs from TC layout to profiling CSV layout.
 
-    TC dispatches: [Q(B,Hq,S,D), K(B,Hk,S,D), cos(1,S,D), sin(1,S,D)]
-    CSV expects:   [K(B,S,Hk,D), Q(B,S,Hq,D), cos(B,S,1,D), sin(B,S,1,D)]
+    Full (4 inputs):
+      TC:  [Q(B,Hq,S,D), K(B,Hk,S,D), cos(1,S,D), sin(1,S,D)]
+      CSV: [K(B,S,Hk,D), Q(B,S,Hq,D), cos(B,S,1,D), sin(B,S,1,D)]
+
+    Truncated (2 inputs, tc_input_count=2):
+      TC:  [Q(B,Hq,S,D), K(B,Hk,S,D)]
+      CSV: [K(B,S,Hk,D), Q(B,S,Hq,D)]
 
     Transformations:
     1. Swap Q and K (TC: [Q,K,...] → CSV: [K,Q,...])
     2. Transpose H,S dims in Q and K: (B,H,S,D) → (B,S,H,D)
-    3. Insert head dim=1 at position 2 for cos/sin: (1,S,D) → (1,S,1,D)
+    3. (Full only) Insert head dim=1 for cos/sin: (1,S,D) → (1,S,1,D)
     """
     q_shape, q_dtype = tc_inputs[0]
     k_shape, k_dtype = tc_inputs[1]
-    cos_shape, cos_dtype = tc_inputs[2]
-    sin_shape, sin_dtype = tc_inputs[3]
 
     # Transpose Q and K: (B,H,S,D) → (B,S,H,D)
     if len(q_shape) == 4:
@@ -116,19 +146,24 @@ def _normalize_rope_inputs(
     if len(k_shape) == 4:
         k_shape = (k_shape[0], k_shape[2], k_shape[1], k_shape[3])
 
-    # Insert head dim=1 for cos/sin: (1,S,D) → (1,S,1,D)
-    if len(cos_shape) == 3:
-        cos_shape = (cos_shape[0], cos_shape[1], 1, cos_shape[2])
-    if len(sin_shape) == 3:
-        sin_shape = (sin_shape[0], sin_shape[1], 1, sin_shape[2])
-
-    # Reorder: [Q, K, cos, sin] → [K, Q, cos, sin]
-    return [
+    # Reorder: [Q, K] → [K, Q]
+    result = [
         (k_shape, k_dtype),
         (q_shape, q_dtype),
-        (cos_shape, cos_dtype),
-        (sin_shape, sin_dtype),
     ]
+
+    # Process cos/sin if present (full 4-input case)
+    if len(tc_inputs) >= 4:
+        cos_shape, cos_dtype = tc_inputs[2]
+        sin_shape, sin_dtype = tc_inputs[3]
+        if len(cos_shape) == 3:
+            cos_shape = (cos_shape[0], cos_shape[1], 1, cos_shape[2])
+        if len(sin_shape) == 3:
+            sin_shape = (sin_shape[0], sin_shape[1], 1, sin_shape[2])
+        result.append((cos_shape, cos_dtype))
+        result.append((sin_shape, sin_dtype))
+
+    return result
 
 
 def _strip_batch_dim(shape: Tuple[int, ...]) -> Tuple[int, ...]:
@@ -196,9 +231,7 @@ def get_topology_tier(comm_grid: "CommGrid", group: List[int]) -> int:
         if start_dim <= diff_dim:
             return start_dim
 
-    raise ValueError(
-        f"No topology found for group spanning grid dimension {diff_dim}"
-    )
+    raise ValueError(f"No topology found for group spanning grid dimension {diff_dim}")
 
 
 class ProfilingDataSource(DataSource):
@@ -248,7 +281,11 @@ class ProfilingDataSource(DataSource):
         if kernel_type in self._csv_cache:
             return self._csv_cache[kernel_type]
         csv_path = self.data_dir / f"{kernel_type}.csv"
-        if not csv_path.exists() and self._comm_data_dir and kernel_type.startswith("hcom_"):
+        if (
+            not csv_path.exists()
+            and self._comm_data_dir
+            and kernel_type.startswith("hcom_")
+        ):
             alt_path = self._comm_data_dir / f"{kernel_type}.csv"
             if alt_path.exists():
                 csv_path = alt_path
@@ -275,10 +312,14 @@ class ProfilingDataSource(DataSource):
         message_bytes: int,
         num_devices: int,
         topology_tier: Optional[int],
-    ) -> Optional[float]:
-        """Shared comm CSV query: load → validate columns → match → latency.
+    ) -> Optional[Tuple[float, bool]]:
+        """Shared comm CSV query with interpolation fallback.
 
-        Returns latency in microseconds, or None on miss.
+        Tries exact match first. On miss, interpolates linearly on message_bytes
+        (num_devices + topology_tier remain exact). Interpolation is default
+        behavior because message_bytes is continuous and exact match rarely works.
+
+        Returns (latency_us, is_interpolated) or None on miss.
         Sets self.last_miss_reason on failure.
         """
         df = self._load_csv(kernel_type)
@@ -296,6 +337,9 @@ class ProfilingDataSource(DataSource):
             self.last_miss_reason = "csv_format_raw"
             return None
 
+        lat_col = self._latency_col(df)
+
+        # --- Exact match ---
         mask = (df["message_bytes"] == message_bytes) & (
             df["num_devices"] == num_devices
         )
@@ -303,18 +347,83 @@ class ProfilingDataSource(DataSource):
             mask = mask & (df["topology_tier"] == topology_tier)
 
         matched = df[mask]
-        if matched.empty:
+        if not matched.empty:
+            return (float(matched.iloc[0][lat_col]), False)
+
+        # --- Interpolation fallback: bracket message_bytes ---
+        device_mask = df["num_devices"] == num_devices
+        if topology_tier is not None and "topology_tier" in df.columns:
+            device_mask = device_mask & (df["topology_tier"] == topology_tier)
+        candidates = df[device_mask]
+
+        if candidates.empty:
             logger.debug(
-                "MISS (comm) %s: message_bytes=%d, num_devices=%d, topology_tier=%s",
+                "MISS (comm) %s: no rows for num_devices=%d, topology_tier=%s",
                 kernel_type,
-                message_bytes,
                 num_devices,
                 topology_tier,
             )
             self.last_miss_reason = "shape_mismatch"
             return None
 
-        return float(matched.iloc[0][self._latency_col(df)])
+        mb_values = candidates["message_bytes"].values
+        below = mb_values[mb_values <= message_bytes]
+        above = mb_values[mb_values >= message_bytes]
+
+        if len(below) == 0 or len(above) == 0:
+            logger.debug(
+                "MISS (comm) %s: message_bytes=%d outside range [%d, %d]",
+                kernel_type,
+                message_bytes,
+                int(mb_values.min()),
+                int(mb_values.max()),
+            )
+            self.last_miss_reason = "shape_mismatch"
+            return None
+
+        mb_lo, mb_hi = int(below.max()), int(above.min())
+        lat_lo = float(
+            candidates.loc[candidates["message_bytes"] == mb_lo, lat_col].iloc[0]
+        )
+        if mb_lo == mb_hi:
+            return (lat_lo, False)  # degenerate bracket = exact
+
+        lat_hi = float(
+            candidates.loc[candidates["message_bytes"] == mb_hi, lat_col].iloc[0]
+        )
+
+        # Alpha-beta interpolation: comm latency = alpha + message_bytes / bandwidth
+        # Fit from ALL candidate data points (least-squares) rather than just the
+        # bracket endpoints. This gives a global alpha-beta model for this
+        # (num_devices, topology_tier) group, which handles the latency-dominated →
+        # bandwidth-dominated transition more accurately than piecewise linear.
+        all_mb = candidates["message_bytes"].values.astype(np.float64)
+        all_lat = candidates[lat_col].values.astype(np.float64)
+
+        if len(all_mb) >= 2:
+            A = np.column_stack([np.ones_like(all_mb), all_mb])
+            params, _, _, _ = np.linalg.lstsq(A, all_lat, rcond=None)
+            interpolated = float(params[0] + params[1] * message_bytes)
+        else:
+            # Fallback: single-point, use that value
+            interpolated = float(all_lat[0])
+
+        # Clamp to bracket bounds (safety: don't go below lower or above upper)
+        interpolated = max(min(lat_lo, lat_hi), min(interpolated, max(lat_lo, lat_hi)))
+
+        logger.debug(
+            "HIT (comm interpolated) %s: message_bytes=%d between "
+            "[%d (%.1fus), %d (%.1fus)] → %.1fus (alpha-beta fit from %d points)",
+            kernel_type,
+            message_bytes,
+            mb_lo,
+            lat_lo,
+            mb_hi,
+            lat_hi,
+            interpolated,
+            len(all_mb),
+        )
+        return (interpolated, True)
 
     # ---- Main lookup (design doc S4.2 dispatch logic) ----
 
@@ -372,12 +481,6 @@ class ProfilingDataSource(DataSource):
             self.last_miss_reason = "no_sub_kernels"
             return None
 
-        # MLA placeholder: not yet decomposable, return explicit miss reason
-        func_name = _normalize_func_name(op_invoke_info.func)
-        if "multihead_latent_attention" in func_name or "mlapo" in func_name:
-            self.last_miss_reason = "mla_not_implemented"
-            return None
-
         tc_inputs = self._extract_tensor_inputs(op_invoke_info)
 
         # tc_input_count truncation (same as _lookup_compute):
@@ -399,19 +502,27 @@ class ProfilingDataSource(DataSource):
                 continue
             any_compute_csv = True
             for _, row in df.iterrows():
-                if self._inputs_match(tc_inputs, row, kernel_type=kernel_type,
-                                      tc_input_count=tc_input_count):
+                if self._inputs_match(
+                    tc_inputs,
+                    row,
+                    kernel_type=kernel_type,
+                    tc_input_count=tc_input_count,
+                ):
                     compute_latency = float(row[self._latency_col(df)])
                     compute_kernel_hit = kernel_type
                     logger.debug(
-                        "HIT (composite compute) %s: %.1f us", kernel_type, compute_latency
+                        "HIT (composite compute) %s: %.1f us",
+                        kernel_type,
+                        compute_latency,
                     )
                     break
             if compute_latency is not None:
                 break
 
         if compute_latency is None:
-            self.last_miss_reason = "csv_not_found" if not any_compute_csv else "shape_mismatch"
+            self.last_miss_reason = (
+                "csv_not_found" if not any_compute_csv else "shape_mismatch"
+            )
             return None
 
         # --- Communication sub-kernels ---
@@ -444,7 +555,9 @@ class ProfilingDataSource(DataSource):
             details={
                 "kernel_type": compute_kernel_hit,
                 "composite": True,
-                "note": "compute + comm sub-kernels" if has_comm else "compute sub-kernel only",
+                "note": "compute + comm sub-kernels"
+                if has_comm
+                else "compute sub-kernel only",
             },
         )
 
@@ -475,8 +588,10 @@ class ProfilingDataSource(DataSource):
         # all_reduce in BF16. Non-quant MC2 (BF16 inputs) keeps the same dtype.
         input_dtype = mat1.dtype
         if input_dtype in (
-            torch.int8, torch.uint8,
-            torch.float8_e4m3fn, torch.float8_e5m2,
+            torch.int8,
+            torch.uint8,
+            torch.float8_e4m3fn,
+            torch.float8_e5m2,
         ):
             output_elem_size = 2  # BF16
         else:
@@ -485,9 +600,12 @@ class ProfilingDataSource(DataSource):
 
         topology_tier = self._resolve_topology_tier(list(rank_group))
 
-        return self._query_comm_csv(
+        result = self._query_comm_csv(
             kernel_type, message_bytes, num_devices, topology_tier
         )
+        if result is None:
+            return None
+        return result[0]  # latency only, caller doesn't need is_interpolated
 
     # ---- Communication op lookup (design doc §4.7) ----
 
@@ -543,14 +661,17 @@ class ProfilingDataSource(DataSource):
         # Resolve topology_tier from group via CommGrid
         topology_tier = self._resolve_topology_tier(list(rank_group))
 
-        latency = self._query_comm_csv(
+        result = self._query_comm_csv(
             kernel_type, message_bytes, num_devices, topology_tier
         )
-        if latency is None:
+        if result is None:
             return None
 
+        latency, is_interpolated = result
+        source = QuerySource.INTERPOLATED if is_interpolated else QuerySource.MEASURED
         logger.debug(
-            "HIT (comm) %s: message_bytes=%d, num_devices=%d, topology_tier=%s -> %.2f us",
+            "HIT (comm%s) %s: message_bytes=%d, num_devices=%d, topology_tier=%s -> %.2f us",
+            " interpolated" if is_interpolated else "",
             kernel_type,
             message_bytes,
             num_devices,
@@ -559,8 +680,8 @@ class ProfilingDataSource(DataSource):
         )
         return QueryResult(
             latency_us=latency,
-            confidence=0.9,
-            source=QuerySource.MEASURED,
+            confidence=0.8 if is_interpolated else 0.9,
+            source=source,
             details={"kernel_type": kernel_type, "topology_tier": topology_tier},
         )
 
@@ -717,9 +838,7 @@ class ProfilingDataSource(DataSource):
             # This is sufficient for current MoE ops; if a future alternate
             # needs a different CSV name, extend csv_file to a per-kernel dict.
             load_name = (
-                csv_file
-                if csv_file and kernel_type == kernel_types[0]
-                else kernel_type
+                csv_file if csv_file and kernel_type == kernel_types[0] else kernel_type
             )
             df = self._load_csv(load_name)
             if df is None:
@@ -727,7 +846,9 @@ class ProfilingDataSource(DataSource):
 
             for _, row in df.iterrows():
                 if self._inputs_match(
-                    tc_inputs, row, kernel_type=kernel_type,
+                    tc_inputs,
+                    row,
+                    kernel_type=kernel_type,
                     tc_input_count=tc_input_count,
                 ):
                     _lat_col = self._latency_col(df)
@@ -754,9 +875,15 @@ class ProfilingDataSource(DataSource):
             for _, row in df.iterrows():
                 csv_shapes_list.append(str(row.get("Input Shapes", "")))
         # Determine miss reason: input count mismatch vs shape mismatch
+        # When tc_input_count is set, truncate CSV count too for fair comparison
         if df is not None and len(df) > 0:
             csv_first_shapes = _parse_shape_str(str(df.iloc[0].get("Input Shapes", "")))
-            if len(tc_inputs) != len(csv_first_shapes):
+            effective_csv_count = len(csv_first_shapes)
+            effective_tc_count = len(tc_inputs)
+            if tc_input_count is not None:
+                effective_csv_count = min(effective_csv_count, tc_input_count)
+                effective_tc_count = min(effective_tc_count, tc_input_count)
+            if effective_tc_count != effective_csv_count:
                 self.last_miss_reason = "input_count_mismatch"
             else:
                 self.last_miss_reason = "shape_mismatch"
@@ -818,13 +945,13 @@ class ProfilingDataSource(DataSource):
             csv_dtypes = csv_dtypes[:tc_input_count]
             csv_formats = csv_formats[:tc_input_count]
 
-        # RoPE input normalization: TC sends [Q(B,H,S,D), K(B,H,S,D), cos(1,S,D), sin(1,S,D)]
-        # CSV expects [K(B,S,H,D), Q(B,S,H,D), cos(B,S,1,D), sin(B,S,1,D)]
+        # RoPE input normalization: swap Q↔K, transpose (B,H,S,D)→(B,S,H,D).
+        # Works with both full (4 inputs) and tc_input_count-truncated (2 inputs).
         tc_inputs_normalized = tc_inputs
         if (
             kernel_type in _ROPE_KERNELS
-            and len(tc_inputs) == 4
-            and len(csv_shapes) == 4
+            and len(tc_inputs) >= 2
+            and len(csv_shapes) >= 2
         ):
             tc_inputs_normalized = _normalize_rope_inputs(tc_inputs)
 
@@ -871,12 +998,12 @@ class ProfilingDataSource(DataSource):
             if tc_shape_stripped == csv_shape:
                 continue
 
-            # ND weight transpose for matmul: CSV stores (N,K), TC sees (K,N)
-            # Only for 2D ND weights (not activation, not FRACTAL_NZ)
+            # Weight transpose for matmul: CSV stores (N,K), TC sees (K,N)
+            # Applies to both ND format and FRACTAL_NZ-restored shapes.
+            # FRACTAL_NZ → ND gives (N,K) via fractal_nz_to_nd(); TC has (K,N).
             if (
                 kernel_type in _MATMUL_KERNELS
                 and i >= 1
-                and fmt == "ND"
                 and len(tc_shape_stripped) == 2
                 and len(csv_shape) == 2
                 and tc_shape_stripped == (csv_shape[1], csv_shape[0])
@@ -889,6 +1016,21 @@ class ProfilingDataSource(DataSource):
             # Also try with both batch dims stripped
             if self._shapes_match_with_padding(tc_shape_stripped, csv_shape_stripped):
                 continue
+
+            # 3D→2D flatten for quantize/norm kernels: TC (B, M, D) → CSV (B*M, D)
+            if (
+                kernel_type in _FLATTEN_BATCH_KERNELS
+                and len(tc_shape_stripped) == 3
+                and len(csv_shape) == 2
+            ):
+                flattened = (
+                    tc_shape_stripped[0] * tc_shape_stripped[1],
+                    tc_shape_stripped[2],
+                )
+                if flattened == csv_shape:
+                    continue
+                if self._shapes_match_with_padding(flattened, csv_shape):
+                    continue
 
             return False
 
