@@ -10,12 +10,9 @@ This tests the full pipeline: op_name → op_mapping.yaml → kernel_type → CS
 """
 
 import json
-import logging
-import os
-import shutil
 import tempfile
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 from unittest.mock import MagicMock
 
 import pytest
@@ -24,7 +21,7 @@ import yaml
 
 # Project paths
 PROJECT_ROOT = Path(__file__).parent.parent.parent
-TRACE_DIR = PROJECT_ROOT / "docs" / "perf_database" / "reports" / "1-op_mapping" / "traces"
+TRACE_DIR = Path(__file__).parent / "fixtures" / "traces"
 OP_MAPPING_PATH = (
     PROJECT_ROOT
     / "tensor_cast"
@@ -37,17 +34,12 @@ OP_MAPPING_PATH = (
     / "op_mapping.yaml"
 )
 
-# Skip if trace files not present (CI may not have them)
-pytestmark = pytest.mark.skipif(
-    not TRACE_DIR.exists() or not any(TRACE_DIR.glob("*.json")),
-    reason="Trace files not found in docs/perf_database/reports/op_mapping/traces/",
-)
-
 
 @pytest.fixture(scope="module")
 def stub_data_dir():
     """Generate stub CSVs in a temp directory for testing."""
     import sys
+
     sys.path.insert(0, str(PROJECT_ROOT / "tools" / "perf_data_collection"))
     from generate_stub_csvs import generate_stub_csvs
 
@@ -93,6 +85,7 @@ def op_mapping():
 
 class _MockFunc:
     """Mock torch op func that returns the right string for _normalize_func_name."""
+
     def __init__(self, op_name: str):
         self._name = f"torch.ops.{op_name}"
 
@@ -154,6 +147,12 @@ def _is_skippable(config: Optional[dict]) -> Optional[str]:
         return "communication"
     if config.get("query_mode") == "attention_special":
         return "attention_special"
+    # Composite ops containing hcom sub-kernels can't be fully validated
+    # with stub CSVs (comm lookup requires message_bytes format, not shapes)
+    if config.get("composite"):
+        sub_kernels = config.get("sub_kernels", [])
+        if any(sk.startswith("hcom_") for sk in sub_kernels):
+            return "composite_with_comm"
     return None
 
 
@@ -184,7 +183,8 @@ class TestOpMappingE2E:
                     if not (data_dir / f"{sk}.csv").exists():
                         missing.append(f"{op_name} -> {sk}")
             else:
-                kt = config["kernel_type"]
+                # csv_file overrides kernel_type for CSV filename
+                kt = config.get("csv_file", config["kernel_type"])
                 if not (data_dir / f"{kt}.csv").exists():
                     missing.append(f"{op_name} -> {kt}")
 
@@ -205,7 +205,9 @@ class TestOpMappingE2E:
             assert result is not None, f"zero_cost op {op_name} returned None"
             assert result.latency_us == 0.0, f"zero_cost op {op_name} latency != 0"
 
-    def test_communication_ops_return_none(self, data_source, op_mapping, all_trace_ops):
+    def test_communication_ops_return_none(
+        self, data_source, op_mapping, all_trace_ops
+    ):
         """Communication ops should return None (fallback to analytic)."""
         entries = op_mapping.get("operator_mappings", {})
         for op_name, info in all_trace_ops.items():
@@ -216,6 +218,8 @@ class TestOpMappingE2E:
             mock = _make_mock_op_invoke(
                 op_name, variant["input_shapes"], variant["input_dtypes"]
             )
+            # Comm ops need rank + rank_group as last args for _lookup_comm
+            mock.args = (*mock.args, 0, list(range(16)))
             result = data_source.lookup(mock)
             assert result is None, f"communication op {op_name} should return None"
 
@@ -246,12 +250,14 @@ class TestOpMappingE2E:
                 if result is not None:
                     hits.append(op_name)
                 else:
-                    misses.append({
-                        "op": op_name,
-                        "shapes": variant["input_shapes"],
-                        "dtypes": variant["input_dtypes"],
-                        "kernel_type": config.get("kernel_type", "composite"),
-                    })
+                    misses.append(
+                        {
+                            "op": op_name,
+                            "shapes": variant["input_shapes"],
+                            "dtypes": variant["input_dtypes"],
+                            "kernel_type": config.get("kernel_type", "composite"),
+                        }
+                    )
 
         # Report
         total = len(hits) + len(misses)
@@ -262,9 +268,8 @@ class TestOpMappingE2E:
             for m in misses:
                 print(f"    {m['op']} -> {m['kernel_type']}: shapes={m['shapes']}")
 
-        assert misses == [], (
-            f"{len(misses)} ops failed shape matching: "
-            + ", ".join(m["op"] for m in misses)
+        assert misses == [], f"{len(misses)} ops failed shape matching: " + ", ".join(
+            m["op"] for m in misses
         )
 
 
@@ -275,14 +280,14 @@ class TestPerConfigCoverage:
         "trace_name",
         ["qwen3_32b_prefill", "qwen3_32b_decode", "dsv3_prefill", "dsv3_decode"],
     )
-    def test_config_full_coverage(
-        self, trace_name, data_source, op_mapping
-    ):
+    def test_config_full_coverage(self, trace_name, data_source, op_mapping):
         """Each config should have 100% coverage for non-skip ops."""
         entries = op_mapping.get("operator_mappings", {})
         trace_file = TRACE_DIR / f"{trace_name}.json"
-        if not trace_file.exists():
-            pytest.skip(f"Trace file {trace_name}.json not found")
+        assert trace_file.exists(), (
+            f"Fixture trace {trace_name}.json missing from "
+            f"tests/perf_database/fixtures/traces/ — regenerate with TC analytic+compile"
+        )
 
         with open(trace_file) as f:
             data = json.load(f)

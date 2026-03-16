@@ -241,7 +241,9 @@ def generate_stub_csvs(
                 if not sk.startswith("hcom_")
             ]
         else:
-            sub_kernels = [config["kernel_type"]]
+            # Use csv_file if present (e.g., MoE ops where CSV name != kernel_type)
+            primary = config.get("csv_file", config["kernel_type"])
+            sub_kernels = [primary]
             for alt in config.get("alternate_kernel_types", []):
                 if alt not in sub_kernels:
                     sub_kernels.append(alt)
