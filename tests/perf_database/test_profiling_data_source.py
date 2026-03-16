@@ -2137,3 +2137,101 @@ def test_flatten_batch_2d_still_works(quant_flatten_data_dir):
     result = ds.lookup(op)
     assert result is not None, "2D exact match should still work"
     assert abs(result.latency_us - 5.5) < 0.01
+
+
+# --- Merge-last-dims tests (MLA quantize 3D→2D) ---
+
+QUANT_MLA_CSV = """\
+Input Shapes,Input Data Types,Input Formats,Output Shapes,Output Data Types,Output Formats,Average Duration(us)
+"8,2048","DT_BF16","ND","8,2048","INT8","ND",9.8
+"256,2048","DT_BF16","ND","256,2048","INT8","ND",20.5
+"""
+
+
+@pytest.fixture
+def quant_mla_data_dir(tmp_path):
+    data_dir = tmp_path / "quant_mla"
+    data_dir.mkdir()
+    op_mapping = (
+        'version: "test"\n'
+        "operator_mappings:\n"
+        '  "tensor_cast.quantize.default":\n'
+        "    kernel_type: AscendQuantV2\n"
+        "    tc_input_count: 1\n"
+    )
+    (data_dir / "op_mapping.yaml").write_text(op_mapping)
+    (data_dir / "AscendQuantV2.csv").write_text(QUANT_MLA_CSV.strip())
+    return data_dir
+
+
+def test_merge_last_dims_quantize_mla_decode(quant_mla_data_dir):
+    """MLA quantize: TC (8, 16, 128) 3D → should match CSV (8, 2048) 2D
+    by merging last two dims: 16*128=2048."""
+    ds = ProfilingDataSource(quant_mla_data_dir)
+    op = _make_op_info(
+        torch.ops.tensor_cast.quantize.default,
+        [
+            torch.empty(8, 16, 128, device="meta", dtype=torch.bfloat16),
+            torch.tensor(1.0),
+            None,
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is not None, "Should match via last-two-dims merge"
+    assert abs(result.latency_us - 9.8) < 0.01
+
+
+def test_merge_last_dims_quantize_mla_prefill(quant_mla_data_dir):
+    """MLA quantize: TC (256, 16, 128) 3D → should match CSV (256, 2048) 2D."""
+    ds = ProfilingDataSource(quant_mla_data_dir)
+    op = _make_op_info(
+        torch.ops.tensor_cast.quantize.default,
+        [
+            torch.empty(256, 16, 128, device="meta", dtype=torch.bfloat16),
+            torch.tensor(1.0),
+            None,
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is not None, "Should match via last-two-dims merge"
+    assert abs(result.latency_us - 20.5) < 0.01
+
+
+def test_merge_last_dims_quantize_mla_batch1(quant_mla_data_dir):
+    """MLA quantize batch=1: TC (1, 16, 128) 3D → should match CSV (1, 2048) 2D.
+    _strip_batch_dim collapses (1,16,128)→(16,128), so merge must use original shape."""
+    # Add a batch=1 row to CSV
+    csv_path = quant_mla_data_dir / "AscendQuantV2.csv"
+    with open(csv_path, "a") as f:
+        f.write('\n"1,2048","DT_BF16","ND","1,2048","INT8","ND",4.2\n')
+    ds = ProfilingDataSource(quant_mla_data_dir)
+    op = _make_op_info(
+        torch.ops.tensor_cast.quantize.default,
+        [
+            torch.empty(1, 16, 128, device="meta", dtype=torch.bfloat16),
+            torch.tensor(1.0),
+            None,
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is not None, (
+        "Should match (1,16,128) → (1,2048) via merge-last-dims on original shape"
+    )
+    assert abs(result.latency_us - 4.2) < 0.01
+
+
+def test_merge_last_dims_not_applied_to_matmul(spike_data_dir):
+    """MatMulV2 is NOT in _FLATTEN_BATCH_KERNELS — merge should NOT apply.
+    Uses spike_data_dir which has MatMulV2 mapped via aten.mm.default."""
+    ds = ProfilingDataSource(spike_data_dir)
+    # CSV has (136,5120) for MatMulV2. Try 3D (2,68,5120) — should NOT match
+    # via merge-last-dims (68*5120=348160 ≠ 5120).
+    op = _make_op_info(
+        torch.ops.aten.mm.default,
+        [
+            torch.empty(2, 68, 5120, device="meta", dtype=torch.bfloat16),
+            torch.empty(5120, 768, device="meta", dtype=torch.bfloat16),
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is None, "Merge last dims should NOT apply to MatMulV2"

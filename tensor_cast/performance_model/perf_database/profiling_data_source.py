@@ -114,6 +114,11 @@ _FLATTEN_BATCH_KERNELS = frozenset(
     }
 )
 
+# Kernel types where TC produces 3D (T, H, D) per-head shapes that should
+# match CSV's 2D (T, H*D) shapes by merging the last two dims.
+# This is specific to MLA quantize where NPU reshapes to hidden_dim before quantize.
+_MERGE_LAST_DIMS_KERNELS = frozenset({"AscendQuantV2", "DynamicQuant"})
+
 # Common NPU tile alignment sizes (Da Vinci Cube unit)
 # BF16: 16x16, INT8: 16x32
 _BLOCK_SIZES = (16, 32, 64)
@@ -1017,20 +1022,41 @@ class ProfilingDataSource(DataSource):
             if self._shapes_match_with_padding(tc_shape_stripped, csv_shape_stripped):
                 continue
 
-            # 3D→2D flatten for quantize/norm kernels: TC (B, M, D) → CSV (B*M, D)
-            if (
-                kernel_type in _FLATTEN_BATCH_KERNELS
-                and len(tc_shape_stripped) == 3
-                and len(csv_shape) == 2
-            ):
-                flattened = (
-                    tc_shape_stripped[0] * tc_shape_stripped[1],
-                    tc_shape_stripped[2],
+            # 3D→2D flatten for quantize/norm kernels
+            if kernel_type in _FLATTEN_BATCH_KERNELS and len(csv_shape) == 2:
+                # Use original tc_shape (pre-strip) for 3D checks, since
+                # _strip_batch_dim may collapse (1,H,D) → (H,D) losing the
+                # 3D structure needed for flatten/merge.
+                shape_3d = (
+                    tc_shape_stripped
+                    if len(tc_shape_stripped) == 3
+                    else tc_shape
+                    if len(tc_shape) == 3
+                    else None
                 )
-                if flattened == csv_shape:
-                    continue
-                if self._shapes_match_with_padding(flattened, csv_shape):
-                    continue
+                if shape_3d is not None:
+                    # Flatten first two dims: TC (B, M, D) → CSV (B*M, D)
+                    flattened = (
+                        shape_3d[0] * shape_3d[1],
+                        shape_3d[2],
+                    )
+                    if flattened == csv_shape:
+                        continue
+                    if self._shapes_match_with_padding(flattened, csv_shape):
+                        continue
+
+                    # Merge last two dims: TC (T, H, D) → CSV (T, H*D)
+                    # Only for MLA quantize kernels where NPU reshapes
+                    # per-head to hidden_dim before quantize.
+                    if kernel_type in _MERGE_LAST_DIMS_KERNELS:
+                        merged = (
+                            shape_3d[0],
+                            shape_3d[1] * shape_3d[2],
+                        )
+                        if merged == csv_shape:
+                            continue
+                        if self._shapes_match_with_padding(merged, csv_shape):
+                            continue
 
             return False
 
