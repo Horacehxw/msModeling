@@ -45,11 +45,17 @@ def _make_mock_device_profile():
 def test_empirical_uses_datasource_when_hit():
     """Design doc §4.3: data_source.lookup() hit → use measured latency."""
     device = _make_mock_device_profile()
-    model = EmpiricalPerformanceModel(device, data_source=HitDataSource())
+    fallback = MagicMock(spec=PerformanceModel)
+    fallback.process_op.return_value = PerformanceModel.Result(execution_time_s=200e-6)
+    model = EmpiricalPerformanceModel(
+        device, data_source=HitDataSource(), fallback_model=fallback
+    )
     result = model.process_op(_make_mock_op_invoke_info())
     assert abs(result.execution_time_s - 45.3e-6) < 1e-12
     assert result.statistics.get("source") == "MEASURED"
     assert result.statistics.get("kernel_type") == "MatMulV2"
+    # M5: fallback also called for analytic weight
+    fallback.process_op.assert_called_once()
 
 
 def test_empirical_falls_back_when_miss():

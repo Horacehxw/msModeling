@@ -220,6 +220,9 @@ class EmpiricalPerformanceModel(PerformanceModel):
         self._hit_details: list[tuple[str, str, tuple, float]] = []
         # Each miss: (func_name, reason, tc_shapes)
         self._miss_details: list[tuple[str, str, list[tuple]]] = []
+        # M5: Simulated Latency Coverage accumulators
+        self._hit_latency_sum = 0.0
+        self._total_latency_sum = 0.0
 
     @property
     def fallback_model(self) -> PerformanceModel:
@@ -233,8 +236,14 @@ class EmpiricalPerformanceModel(PerformanceModel):
     def process_op(self, op_invoke_info: OpInvokeInfo) -> PerformanceModel.Result:
         result = self.data_source.lookup(op_invoke_info)
         func_name = str(op_invoke_info.func).removeprefix("torch.ops.")
+
+        # M5: always compute analytic latency as weight
+        analytic_result = self.fallback_model.process_op(op_invoke_info)
+        self._total_latency_sum += analytic_result.execution_time_s
+
         if result is not None:
             self._stats["hit"] += 1
+            self._hit_latency_sum += analytic_result.execution_time_s
             kernel_type = result.details.get("kernel_type", "?")
             tc_shapes = [
                 tuple(a.shape)
@@ -253,14 +262,14 @@ class EmpiricalPerformanceModel(PerformanceModel):
                     **result.details,
                 },
             )
+
         self._stats["miss"] += 1
         tc_shapes = [
             tuple(a.shape) for a in op_invoke_info.args if isinstance(a, torch.Tensor)
         ]
-        # Read miss reason from data source (if it supports it)
         reason = getattr(self.data_source, "last_miss_reason", "unknown")
         self._miss_details.append((func_name, reason, tc_shapes))
-        return self.fallback_model.process_op(op_invoke_info)
+        return analytic_result
 
     def get_stats(self) -> dict:
         total = self._stats["hit"] + self._stats["miss"]
@@ -351,4 +360,14 @@ class EmpiricalPerformanceModel(PerformanceModel):
                 "  MISS shapes (%d):\n%s",
                 len(shape_stats["miss_shape_list"]),
                 "\n".join(miss_lines),
+            )
+
+        # M5: Simulated Latency Coverage
+        if self._total_latency_sum > 0:
+            m5 = self._hit_latency_sum / self._total_latency_sum
+            logger.info(
+                "Simulated Latency Coverage: %.1f%% (%.3fms / %.3fms)",
+                m5 * 100,
+                self._hit_latency_sum * 1000,
+                self._total_latency_sum * 1000,
             )
