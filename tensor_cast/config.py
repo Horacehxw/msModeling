@@ -27,7 +27,9 @@ class compilation:
         enable_swiglu = True
         enable_matmul_allreduce = True
         enable_grouped_matmul_swiglu = True
+        enable_dispatch_ffn_combine = True
         enable_kv_rmsnorm_rope_cache = False  # Reserved for future MLA pattern
+
 
     class debug:
         graph_log_url = None
