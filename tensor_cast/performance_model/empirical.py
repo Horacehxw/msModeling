@@ -163,6 +163,39 @@ def compute_fused_op_stats(
     }
 
 
+def compute_per_shape_stats(
+    hit_details: list[tuple[str, str, tuple, float]],
+    miss_details: list[tuple[str, str, list]],
+) -> dict:
+    """M4: Per-Shape Match HR (unique shape variants, excl zero_cost).
+
+    Each unique (func_name, shape_sig) pair is counted independently.
+    No pessimistic rule, no fused grouping.
+
+    Returns:
+        dict with hit_shapes, total_shapes, m4, miss_shape_list.
+    """
+    hit_shapes: set[tuple[str, tuple]] = set()
+    for func_name, kernel_type, shape_sig, _latency_s in hit_details:
+        if kernel_type == "zero_cost":
+            continue
+        hit_shapes.add((func_name, shape_sig))
+
+    all_shapes: set[tuple[str, tuple]] = set(hit_shapes)
+    for func_name, _reason, tc_shapes in miss_details:
+        shape_sig = tuple(tuple(s) for s in tc_shapes) if tc_shapes else ()
+        all_shapes.add((func_name, shape_sig))
+
+    m4 = len(hit_shapes) / len(all_shapes) if all_shapes else 0.0
+    miss_shape_list = sorted(all_shapes - hit_shapes)
+    return {
+        "hit_shapes": len(hit_shapes),
+        "total_shapes": len(all_shapes),
+        "m4": m4,
+        "miss_shape_list": miss_shape_list,
+    }
+
+
 class EmpiricalPerformanceModel(PerformanceModel):
     """Performance model based on measured data from a DataSource.
 
@@ -298,3 +331,24 @@ class EmpiricalPerformanceModel(PerformanceModel):
             fused["fused_total_no_zc"],
             fused["fused_hr_no_zc"] * 100,
         )
+
+        # M4: Per-Shape Match Rate
+        shape_stats = compute_per_shape_stats(self._hit_details, self._miss_details)
+        logger.info(
+            "Per-Shape Match Rate: %d/%d (%.1f%%)",
+            shape_stats["hit_shapes"],
+            shape_stats["total_shapes"],
+            shape_stats["m4"] * 100,
+        )
+        if shape_stats["miss_shape_list"]:
+            miss_lines = [
+                f"  {fn} {ss}" for fn, ss in shape_stats["miss_shape_list"][:20]
+            ]
+            remaining = len(shape_stats["miss_shape_list"]) - 20
+            if remaining > 0:
+                miss_lines.append(f"  ... and {remaining} more")
+            logger.info(
+                "  MISS shapes (%d):\n%s",
+                len(shape_stats["miss_shape_list"]),
+                "\n".join(miss_lines),
+            )
