@@ -53,7 +53,7 @@ DEFAULT_FUSED_GROUPS = {
 
 
 def compute_fused_op_stats(
-    hit_details: list[str],
+    hit_details: list[tuple[str, str, tuple, float]],
     miss_details: list[tuple[str, str, list]],
     fused_groups: dict[str, list[str]] | None = None,
 ) -> dict:
@@ -71,7 +71,7 @@ def compute_fused_op_stats(
     A fused group is HIT only if ALL members are HIT and NONE MISS.
 
     Args:
-        hit_details: list of "func_name->kernel_type" strings
+        hit_details: list of (func_name, kernel_type, shape_sig, latency_s) tuples
         miss_details: list of (func_name, reason, shapes) tuples
         fused_groups: map of group_name -> list of TC op prefixes to group
 
@@ -100,11 +100,9 @@ def compute_fused_op_stats(
     miss_func_names: set[str] = set()
     zero_cost_funcs: set[str] = set()
 
-    for detail in hit_details:
-        func_name = detail.split("->")[0]
-        kernel = detail.split("->")[1] if "->" in detail else ""
+    for func_name, kernel_type, _shape_sig, _latency_s in hit_details:
         all_func_names.add(func_name)
-        if kernel == "zero_cost":
+        if kernel_type == "zero_cost":
             zero_cost_funcs.add(func_name)
 
     for func_name, _reason, _shapes in miss_details:
@@ -150,29 +148,7 @@ def compute_fused_op_stats(
     fused_hit_no_zc = len(ungrouped_hits - zero_cost_funcs) + len(grouped_hits)
     fused_total_no_zc = fused_total - len(zero_cost_funcs & hit_func_names)
 
-    # --- Phase 2: Per-shape counting ---
-    # Each (func_name, shape_signature) is a distinct unit
-    shape_hits: set[tuple[str, tuple]] = set()
-    shape_misses: set[tuple[str, tuple]] = set()
-
-    for detail in hit_details:
-        func_name = detail.split("->")[0]
-        # hit_details don't carry shapes, so we use func_name only as key
-        # For true per-shape, we'd need shape in hit_details — use invocation count
-        shape_hits.add((func_name, ()))  # placeholder
-
-    for func_name, reason, shapes in miss_details:
-        shape_key = tuple(tuple(s) for s in shapes) if shapes else ()
-        shape_misses.add((func_name, shape_key))
-
-    # Per-shape stats: count unique (name, shape) pairs
-    # For now, approximate: each HIT invocation is 1, each MISS invocation is 1
-    per_shape_hit = len(set(d.split("->")[0] for d in hit_details))
-    per_shape_miss = len(set(
-        (fn, tuple(tuple(s) for s in sh) if sh else ())
-        for fn, _, sh in miss_details
-    ))
-    per_shape_total = per_shape_hit + per_shape_miss
+    # Per-shape stats computed separately by compute_per_shape_stats()
 
     return {
         "fused_hit": fused_hit,
@@ -208,7 +184,7 @@ class EmpiricalPerformanceModel(PerformanceModel):
         self.data_source = data_source
         self._fallback_model = fallback_model
         self._stats = {"hit": 0, "miss": 0}
-        self._hit_details: list[str] = []
+        self._hit_details: list[tuple[str, str, tuple, float]] = []
         # Each miss: (func_name, reason, tc_shapes)
         self._miss_details: list[tuple[str, str, list[tuple]]] = []
 
@@ -226,8 +202,15 @@ class EmpiricalPerformanceModel(PerformanceModel):
         func_name = str(op_invoke_info.func).removeprefix("torch.ops.")
         if result is not None:
             self._stats["hit"] += 1
+            kernel_type = result.details.get("kernel_type", "?")
+            tc_shapes = [
+                tuple(a.shape)
+                for a in op_invoke_info.args
+                if isinstance(a, torch.Tensor)
+            ]
+            shape_sig = tuple(tc_shapes)
             self._hit_details.append(
-                f"{func_name}->{result.details.get('kernel_type', '?')}"
+                (func_name, kernel_type, shape_sig, result.latency_us * 1e-6)
             )
             return PerformanceModel.Result(
                 execution_time_s=result.latency_us * 1e-6,
@@ -265,7 +248,8 @@ class EmpiricalPerformanceModel(PerformanceModel):
 
         # Deduplicated HITs: count occurrences of each mapping
         if self._hit_details:
-            hit_counts = Counter(self._hit_details)
+            display_keys = [f"{fn}->{kt}" for fn, kt, _, _ in self._hit_details]
+            hit_counts = Counter(display_keys)
             hit_lines = [
                 f"  {mapping} (x{count})" if count > 1 else f"  {mapping}"
                 for mapping, count in hit_counts.most_common()
