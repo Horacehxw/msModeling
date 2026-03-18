@@ -74,6 +74,26 @@ def _(
     return torch.empty_like(x).view(*topk_indices.shape, x.shape[-1])
 
 
+@register_tensor_cast_op("dispatch_ffn_combine")
+def _(
+    x: torch.Tensor,
+    expert_indices: torch.Tensor,
+) -> torch.Tensor:
+    """
+    dispatch tokens,do the FFN process ,and return the combined token.
+    Args:
+        x:(bs,seq_len,hidden_size)
+        expert_indices:(bs, seq_len, expert_nums)
+
+    Returns:
+        hidden_states: (bs, seq_len, expert_nums, hidden_size)
+    """
+    hidden_size = x.shape[-1]
+    return torch.empty(
+        (*expert_indices.shape, hidden_size), dtype=x.dtype, device=x.device
+    )
+
+
 @register_tensor_cast_op("moe_gating_top_k_softmax")
 def _(x: torch.Tensor, top_k: int) -> Tuple[torch.Tensor, torch.Tensor]:
     """
