@@ -818,26 +818,57 @@ def discover_operators(profiling_output: Path, op_mapping_yaml: Path) -> Dict:
 
 **结论**：无法 microbenchmark 的算子仅占 0.06%-1.85%，对端到端精度影响极小（远在 <15% 目标内）。
 
-### 7.5 评估指标体系（v1.4 新增）
+### 7.5 评估指标体系（v1.4 新增，v1.4.1 扩展 M4-M6）
 
-Phase 1 E2E 集成验证中建立的五层指标体系：
+六层指标体系，从粗到细、从算子计数到延迟加权：
 
-| 指标 | 定义 | 用途 |
-|------|------|------|
-| M1: Raw Op-Count HR | `HIT_invocations / total_invocations` | Debug，向后兼容 |
-| M2: Fused Op HR | 按融合 op 计数（含 zero_cost），悲观规则 | **GO/NO-GO 判定** |
-| M3: Fused Op HR (不含 zc) | 同 M2，排除 zero_cost | 真实计算覆盖 |
-| M4: Per-Shape Match HR | 每个 `(func_name, shape)` 独立计 | 逐 shape 诊断 (Phase 2) |
-| M5: Latency-Weighted HR | `Σ HIT_latency / Σ total_latency` | 性能评估 (Phase 3) |
+| 指标 | 分子 | 分母 | 排除 zc | 悲观 | 融合 | 计算方式 | 用途 |
+|------|------|------|:---:|:---:|:---:|---------|------|
+| **M1**: Raw Op-Count HR | HIT 调用次数 | 总调用次数 | — | — | — | 在线 | Debug，向后兼容 |
+| **M2**: Fused Op HR | HIT 唯一 func_name 数 | 所有唯一 func_name 数 | — | ✓ | ✓ | 在线 | **GO/NO-GO 判定** |
+| **M3**: Fused Op HR (不含 zc) | 同 M2 排除 zero_cost | 同 M2 排除 zero_cost | ✓ | ✓ | ✓ | 在线 | 真实计算覆盖 |
+| **M4**: Per-Shape Match HR | HIT 唯一 (func, shape) 数 | 所有唯一 (func, shape) 数 | ✓ | — | — | 在线 | Shape 缺口诊断 |
+| **M5**: Simulated Latency Coverage | HIT ops 的 analytic 延迟之和 | 所有 ops 的 analytic 延迟之和 | — | — | — | 在线 | 仿真视角延迟覆盖率 |
+| **M6**: Empirical Prediction Coverage | HIT ops 的 empirical (microbench) duration 之和 | step_trace_time 的 Computing + Comm(Not Overlapped) | — | — | — | 半离线 | **辅助验收：empirical 预测 vs 真实 E2E** |
 
-**悲观规则**: 同一 `func_name` 若有 N 次 HIT + M 次 MISS（不同 shape），整个算子计为 1 MISS。防止双重计数。
+#### 指标详细定义
 
-**融合分组**: DFC（permute_tokens + grouped_matmul×2 + unpermute_tokens + all_to_all×2）= 1 融合 op；MLAPO、MLA、MC2 同理。全部成员 HIT 才算 HIT。
+**M1–M3**: 算子计数层
 
-**Phase 目标**:
-- Phase 1: 指标体系建立 ✅
-- Phase 2: M3 > 50%
-- Phase 3: M5 > 80%
+- M1 按每次 `process_op()` 调用计数，被 zero_cost ops 虚增
+- M2/M3 按唯一 `func_name` 计数，应用悲观规则和融合分组
+- **悲观规则**: 同一 `func_name` 若有 N 次 HIT + M 次 MISS（不同 shape），整个算子计为 1 MISS
+- **融合分组**: DFC（permute_tokens + grouped_matmul×2 + unpermute_tokens + all_to_all×2）= 1 融合 op；MLAPO、MLA、MC2 同理。全部成员 HIT 才算 HIT
+
+**M4**: Shape 诊断层
+
+- 每个唯一的 `(func_name, input_shape_tuple)` 独立计数
+- 不应用悲观规则，不应用融合分组，排除 zero_cost
+- 用于定位具体缺失哪些 shape 的数据，指导 microbenchmark 数据采集
+
+**M5**: 仿真延迟覆盖层
+
+- 分子分母均使用 **analytic (Roofline) 延迟**作为权重
+- 本质是 M3 的延迟加权版本：高延迟算子权重大，低延迟辅助算子权重小
+- 在线计算，不需要外部数据
+
+**M6**: Empirical Prediction Coverage（v1.4.2 更新）
+
+- 跑一次 TC `--performance-model profiling --export-metrics report.json` 得到 HIT/MISS 结果和 empirical duration
+- 分子 = HIT ops 从 DataSource 返回的 empirical (microbench CSV) 延迟之和（per-shape 精确匹配）
+- 分母 = `step_trace_time.csv` 的 `Computing + Communication(Not Overlapped)`（Ascend profiler 权威 E2E 分解）
+- M6 回答："我们的 empirical 模型能预测真实 E2E kernel 时间的多少？"
+- 不使用 kernel_details.csv sum 做分母，因为 Decode 场景下 CUDAGraph 导致 kernel_details sum >> wall-clock（差异 50-72%）
+- `*AicpuKernel` 条目为 AICPU dispatch wrapper，与 `hcom_*` 1:1 重复，仅用于诊断（排除）
+- M6 理论上可 >100%（microbench 高估 vs 真实运行），此差异反映 microbench 数据质量
+
+**M5 vs M6**: M5 从 TC 仿真视角看（权重=analytic Roofline），M6 从 empirical 预测 vs NPU 真实 E2E 视角看。两者差异反映 analytic 模型对算子重要性判断的准确性。
+
+#### Phase 目标
+
+- Phase 1: M1–M3 指标体系建立 ✅
+- Phase 2: M3 > 50%, M4/M5 建立 ✅
+- Phase 3: M5 > 80%, M6 作为辅助验收（目标 TBD）
 
 ---
 

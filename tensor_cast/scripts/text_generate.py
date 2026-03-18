@@ -280,6 +280,12 @@ def main():
         help="Path to performance database directory containing op_mapping.yaml + CSV files "
         "(required for --performance-model profiling)",
     )
+    parser.add_argument(
+        "--export-metrics",
+        type=str,
+        default=None,
+        help="Export M1-M5 metrics report as JSON for offline M6 computation",
+    )
 
     args = parser.parse_args()
     logging.basicConfig(level=LOG_LEVELS[args.log_level.lower()])
@@ -297,6 +303,15 @@ def main():
     model_runner = ModelRunner(user_input)
     metrics = model_runner.run_inference(generate_inputs_func=generate_inputs)
     metrics.print_info()
+
+    # Export metrics JSON for offline M6 computation
+    if args.export_metrics and hasattr(model_runner, "perf_model"):
+        from pathlib import Path
+
+        from ..performance_model.empirical import EmpiricalPerformanceModel
+
+        if isinstance(model_runner.perf_model, EmpiricalPerformanceModel):
+            model_runner.perf_model.export_hit_miss_report(Path(args.export_metrics))
 
 
 if __name__ == "__main__":

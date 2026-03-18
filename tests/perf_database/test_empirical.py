@@ -158,9 +158,9 @@ def test_fused_op_hr_groups_dfc_as_one():
     stats = compute_fused_op_stats(hit_details, miss_details, fused_groups)
 
     # 2 unique HITs (mm, swiglu) + 1 DFC group MISS + 1 embedding MISS = 4
-    assert stats["fused_total"] == 4
-    assert stats["fused_hit"] == 2
-    assert stats["fused_miss"] == 2
+    assert stats["m2_fused_total"] == 4
+    assert stats["m2_fused_hit"] == 2
+    assert stats["m2_fused_miss"] == 2
 
 
 def test_fused_op_hr_excludes_zero_cost():
@@ -179,12 +179,12 @@ def test_fused_op_hr_excludes_zero_cost():
     stats = compute_fused_op_stats(hit_details, miss_details, fused_groups={})
 
     # With zero_cost: 3 HITs + 1 MISS = 4 total
-    assert stats["fused_total"] == 4
-    assert stats["fused_hit"] == 3
+    assert stats["m2_fused_total"] == 4
+    assert stats["m2_fused_hit"] == 3
 
     # Without zero_cost: 1 HIT + 1 MISS = 2 total
-    assert stats["fused_total_no_zc"] == 2
-    assert stats["fused_hit_no_zc"] == 1
+    assert stats["m3_fused_total_no_zc"] == 2
+    assert stats["m3_fused_hit_no_zc"] == 1
 
 
 def test_fused_op_hr_pessimistic_partial_shape():
@@ -214,10 +214,10 @@ def test_fused_op_hr_pessimistic_partial_shape():
     # Pessimistic: quantize has MISS → MISS, mm has MISS → MISS
     # Only view (zero_cost, no MISS) is a HIT
     # Total unique ops: quantize, mm, view, embedding = 4
-    assert stats["fused_total"] == 4
-    assert stats["fused_hit"] == 1  # only view (zero_cost)
-    assert stats["fused_miss"] == 3  # quantize + mm + embedding
+    assert stats["m2_fused_total"] == 4
+    assert stats["m2_fused_hit"] == 1  # only view (zero_cost)
+    assert stats["m2_fused_miss"] == 3  # quantize + mm + embedding
 
     # Without zero_cost: 0 HITs, 3 MISSes
-    assert stats["fused_hit_no_zc"] == 0
-    assert stats["fused_total_no_zc"] == 3
+    assert stats["m3_fused_hit_no_zc"] == 0
+    assert stats["m3_fused_total_no_zc"] == 3

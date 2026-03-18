@@ -109,7 +109,7 @@ def discover_operators(
         )
         if total_duration
         else 0.0,
-        "m6_profiling_latency_coverage": (
+        "m6_empirical_prediction_coverage": (
             known_duration / total_duration
         )
         if total_duration
@@ -147,7 +147,7 @@ def _format_report(result: Dict, kernel_details_path: Path, op_mapping_path: Pat
         f"({cov['duration_coverage_pct']:.1f}%)"
     )
     lines.append(
-        f"  M6 (Profiling Latency Coverage): {cov['m6_profiling_latency_coverage']:.1%}"
+        f"  M6 (Profiling Latency Coverage): {cov['m6_empirical_prediction_coverage']:.1%}"
     )
     lines.append("")
 

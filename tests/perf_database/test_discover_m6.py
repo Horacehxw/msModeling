@@ -12,7 +12,7 @@ from discover_operators import discover_operators
 
 
 def test_m6_key_in_coverage_dict(tmp_path):
-    """discover_operators should include m6_profiling_latency_coverage in coverage."""
+    """discover_operators should include m6_empirical_prediction_coverage in coverage."""
     csv_path = tmp_path / "kernel_details.csv"
     csv_path.write_text(
         "Type,Duration(us)\n"
@@ -34,7 +34,7 @@ def test_m6_key_in_coverage_dict(tmp_path):
     result = discover_operators(csv_path, yaml_path)
     cov = result["coverage"]
 
-    assert "m6_profiling_latency_coverage" in cov
+    assert "m6_empirical_prediction_coverage" in cov
     # MatMulV2 (100us) + SwiGlu (20us) = 120, total = 150 → 80%
-    assert abs(cov["m6_profiling_latency_coverage"] - 0.8) < 1e-9
+    assert abs(cov["m6_empirical_prediction_coverage"] - 0.8) < 1e-9
     assert abs(cov["duration_coverage_pct"] - 80.0) < 1e-9

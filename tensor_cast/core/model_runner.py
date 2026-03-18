@@ -87,7 +87,6 @@ class ModelRunner:
             from pathlib import Path
 
             from ..performance_model.empirical import EmpiricalPerformanceModel
-            from ..performance_model.perf_database import ProfilingDataSource
 
             db_path = Path(perf_db_path)
             data_source = _create_data_source(
@@ -174,6 +173,16 @@ class ModelRunner:
 
         # Log empirical model stats if using profiling mode
         if hasattr(self.perf_model, "log_stats"):
+            # Set replay multiplier for M6: total events / process_op calls
+            if hasattr(self.perf_model, "_replay_multiplier"):
+                total_events = len(runtime.event_list)
+                process_op_calls = (
+                    self.perf_model._stats["hit"] + self.perf_model._stats["miss"]
+                )
+                if process_op_calls > 0:
+                    self.perf_model._replay_multiplier = (
+                        total_events // process_op_calls
+                    )
             self.perf_model.log_stats()
 
         execution_time_s = runtime.total_execution_time_s()[self.perf_model.name]

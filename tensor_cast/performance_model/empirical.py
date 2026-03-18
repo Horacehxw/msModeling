@@ -3,8 +3,10 @@
 Design doc reference: §4.3
 """
 
+import json
 import logging
 from collections import Counter
+from pathlib import Path
 from typing import Optional
 
 import torch
@@ -151,13 +153,13 @@ def compute_fused_op_stats(
     # Per-shape stats computed separately by compute_per_shape_stats()
 
     return {
-        "fused_hit": fused_hit,
-        "fused_miss": fused_miss,
-        "fused_total": fused_total,
-        "fused_hr": fused_hit / fused_total if fused_total > 0 else 0,
-        "fused_hit_no_zc": fused_hit_no_zc,
-        "fused_total_no_zc": fused_total_no_zc,
-        "fused_hr_no_zc": (
+        "m2_fused_hit": fused_hit,
+        "m2_fused_miss": fused_miss,
+        "m2_fused_total": fused_total,
+        "m2_fused_op_hr": fused_hit / fused_total if fused_total > 0 else 0,
+        "m3_fused_hit_no_zc": fused_hit_no_zc,
+        "m3_fused_total_no_zc": fused_total_no_zc,
+        "m3_fused_op_hr_no_zc": (
             fused_hit_no_zc / fused_total_no_zc if fused_total_no_zc > 0 else 0
         ),
     }
@@ -189,10 +191,10 @@ def compute_per_shape_stats(
     m4 = len(hit_shapes) / len(all_shapes) if all_shapes else 0.0
     miss_shape_list = sorted(all_shapes - hit_shapes)
     return {
-        "hit_shapes": len(hit_shapes),
-        "total_shapes": len(all_shapes),
-        "m4": m4,
-        "miss_shape_list": miss_shape_list,
+        "m4_hit_shapes": len(hit_shapes),
+        "m4_total_shapes": len(all_shapes),
+        "m4_per_shape_hr": m4,
+        "m4_miss_shape_list": miss_shape_list,
     }
 
 
@@ -223,6 +225,11 @@ class EmpiricalPerformanceModel(PerformanceModel):
         # M5: Simulated Latency Coverage accumulators
         self._hit_latency_sum = 0.0
         self._total_latency_sum = 0.0
+        # Layer multiplier: TC's region-based replay calls process_op once
+        # per unique op, but the model has N region copies (layers). The
+        # multiplier = total_replay_events / process_op_calls, set by the
+        # runtime after replay completes.
+        self._replay_multiplier = 1
 
     @property
     def fallback_model(self) -> PerformanceModel:
@@ -276,7 +283,7 @@ class EmpiricalPerformanceModel(PerformanceModel):
         return {
             **self._stats,
             "total": total,
-            "hit_rate": self._stats["hit"] / total if total > 0 else 0,
+            "m1_raw_op_count_hr": self._stats["hit"] / total if total > 0 else 0,
         }
 
     def log_stats(self):
@@ -285,7 +292,7 @@ class EmpiricalPerformanceModel(PerformanceModel):
             "EmpiricalPerformanceModel: %d/%d ops matched (%.1f%%)",
             stats["hit"],
             stats["total"],
-            stats["hit_rate"] * 100,
+            stats["m1_raw_op_count_hr"] * 100,
         )
 
         # Deduplicated HITs: count occurrences of each mapping
@@ -330,35 +337,35 @@ class EmpiricalPerformanceModel(PerformanceModel):
         fused = compute_fused_op_stats(self._hit_details, self._miss_details)
         logger.info(
             "Fused Op Match Rate: %d/%d (%.1f%%) [GO/NO-GO]",
-            fused["fused_hit"],
-            fused["fused_total"],
-            fused["fused_hr"] * 100,
+            fused["m2_fused_hit"],
+            fused["m2_fused_total"],
+            fused["m2_fused_op_hr"] * 100,
         )
         logger.info(
             "Fused Op Match Rate (excl zero_cost): %d/%d (%.1f%%) [Reference]",
-            fused["fused_hit_no_zc"],
-            fused["fused_total_no_zc"],
-            fused["fused_hr_no_zc"] * 100,
+            fused["m3_fused_hit_no_zc"],
+            fused["m3_fused_total_no_zc"],
+            fused["m3_fused_op_hr_no_zc"] * 100,
         )
 
         # M4: Per-Shape Match Rate
         shape_stats = compute_per_shape_stats(self._hit_details, self._miss_details)
         logger.info(
             "Per-Shape Match Rate: %d/%d (%.1f%%)",
-            shape_stats["hit_shapes"],
-            shape_stats["total_shapes"],
-            shape_stats["m4"] * 100,
+            shape_stats["m4_hit_shapes"],
+            shape_stats["m4_total_shapes"],
+            shape_stats["m4_per_shape_hr"] * 100,
         )
-        if shape_stats["miss_shape_list"]:
+        if shape_stats["m4_miss_shape_list"]:
             miss_lines = [
-                f"  {fn} {ss}" for fn, ss in shape_stats["miss_shape_list"][:20]
+                f"  {fn} {ss}" for fn, ss in shape_stats["m4_miss_shape_list"][:20]
             ]
-            remaining = len(shape_stats["miss_shape_list"]) - 20
+            remaining = len(shape_stats["m4_miss_shape_list"]) - 20
             if remaining > 0:
                 miss_lines.append(f"  ... and {remaining} more")
             logger.info(
                 "  MISS shapes (%d):\n%s",
-                len(shape_stats["miss_shape_list"]),
+                len(shape_stats["m4_miss_shape_list"]),
                 "\n".join(miss_lines),
             )
 
@@ -371,3 +378,87 @@ class EmpiricalPerformanceModel(PerformanceModel):
                 self._hit_latency_sum * 1000,
                 self._total_latency_sum * 1000,
             )
+
+    def export_hit_miss_report(self, output_path: Path | None = None) -> dict:
+        """Export structured HIT/MISS report for offline M6 computation.
+
+        Returns dict with all M1-M5 metrics and per-op HIT/MISS details.
+        If output_path provided, writes JSON to file.
+
+        Note on latency fields:
+        - _hit_latency_sum / _total_latency_sum = analytic (Roofline) latency → M5
+        - _hit_details[i][3] = empirical (microbenchmark CSV) latency → M6 numerator
+        """
+        fused = compute_fused_op_stats(self._hit_details, self._miss_details)
+        shape = compute_per_shape_stats(self._hit_details, self._miss_details)
+
+        report = {
+            "m1": {
+                "m1_hit": self._stats["hit"],
+                "m1_miss": self._stats["miss"],
+                "m1_total": self._stats["hit"] + self._stats["miss"],
+                "m1_raw_op_count_hr": self.get_stats()["m1_raw_op_count_hr"],
+            },
+            "m2": {
+                "m2_fused_hit": fused["m2_fused_hit"],
+                "m2_fused_total": fused["m2_fused_total"],
+                "m2_fused_op_hr": fused["m2_fused_op_hr"],
+            },
+            "m3": {
+                "m3_fused_hit_no_zc": fused["m3_fused_hit_no_zc"],
+                "m3_fused_total_no_zc": fused["m3_fused_total_no_zc"],
+                "m3_fused_op_hr_no_zc": fused["m3_fused_op_hr_no_zc"],
+            },
+            "m4": {
+                "m4_hit_shapes": shape["m4_hit_shapes"],
+                "m4_total_shapes": shape["m4_total_shapes"],
+                "m4_per_shape_hr": shape["m4_per_shape_hr"],
+                "m4_miss_shape_list": [
+                    {"func_name": fn, "shape": [list(s) for s in ss]}
+                    for fn, ss in shape["m4_miss_shape_list"]
+                ],
+            },
+            "m5": {
+                "m5_hit_latency_sum_s": self._hit_latency_sum,
+                "m5_total_latency_sum_s": self._total_latency_sum,
+                "m5_simulated_latency_coverage": (
+                    self._hit_latency_sum / self._total_latency_sum
+                    if self._total_latency_sum > 0
+                    else 0.0
+                ),
+            },
+            "hits": [
+                {
+                    "func_name": fn,
+                    "kernel_type": kt,
+                    "tc_shapes": [list(s) for s in ss],
+                    "empirical_duration_s": lat,
+                }
+                for fn, kt, ss, lat in self._hit_details
+            ],
+            "misses": [
+                {
+                    "func_name": fn,
+                    "reason": r,
+                    "tc_shapes": [list(s) for s in shapes],
+                }
+                for fn, r, shapes in self._miss_details
+            ],
+            "m6_input": {
+                "empirical_hit_duration_sum_s": sum(
+                    lat for _, _, _, lat in self._hit_details
+                ),
+                "replay_multiplier": self._replay_multiplier,
+                "empirical_hit_duration_scaled_s": sum(
+                    lat for _, _, _, lat in self._hit_details
+                )
+                * self._replay_multiplier,
+            },
+        }
+
+        if output_path is not None:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(json.dumps(report, indent=2, ensure_ascii=False))
+            logger.info("Metrics report exported to %s", output_path)
+
+        return report
