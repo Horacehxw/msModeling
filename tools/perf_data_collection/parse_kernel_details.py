@@ -1,6 +1,7 @@
 import argparse
 import csv
 import math
+import statistics
 import re
 from collections import defaultdict
 from pathlib import Path
@@ -30,6 +31,7 @@ ACCELERATOR_CORE = "Accelerator Core"
 DURATION_US = "Duration(us)"
 AVG_DURATION_US = "Average Duration(us)"
 STD_DURATION_US = "Std Duration(us)"
+MEDIAN_DURATION_US = "Median Duration(us)"
 EXTRA_NUMERIC_COLUMNS = [
     "aicore_time(us)",
     "aic_total_cycles",
@@ -166,6 +168,7 @@ class KernelDetailsParser:
             lambda: {
                 "sum_duration": 0.0,
                 "sum_duration_sq": 0.0,
+                "durations": [],
                 "count": 0,
                 "op_state": "",
                 "accelerator_core": "",
@@ -189,6 +192,7 @@ class KernelDetailsParser:
             duration = self._parse_duration(self._safe_cell(row, DURATION_US))
             item["sum_duration"] = float(item["sum_duration"]) + duration
             item["sum_duration_sq"] = float(item["sum_duration_sq"]) + duration * duration
+            item["durations"].append(duration)
             item["count"] = int(item["count"]) + 1
             for col in EXTRA_NUMERIC_COLUMNS:
                 item["sum_extra"][col] = float(item["sum_extra"][col]) + self._parse_duration(
@@ -218,6 +222,7 @@ class KernelDetailsParser:
             avg_duration_sq = float(item["sum_duration_sq"]) / count
             variance = max(0.0, avg_duration_sq - avg_duration * avg_duration)
             std_duration = math.sqrt(variance)
+            median_duration = statistics.median(item["durations"])
             avg_extra = {
                 f"Average {col}": (
                     float(item["sum_extra"][col]) / count
@@ -235,6 +240,7 @@ class KernelDetailsParser:
                     OUTPUT_DTYPES: item["output_dtypes"],
                     OUTPUT_FORMATS: item["output_formats"],
                     AVG_DURATION_US: f"{avg_duration:.6f}",
+                    MEDIAN_DURATION_US: f"{median_duration:.6f}",
                     STD_DURATION_US: f"{std_duration:.6f}",
                     **{k: f"{v:.6f}" for k, v in avg_extra.items()},
                 }
@@ -251,6 +257,7 @@ class KernelDetailsParser:
             OUTPUT_DTYPES,
             OUTPUT_FORMATS,
             AVG_DURATION_US,
+            MEDIAN_DURATION_US,
             STD_DURATION_US,
         ]
         ordered_columns.extend([f"Average {col}" for col in EXTRA_NUMERIC_COLUMNS])
