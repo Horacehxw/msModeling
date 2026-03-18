@@ -104,21 +104,25 @@ operator_mappings:
       aclnn: aclnnConvolution. LLM 不含卷积层; 仅用于 video/image models.
 
   "aten.cat.default":
-    kernel_type: ConcatD
+    zero_cost: true
     notes: >
-      [HIGH] op-plugin: CatKernelNpuOpApi.cpp.
-      aclnn: aclnnCat.
+      [HIGH] ConcatD never appears in CANN 8.5 vLLM profiling.
+      NPU concat is typically zero-copy view when tensors are contiguous.
+      MoE shared expert path concat is negligible.
 
   "tensor_cast.cat.default":
-    kernel_type: ConcatD
+    zero_cost: true
     notes: >
-      [HIGH] 与 aten.cat.default 相同 kernel; TC 专用 cat op.
+      [HIGH] 与 aten.cat.default 相同; NPU concat is zero-copy view.
 
   "aten.add.Tensor":
     kernel_type: Add
     notes: >
       [HIGH] op-plugin: AddKernelNpuOpApi.cpp.
       aclnn: aclnnAdd. Profiling: Qwen3 CANN 8.5 Add(30x).
+      Known issue: CSV has mixed 1-input (scalar broadcast) and 2-input (tensor+tensor) rows.
+      TC always passes 2 tensors → input_count_mismatch on scalar-broadcast CSV rows.
+      TODO: implement variable-count matching or output-shape matching for elementwise ops.
 
   "aten.to.dtype":
     kernel_type: Cast
@@ -219,6 +223,20 @@ operator_mappings:
 
 
   # ========== 5. MoE 路由 (Token Routing) ==========
+
+  "tensor_cast.dispatch_ffn_combine.default":
+    kernel_type: DispatchFFNCombine
+    tc_input_count: 1
+    notes: >
+      [HIGH] path: C. vllm-ascend v0.15.0 超级融合 MoE op (csrc/dispatch_ffn_combine/).
+      torch binding: torch.ops._C_ascend.dispatch_ffn_combine.
+      aclnn: aclnnDispatchFFNCombine (INT8/W8A8) / aclnnDispatchFFNCombineBF16 (BF16).
+      CANN: OP_ADD(DispatchFFNCombine) in dispatch_ffn_combine_def.cpp. Profiling: DispatchFFNCombine(928x, 35.3%).
+      TC fusion pass (DispatchFFNCombinePass): replaces permute_tokens + grouped_matmul(×N) + unpermute_tokens
+      into single fused op with args (x, expert_indices).
+      TC has 2 tensor args (x, expert_indices); NPU has 7 (x, w1, w2, expert_idx, scale1, scale2, probs).
+      tc_input_count=1: match on x shape (batch, hidden_size) only — weights are model-fixed.
+      shape_flags: [flatten_batch — TC x is 3D (bs, seq, hidden), NPU CSV is 2D (batch, hidden)].
 
   "tensor_cast.permute_tokens.default":
     kernel_type: MoeDistributeDispatchV2
@@ -560,6 +578,8 @@ operator_mappings:
     notes: >
       [MEDIUM] op-plugin: MulKernelNpuOpApi.cpp → aclnnMul.
       MulAiCore: AiCore-accelerated variant (CANN 8.5+). 0313 profiling: Mul(176x), MulAiCore(268x).
+      Known issue: same as aten.add.Tensor — CSV has mixed 1/2-input rows.
+      TODO: variable-count matching for elementwise ops.
 
   "aten.div.Tensor":
     kernel_type: Div
@@ -568,37 +588,46 @@ operator_mappings:
       [MEDIUM] op-plugin: DivKernelNpuOpApi.cpp → aclnnDiv. Qwen3 CANN 8.5 RealDiv(60x).
 
   "aten.sigmoid.default":
-    kernel_type: Sigmoid
+    zero_cost: true
     notes: >
-      [LOW] op-plugin: SigmoidKernelNpuOpApi.cpp → aclnnSigmoid.
+      [HIGH] MoE shared expert gate sigmoid. Sigmoid kernel never appears in CANN 8.5
+      vLLM profiling — negligible elementwise on 1 scalar, fused internally.
 
   "aten.topk.default":
-    kernel_type: TopKV2
+    zero_cost: true
     notes: >
-      [MEDIUM] op-plugin: TopKKernelNpuOpApi.cpp → aclnnTopK.
+      [HIGH] TC MoE routing artifact. NPU fuses top-k into MoeGatingTopK.
+      TopKV2 kernel never appears in CANN 8.5 vLLM profiling.
+      TC's moe_gating_topk op already captures this latency.
 
   "aten.where.self":
-    kernel_type: SelectV2
+    zero_cost: true
     notes: >
-      [LOW] op-plugin: WhereKernelNpuOpApi.cpp → aclnnSWhere.
+      [HIGH] TC MoE routing artifact. SelectV2 never appears in CANN 8.5 vLLM profiling.
+      NPU fuses conditional selection into MoeGatingTopK/DispatchFFNCombine.
 
   "aten.gather.default":
     kernel_type: GatherV2
+    tc_input_count: 2
     notes: >
       [LOW] op-plugin: GatherKernelNpuOpApi.cpp → aclnnGather.
+      tc_input_count=2: CSV has 3 inputs (data, indices, axis); TC has 2 tensors (self, index).
 
   "aten.scatter.value":
     kernel_type: ScatterElementsV2
     alternate_kernel_types: [ScatterElements]
+    tc_input_count: 2
     notes: >
       [HIGH] op-plugin: ScatterKernelNpuOpApi.cpp → aclnnInplaceScatterValue.
       CANN 8.5: 同时产生 LinearIndex 子 kernel (24x, 1:1 对应 ScatterElementsV2).
+      tc_input_count=2: CSV has 3 inputs (self, index, axis); TC has 2 tensors (self, index).
 
   "aten.sum.dim_IntList":
-    kernel_type: ReduceSum
-    alternate_kernel_types: [ReduceSumD]
+    zero_cost: true
     notes: >
-      [HIGH] op-plugin: SumKernelNpuOpApi.cpp → aclnnReduceSum.
+      [HIGH] TC MoE routing artifact. NPU fuses sum into MoeGatingTopK.
+      ReduceSum/ReduceSumD never appear in CANN 8.5 vLLM profiling.
+      TC's moe_gating_topk op already captures this latency.
 
   "aten.clone.default":
     kernel_type: TensorMove
@@ -613,8 +642,10 @@ operator_mappings:
   "aten.index.Tensor":
     kernel_type: Index
     alternate_kernel_types: [GatherV2]
+    tc_input_count: 1
     notes: >
       [HIGH] op-plugin: IndexKernelNpuOpApi.cpp → aclnnIndex. Profiling: Qwen3 CANN 8.5 Index(54x).
+      tc_input_count=1: TC passes self + variable-length index tensors; match on self shape only.
 
   "prims.convert_element_type.default":
     zero_cost: true
@@ -729,27 +760,6 @@ operator_mappings:
   # ========== 21. Profiling-only Placeholder ==========
   # NPU 融合算子: Profiling 中出现但 TensorCast 无对应实现
 
-  "profiling.split_qkv_rmsnorm_rope_kernel":
-    kernel_type: split_qkv_rmsnorm_rope_kernel
-    notes: >
-      [HIGH] vllm-ascend Triton 融合 kernel (QKNormRopeFusionPass).
-      融合 QKV split + per-head RmsNorm + neox RoPE.
-      vllm-ascend: vllm_ascend/ops/triton/linearnorm/split_qkv_rmsnorm_rope.py.
-      TC 分解为独立的 rms_norm + apply_rope; 融合 kernel 无法直接匹配.
-      Profiling: Qwen3 CANN 8.5 split_qkv_rmsnorm_rope_kernel(1890x, 63/64 layers).
-
-  "profiling.KvRmsNormRopeCache":
-    kernel_type: KvRmsNormRopeCache
-    notes: >
-      [HIGH] op-plugin: npu_kv_rmsnorm_rope_cache → aclnnKvRmsNormRopeCache/V2.
-      DSV3 MLA path. TC 分解为 rms_norm + apply_rope + reshape_and_cache.
-
-  "profiling.MoeGatingTopK":
-    kernel_type: MoeGatingTopK
-    notes: >
-      [HIGH] op-plugin: npu_moe_gating_top_k → aclnnMoeGatingTopK.
-      MoE gating; TC 通过 aten.topk 实现.
-
   "profiling.ApplyTopKTopPCustom":
     kernel_type: ApplyTopKTopPCustom
     notes: >
@@ -763,31 +773,11 @@ operator_mappings:
       [LOW] CANN 数字序列随机数生成 (ops-math/random/dsa_random_uniform/).
       Sampling pipeline 内部使用. TC 不模拟.
 
-  "profiling.allgatherAicpuKernel":
-    kernel_type: allgatherAicpuKernel
-    category: communication
-    notes: >
-      [MEDIUM] HCCL AICPU all-gather 变体. Graph 编译时由 HCCL 分派到 AICPU 执行.
-      与 hcom_allGather_ 功能相同, 仅执行路径不同.
-
   "profiling.LinearIndex":
     kernel_type: LinearIndex
     notes: >
       [LOW] CANN 内部子 kernel (ops-nn/index/linear_index/).
       由 aclnnScatter 内部调用, 与 ScatterElementsV2 1:1 对应.
-
-  "profiling.DispatchFFNCombine":
-    kernel_type: DispatchFFNCombine
-    notes: >
-      [HIGH] vllm-ascend v0.15.0 超级融合 MoE op (csrc/dispatch_ffn_combine/).
-      融合: InitRouting + DispatchV2 + 2×MatMul + SwiGlu + CombineV2 + Unpermute.
-      DSv3 CANN 8.5: 路由专家 FFN 全部由此 kernel 执行 (928x, 35.3%).
-      TC 将此分解为 permute_tokens + grouped_matmul_quant×2 + grouped_matmul_quant_swiglu + unpermute_tokens + all_to_all×2.
-      查询策略: TC sub ops 各自查询对应 kernel CSV (GroupedMatmul, MoeDistributeDispatchV2 等);
-      若 CSV 不存在则通过 alternate_kernel_types 回退到 DispatchFFNCombine.csv.
-      注意: 多个 sub ops 同时 fallback 到 DispatchFFNCombine 会导致重复计数.
-      推荐: Phase 2 为 DispatchFFNCombine 单独采集 microbenchmark, 仅让
-      grouped_matmul_quant_swiglu 使用 DispatchFFNCombine alternate, 其余 sub ops 用 analytic fallback.
 
   "profiling.TransData":
     kernel_type: TransData
@@ -799,20 +789,6 @@ operator_mappings:
     kernel_type: BroadcastTo
     notes: >
       [LOW] CANN 广播 kernel. DSv3 CANN 8.5: BroadcastTo(32x). TC 不模拟.
-
-  "profiling.TransposeBatchMatMul":
-    kernel_type: TransposeBatchMatMul
-    notes: >
-      [HIGH] MLA attn_output @ W_UV. DSv3 CANN 8.5: TransposeBatchMatMul(976x).
-      Used as sub_kernel in multihead_latent_attention composite.
-
-  "profiling.BatchMatMulV2":
-    kernel_type: BatchMatMulV2
-    notes: "[HIGH] op-plugin: aclnnBatchMatMul → BatchMatMulV2."
-
-  "profiling.GroupedMatmulSwigluQuant":
-    kernel_type: GroupedMatmulSwigluQuant
-    notes: "[HIGH] Fused MoE gate-up kernel."
 
   "profiling.Transpose":
     kernel_type: Transpose
@@ -894,18 +870,6 @@ operator_mappings:
   "profiling.LogicalNot":
     kernel_type: LogicalNot
     notes: "[LOW] op-plugin: aclnnLogicalNot. 0313 profiling: 14x."
-
-  "profiling.split_qkv_rmsnorm_rope_kernel_0":
-    kernel_type: split_qkv_rmsnorm_rope_kernel_0
-    notes: >
-      [LOW] Variant of split_qkv_rmsnorm_rope_kernel with different Triton grid config.
-      CANN 8.5 Triton JIT may produce _0 suffix variants. 0313 profiling: 315x.
-
-  "profiling._triton_rope_1":
-    kernel_type: _triton_rope_1
-    notes: >
-      [LOW] Variant of _triton_rope with different Triton grid config.
-      0313 profiling: 134x.
 
   "profiling.reshape_and_cache_200000000":
     kernel_type: reshape_and_cache_200000000
