@@ -111,6 +111,7 @@ _FLATTEN_BATCH_KERNELS = frozenset(
         "RmsNorm",
         "AddRmsNormBias",
         "AddRmsNorm",
+        "DispatchFFNCombine",
     }
 )
 

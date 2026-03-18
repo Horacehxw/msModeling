@@ -77,6 +77,41 @@ For top-5 ops by invocation count in TC trace:
 3. Verify that _inputs_match() in profiling_data_source.py would match
 4. Document which shape transforms were needed
 
+### Step 6: tc_input_count Safety Audit
+
+For every op_mapping entry with `tc_input_count` set, verify it's safe. Full rules: `ref/tc_input_count_rules.md`.
+
+For each entry with tc_input_count:
+1. Read the corresponding CSV — check if input count is **fixed** (all rows have same count) or **variable** (mixed 1-input and 2-input rows)
+2. If variable: `tc_input_count` is **UNSAFE** — flag for removal
+3. If fixed and CSV count > TC count by exactly the truncated amount: **SAFE**
+
+**Red flags:**
+- `tc_input_count: 1` on elementwise ops (add, mul, div, sub) — almost always unsafe
+- `tc_input_count` on ops where CSV has mixed broadcast patterns
+- `tc_input_count` set without evidence in notes field
+
+### Step 7: zero_cost Classification Audit
+
+For every `zero_cost: true` entry, verify the classification is correct. Full rules: `ref/zero_cost_classification.md`.
+
+For each zero_cost entry:
+1. Search all profiling kernel_details.csv for the original kernel Type
+2. If Type **found in profiling** → zero_cost is WRONG (should have kernel_type mapping)
+3. If Type **not found** → verify the op's latency is captured by a fused kernel (document which one)
+
+**Red flags:**
+- zero_cost on ops that DO appear in profiling (miscategorized)
+- zero_cost on compute ops without documenting which fusion absorbs them
+- zero_cost on ops > 1% of total invocations without strong justification
+
+### Step 8: Redundant profiling.* Placeholder Audit
+
+Check for profiling.* entries whose kernel_type is already covered by a TC op mapping:
+1. Collect all kernel_types from non-profiling entries (including alternate_kernel_types and sub_kernels)
+2. For each profiling.* entry, check if its kernel_type is in the collected set
+3. If yes → redundant, should be removed (TC op mapping already covers this kernel)
+
 ## Output
 
 Write a verification report as markdown with:

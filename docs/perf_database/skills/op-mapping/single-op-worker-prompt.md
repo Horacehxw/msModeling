@@ -188,9 +188,9 @@ Communication ops bypass op-plugin entirely:
    ```
 6. If no TC equivalent exists → create a `profiling.<Type>` placeholder entry
 
-## 8 Shape Differences Checklist
+## 10 Shape Differences Checklist
 
-After determining the mapping, flag which shape transforms apply to this op. The profiling_data_source.py `_inputs_match()` method handles these automatically, but workers must document them for correctness verification.
+After determining the mapping, flag which shape transforms apply to this op. The profiling_data_source.py `_inputs_match()` method handles these automatically, but workers must document them for correctness verification. Full details: `ref/shape_matching_catalog.md`.
 
 - [ ] **Batch dim strip**: TC keeps `(1, S, D)`, NPU drops to `(S, D)`. Applies to most 3D→2D ops.
 - [ ] **Seq padding**: TC pads sequence to block alignment (16/32/64). NPU records raw length. Applies to matmul, norm ops.
@@ -200,6 +200,39 @@ After determining the mapping, flag which shape transforms apply to this op. The
 - [ ] **RoPE layout transpose**: TC `(B,H,S,D)` with `[Q,K,cos,sin]` order. NPU `(B,S,H,D)` with `[K,Q,cos,sin]`. Applies to InterleaveRope, ApplyRotaryPosEmb.
 - [ ] **RoPE alternate kernels**: TC has one `apply_rope` op, NPU has InterleaveRope (interleave mode) and ApplyRotaryPosEmb (neox mode). Use `alternate_kernel_types`. Note: Some CANN versions may replace Triton-based RoPE kernels with native CANN fusions — verify against profiling data.
 - [ ] **Composite decomposition**: TC fused op (e.g., matmul_all_reduce) maps to separate NPU kernels. Use `composite: true` + `sub_kernels`.
+- [ ] **Flatten batch**: TC `(B, M, D)` → NPU `(B*M, D)`. Applies to quantize/norm/DFC kernels. Kernel must be in `_FLATTEN_BATCH_KERNELS`.
+- [ ] **Merge last dims**: TC `(T, H, D)` → NPU `(T, H*D)`. Applies to MLA quantize (per-head → hidden_dim). Kernel must be in `_MERGE_LAST_DIMS_KERNELS`.
+
+## tc_input_count Decision Guide
+
+When TC tensor input count differs from CSV, decide whether to add `tc_input_count`. Full rules: `ref/tc_input_count_rules.md`.
+
+**SAFE — CSV extras are NPU-internal fixed params:**
+```yaml
+# Scatter: CSV has (self, index, axis); TC has (self, index)
+tc_input_count: 2   # truncate axis — it's a CANN-internal param
+```
+
+**UNSAFE — CSV extras are variable broadcast operands:**
+```yaml
+# Add: CSV has 1-input (scalar broadcast) AND 2-input (element-wise) rows
+# tc_input_count: 1 would match scalar-broadcast row → 30% latency underestimate
+# → Do NOT set tc_input_count. Let it MISS. Analytic fallback is safer.
+```
+
+**Decision rule**: Is the CSV extra input a **fixed NPU param** (axis, scale)? → Safe. Is it a **variable operand** (broadcast pattern)? → Unsafe.
+
+## zero_cost Classification Guide
+
+Some ops should be `zero_cost: true` instead of `kernel_type`. Full rules: `ref/zero_cost_classification.md`.
+
+**Mark zero_cost when:**
+1. The kernel Type **never appears** in profiling data, AND
+2. The op's latency is **already captured** by a fused kernel (e.g., MoeGatingTopK absorbs topk+sum+sigmoid+where)
+
+**Do NOT mark zero_cost when:**
+- The kernel Type exists in profiling but CSV data hasn't been collected yet (= data gap, not fusion)
+- The op has independent latency not captured by any fusion (= needs its own kernel_type)
 
 ## General Search Hints
 

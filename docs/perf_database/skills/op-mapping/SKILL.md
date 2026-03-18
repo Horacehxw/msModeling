@@ -45,9 +45,11 @@ Teach these to all sub-agents:
 1. **Profiling Name 3-part structure**: `aclnnAPI_DispatchFunc_L0OpType` — the 3rd segment = Profiling Type = our lookup key
 2. **Type column = OPTYPE** from CANN `op_host/CMakeLists.txt` = CSV filename for database query
 3. **Three paths**: A (aten→op-plugin→aclnn), B (torch_npu.npu_*→op-plugin→aclnn), C (vllm-ascend custom/triton)
-4. **8 shape differences** between TC tensors and NPU profiling shapes (see worker prompt)
+4. **10 shape differences** between TC tensors and NPU profiling shapes (see worker prompt + `ref/shape_matching_catalog.md`)
 5. **Mutually exclusive**: `kernel_type` vs `composite` vs `zero_cost` — exactly one per entry
 6. **Communication ops** use message_bytes + num_devices, NOT shape matching
+7. **tc_input_count safety**: Only safe for truncating NPU-internal params (axis, scale), NOT for elementwise broadcast ops. See `ref/tc_input_count_rules.md`
+8. **zero_cost classification**: Must verify kernel Type never appears in profiling AND latency is captured by a fused kernel. See `ref/zero_cost_classification.md`
 
 ---
 
