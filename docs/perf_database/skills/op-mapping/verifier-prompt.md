@@ -90,6 +90,7 @@ For each entry with tc_input_count:
 - `tc_input_count: 1` on elementwise ops (add, mul, div, sub) — almost always unsafe
 - `tc_input_count` on ops where CSV has mixed broadcast patterns
 - `tc_input_count` set without evidence in notes field
+- `query_mode: elementwise` combined with `tc_input_count` — mutually exclusive, elementwise ops must not have tc_input_count
 
 ### Step 7: zero_cost Classification Audit
 

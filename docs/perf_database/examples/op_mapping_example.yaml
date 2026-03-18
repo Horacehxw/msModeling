@@ -103,10 +103,12 @@ operator_mappings:
 
   "aten.add.Tensor":
     kernel_type: Add
+    query_mode: elementwise
     notes: >
       [HIGH] op-plugin: YAML:784 / AddKernelNpuOpApi.cpp.
       aclnn: aclnnAdd.
       Profiling: DSV3 Decode Add(7545x, 残差连接 + 偏置加法).
+      query_mode=elementwise: output-shape matching with byte-ratio dtype scaling.
 
   "aten.to.dtype":
     kernel_type: Cast

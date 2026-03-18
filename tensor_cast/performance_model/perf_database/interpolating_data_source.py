@@ -16,11 +16,13 @@ import torch
 
 from .data_source import DataSource, QueryResult, QuerySource
 from .profiling_data_source import (
-    DTYPE_MAP,
-    ProfilingDataSource,
+    _dtype_byte_size,
     _normalize_func_name,
     _parse_shape_str,
     _parse_str_list,
+    _strip_batch_dim,
+    DTYPE_MAP,
+    ProfilingDataSource,
 )
 
 if TYPE_CHECKING:
@@ -37,9 +39,7 @@ def _interp_1d(x0: float, y0: float, x1: float, y1: float, target_x: float) -> f
     return y0 + t * (y1 - y0)
 
 
-def _find_bracket(
-    values: List[float], target: float
-) -> Optional[Tuple[float, float]]:
+def _find_bracket(values: List[float], target: float) -> Optional[Tuple[float, float]]:
     """Find (left, right) values that bracket target. Returns None if can't bracket."""
     below = [v for v in values if v <= target]
     above = [v for v in values if v >= target]
@@ -84,6 +84,8 @@ class InterpolatingDataSource(DataSource):
             return self._interpolate_comm(op_invoke_info, mapping)
         if mapping.get("query_mode") == "attention_special":
             return self._interpolate_attention(op_invoke_info, mapping)
+        if mapping.get("query_mode") == "elementwise":
+            return self._interpolate_elementwise(op_invoke_info, mapping)
         return self._interpolate_compute(op_invoke_info, mapping)
 
     # ---- Compute interpolation ----
@@ -297,6 +299,83 @@ class InterpolatingDataSource(DataSource):
         return self._interpolate_from_candidates(
             candidates, float(avg_seq_len), kernel_type
         )
+
+    # ---- Elementwise interpolation ----
+
+    def _interpolate_elementwise(
+        self, op_invoke_info: "OpInvokeInfo", mapping: dict
+    ) -> Optional[QueryResult]:
+        """Interpolate elementwise ops on first dim of output shape, dtype-relaxed.
+
+        Groups CSV rows by output_shape[1:] (hidden dims must match exactly).
+        Collects (output_shape[0], latency_scaled) candidates and interpolates
+        on the first dim (num_tokens). Byte-ratio scaling applied per-candidate
+        before interpolation.
+        """
+        kernel_type = mapping.get("kernel_type")
+        if not kernel_type:
+            return None
+
+        df = self.base._load_csv(kernel_type)
+        if df is None:
+            return None
+
+        # NOTE: OpInvokeInfo uses .out (not .output); aten ops may return tuple.
+        out = op_invoke_info.out
+        if isinstance(out, (list, tuple)):
+            out = out[0] if out else None
+        if out is None or not isinstance(out, torch.Tensor) or out.ndim == 0:
+            return None
+
+        output_shape = _strip_batch_dim(tuple(out.shape))
+        if len(output_shape) < 1:
+            return None
+        target_dim = float(output_shape[0])
+        tc_dtype_str = DTYPE_MAP.get(out.dtype)
+
+        latency_col = self.base._latency_col(df)
+        has_dtype_scaling = False
+
+        candidates: List[Tuple[float, float]] = []
+        for _, row in df.iterrows():
+            csv_out_shapes = _parse_shape_str(str(row.get("Output Shapes", "")))
+            csv_out_dtypes = _parse_str_list(str(row.get("Output Data Types", "")))
+            if not csv_out_shapes:
+                continue
+
+            csv_shape = _strip_batch_dim(tuple(csv_out_shapes[0]))
+
+            # Hidden dims must match (everything except first dim)
+            if len(csv_shape) != len(output_shape) or csv_shape[1:] != output_shape[1:]:
+                continue
+
+            # Compute byte-ratio scaled latency
+            latency = float(row[latency_col])
+            csv_dtype_str = csv_out_dtypes[0] if csv_out_dtypes else None
+            if csv_dtype_str and tc_dtype_str and csv_dtype_str != tc_dtype_str:
+                tc_bytes = _dtype_byte_size(tc_dtype_str)
+                csv_bytes = _dtype_byte_size(csv_dtype_str)
+                if tc_bytes > 0 and csv_bytes > 0:
+                    latency *= tc_bytes / csv_bytes
+                    has_dtype_scaling = True
+
+            candidates.append((float(csv_shape[0]), latency))
+
+        if len(candidates) < 2:
+            return None
+
+        candidates.sort(key=lambda x: x[0])
+        # Confidence: 0.6 if dtype-scaled (combining dtype approximation + interpolation),
+        # 0.7 if same dtype (standard interpolation confidence).
+        result = self._interpolate_from_candidates(candidates, target_dim, kernel_type)
+        if result is not None and has_dtype_scaling:
+            result = QueryResult(
+                latency_us=result.latency_us,
+                confidence=0.6,
+                source=result.source,
+                details={**result.details, "dtype_scaled": True},
+            )
+        return result
 
     # ---- Shared interpolation helpers ----
 

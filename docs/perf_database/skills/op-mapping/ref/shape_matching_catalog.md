@@ -67,6 +67,14 @@ TC 模拟的张量形状与 NPU profiling CSV 的形状存在系统性差异。
 - **处理**: `_MERGE_LAST_DIMS_KERNELS` 集合
 - **适用**: AscendQuantV2, DynamicQuant (MLA 输出量化路径)
 
+### 11. 输出形状匹配 (Output-shape matching for elementwise ops)
+- **TC**: 匹配输出形状, 任何输入广播模式
+- **NPU**: 输出形状确定 (CSV `Output Shapes` 列)
+- **Dtype**: 松弛 — 按字节比缩放延迟 (FP32/BF16 = 4/2 = 2×)
+- **处理**: `query_mode: elementwise` → `_lookup_elementwise()` / `_interpolate_elementwise()`
+- **适用**: Add, Mul, Div (内存带宽受限的逐元素算子)
+- **与 tc_input_count 互斥**: 设置 `query_mode: elementwise` 后不得设置 `tc_input_count`
+
 ## 新增形状规则的流程
 
 1. 在 E2E 验证中发现 `shape_mismatch` MISS

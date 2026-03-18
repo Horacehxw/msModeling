@@ -57,6 +57,17 @@
     TC decomposes into: <list of TC ops>.
     vllm-ascend: <source_file> -> <torch_npu_api or triton_kernel>.
 
+# --- Variant F: Elementwise Op (output-shape matching) ---
+"aten.<elementwise_op>.Tensor":
+  kernel_type: <ProfilingType>
+  query_mode: elementwise          # Match on output shape, dtype-relaxed
+  # alternate_kernel_types: [...]  # Optional: AiCore variants
+  notes: >
+    [HIGH|MEDIUM] path: A.
+    op-plugin: <ImplFile.cpp>. aclnn: <aclnn_name>.
+    query_mode=elementwise: output-shape matching with byte-ratio dtype scaling.
+    Applicable to memory-bound elementwise ops (add, mul, div, sub).
+
 # ============================================================
 # torch_npu_reference entry (for microbenchmark script generation)
 # ============================================================

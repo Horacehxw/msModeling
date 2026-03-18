@@ -50,6 +50,7 @@ Teach these to all sub-agents:
 6. **Communication ops** use message_bytes + num_devices, NOT shape matching
 7. **tc_input_count safety**: Only safe for truncating NPU-internal params (axis, scale), NOT for elementwise broadcast ops. See `ref/tc_input_count_rules.md`
 8. **zero_cost classification**: Must verify kernel Type never appears in profiling AND latency is captured by a fused kernel. See `ref/zero_cost_classification.md`
+9. **Elementwise query_mode**: For memory-bound elementwise ops (add, mul, div), use `query_mode: elementwise` to match on output shape with dtype-relaxed byte-ratio scaling. See `ref/shape_matching_catalog.md` Type 11.
 
 ---
 
