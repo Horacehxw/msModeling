@@ -13,6 +13,8 @@
 # generated profiling data (tools/perf_data_collection output)
 perf_database/data/
 temp/
+temp1/
+temp2/
 
 # perf_database YAML tracked by git, CSV tracked by git-lfs (see .gitattributes)
 # Do NOT ignore tensor_cast/performance_model/perf_database/data/
@@ -24,3 +26,8 @@ docs/perf_database/plans/
 docs/superpowers/
 docs/perf_database/issues/
 
+# Auto-generated microbench scripts (output of generate_microbench.py)
+tools/perf_data_collection/generated_microbench/
+
+# msprof profiling output (op_replay pipeline)
+PROF_*/
