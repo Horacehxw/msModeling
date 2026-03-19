@@ -19,10 +19,12 @@ import sys
 from pathlib import Path
 
 # Fixed overhead corrections (us) from bench_vs_profiler report Section 1.
-# Applied only to kernel-mode data (which measures pure hcom_* Duration
-# without AicpuKernel). allReduce uses profiler-batch (operator_details
-# Device Total Duration, already includes AicpuKernel) so no overhead needed.
+# These represent vLLM production dispatch overhead (scheduler dispatch →
+# c10d wrapper → HCCL group lookup → stream sync) that exists in production
+# but not in bench's isolated single-op execution. Applied to all bench modes
+# (both kernel and profiler-batch) since neither includes this overhead.
 OVERHEAD = {
+    "allReduce": {16: 7.7},
     "allGather": {16: 14.6, 8: 1.2},
     "reduceScatter": {16: 14.6, 8: 2.0},
 }
@@ -95,14 +97,23 @@ def build_index(rows: list[dict]) -> dict[tuple[int, int], dict]:
 
 
 def build_allreduce(alt_rows: list[dict]) -> list[dict]:
-    """Build allReduce output from alternating data.
+    """Build allReduce output: alternating data + fixed dispatch overhead.
 
     allReduce has no peer in alternating mode, so it falls back to
-    profiler-batch which parses operator_details Device Total Duration.
-    This already includes AicpuKernel overhead, so NO additional fixed
-    overhead is applied (unlike kernel-mode data for allGather/reduceScatter).
+    profiler-batch (operator_details Device Total Duration). The bench value
+    does NOT include vLLM production dispatch overhead (scheduler → c10d →
+    HCCL group lookup → stream sync), so we add the fixed overhead here.
     """
-    return [dict(row) for row in alt_rows]
+    result = []
+    for row in alt_rows:
+        r = dict(row)
+        nd = r["num_devices"]
+        overhead = OVERHEAD["allReduce"].get(nd, 0.0)
+        if overhead > 0:
+            r["Duration(us)"] = round(r["Duration(us)"] + overhead, 2)
+            r["bandwidth_gbps"] = calc_bandwidth(r["message_bytes"], r["Duration(us)"])
+        result.append(r)
+    return result
 
 
 def build_allgather(
