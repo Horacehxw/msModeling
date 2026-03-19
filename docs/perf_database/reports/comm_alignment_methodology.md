@@ -1,242 +1,204 @@
-# 通信算子数据对齐方法论
+# 通信算子耗时建模方法论
 
-**版本**：v3.1
-**日期**：2026-03-14
+**版本**：v6.0
+**日期**：2026-03-19
 **作者**：HDY
-**适用场景**：验证 HCCL microbenchmark 采集数据与 vLLM-ascend 生产环境 Profiling 数据的一致性
+**适用场景**：HCCL 通信算子耗时预测建模，bench 对齐 Comm_NO
+**数据来源**：profiler-qwen3-0314 + profiler-dsv3-0316 + hccl_bench_v8.5（alternating/kernel/event/pipeline/profiler 五模式）
 
-> **v3.1 更新**：AIV 模式微基准验证完成，确认 AIV 对独立微基准无显著影响（0.9-1.3x）。
-> bench-profiling gap 根因为 profiling Duration 语义差异，而非环境配置问题。
-> v2.0 基于 enforce-eager 非生产环境，结论已失效。
+> **v6.0 更新**：基于 0318 bench 五模式全面验证，确立 alternating 模式为默认推荐。
+> alternating 模式消除 1-5MB 预热偏高（从 19-63% 高估降至 ±3%）；
+> kernel 模式用于 <1MB 小消息（event 底噪 ~60us 淹没真实值）；
+> 新增固定开销修正用于 decode 小消息场景。
+
+## 1. E2E 时间模型
+
+### 1.1 TensorCast 串行求和
+
+TensorCast 通过 `Runtime` 拦截所有算子，逐个查询 `PerformanceModel` 获取耗时，纯串行求和：
+
+```
+T_total = Σ T_compute + Σ T_comm
+```
+
+其中 `T_comm` 由 `DataSource.lookup()` 查 bench CSV 获得。
+
+### 1.2 实际 Stage 时间
+
+step_trace 记录的实际 Stage 时间：
+
+```
+Stage = Computing + Comm_NO + Free
+      = T_total × overhead_factor
+
+overhead_factor = 1 + Free / (Computing + Comm_NO)
+```
+
+| 场景 | overhead_factor | Free 占比 | 特征 |
+|------|----------------|----------|------|
+| Qwen3 Prefill ISL=1024 | 1.315x | 24.0% | Dense, 短 ISL, 调度开销大 |
+| Qwen3 Prefill ISL=4096 | 1.198x | 16.6% | Dense, 长 ISL |
+| Qwen3 Decode c1 | 1.073x | 6.8% | 图模式, 调度开销小 |
+| DSV3 Prefill ISL=1024 | 1.029x | 2.8% | MoE, 计算密集 |
+| DSV3 Prefill ISL=4096 | 1.039x | 3.7% | MoE, 计算密集 |
+| DSV3 Decode c1 | 1.048x | 4.6% | MoE, 图模式 |
+
+规律：Decode < Prefill，MoE < Dense。overhead_factor 在 ModelRunner 层应用，不进入单算子建模。
 
 ---
 
-## 1. 背景与目标
+## 2. 三层 Duration 模型
 
-HCCL microbenchmark（`generate_comm_microbench.py`）采集的是**纯通信时间**（单独 torchrun，无 compute 负载）。vLLM-ascend Profiling 采集的是**端到端推理中通信 kernel 的 Duration**。
+通信算子的耗时存在三个测量层级：
 
-**v3.1 关键发现**：AIV 模式对独立 HCCL 微基准无显著加速效果（加速比 0.9-1.3x）。bench-profiling gap 的根因是 **profiling Duration 语义差异**——CUDAGraph/async-scheduling 下 Duration 不代表完整集合通信 wall-clock 时间，MoE EP 场景下 Duration 包含隐式协调等待。bench CSV 测量纯通信时间，与 profiling Duration 测量的不是同一物理量。
+| 层级 | 测量方式 | 包含内容 | 数据源 |
+|------|---------|---------|--------|
+| kernel_details | NPU timeline | hcom_kernel（HCCL 数据传输） | `kernel_details.csv` |
+| operator_details | operator timeline | AicpuKernel + hcom_kernel | `operator_details.csv` c10d::* |
+| bench (alternating) | host perf_counter | peer 流水执行，消除预热偏高 | microbench CSV |
 
-对齐目标：确认 microbenchmark 数据在合理范围内，可作为 `EmpiricalPerformanceModel` 的通信查询数据源。
+### 2.1 operator_details 的物理分解
+
+```
+operator_details (Device Total Duration) = AicpuKernel + hcom_kernel
+```
+
+| 模型 | AicpuKernel | 关系 |
+|------|------------|------|
+| DSV3 (CANN 8.5) | = 0 | operator = kernel |
+| Qwen3 (CANN 8.5) | > 0 (reduceScatter avg 319us, allGather avg 618us) | operator > kernel (1.4x~6.7x) |
+
+AicpuKernel 是否存在取决于模型/CANN 版本/通信算子实现，不能假设为 0。
 
 ---
 
-## 2. 环境一致性要求（v3.1 更新）
+## 3. 恒等关系验证
 
-**微基准采集建议开启与 vLLM 生产环境一致的环境变量**：
+### 3.1 恒等关系 1：Communication = Σ kernel_details hcom_*（去 AivKernel）— 精确成立
+
+全部 18 个场景（Qwen3 × 8 + DSV3 × 10）hcom/Comm = 1.0000，无一例外。
+
+AivKernel 条目的 Type 列也标记为 hcom_*，朴素求和会双重计数。去重后精确等于 Communication。
+
+### 3.2 恒等关系 2：Comm_NO = Σ operator_details — 仅部分成立
+
+operator_details 存在三层嵌套：`c10d::_allgather_base_` → `HcclAllGatherBase` → `HcclAllGather`，每层记录几乎相同的 Device Total Duration。取最底层 `Hccl*(不含Base)` 去重后：
+
+| 场景 | Hccl*(去重) | COMM_NO | ratio | 原因 |
+|------|------------|---------|------:|------|
+| DSV3 Decode conc=8 | 652.6ms | 652.1ms | 1.001x | Overlap≈0，精确成立 |
+| DSV3 Decode conc=1 | 1,799ms | 1,798ms | 2.001x | 嵌套 double counting |
+| Qwen3 Prefill input4096 | 3.40s | 1.47s | 2.319x | operator Duration 含被 compute overlap 遮盖的部分 |
+| Qwen3 Prefill input1024 | 17.81s | 2.69s | 6.623x | 同上，overlap 比例更高 |
+| Qwen3 Decode conc=1 | 3.5ms | 667.6ms | 0.005x | allReduce 走 CUDAGraph 不在 operator_details 中 |
+
+**根因**：operator_details Device Total Duration 是每次调用的完整 wall-clock Duration（含被 overlap 遮盖的部分），而 COMM_NO 是 step_trace 级别的未被 overlap 通信时间。两者语义不同，仅在 Overlap≈0 时相等。
+
+### 3.3 正确的关系链
+
+```
+Communication (step_trace) = Σ kernel_details hcom_* (去 AivKernel)  [精确，全部 18 场景]
+COMM_NO = Communication - Overlapped                                  [精确，step_trace 定义]
+operator_details ≠ COMM_NO                                            [仅 Overlap≈0 时相等]
+```
+
+---
+
+## 4. Bench 采集模式分析（v6.0 新增）
+
+### 4.1 五种 bench 模式概述
+
+| 模式 | 计时方式 | 特点 |
+|------|---------|------|
+| event | NPU Event 包围单次调用 | 含同步开销，小消息底噪 ~60us |
+| kernel | profiler 采集 hcom_kernel Duration | 纯 HCCL 传输时间，无同步开销 |
+| pipeline | host perf_counter 100 次无逐次 sync | 稳态吞吐，预热偏高 |
+| profiler | profiler 采集 operator_details Duration | 含 AicpuKernel |
+| alternating | peer 算子交替流水执行 | 消除预热偏高，推荐默认模式 |
+
+### 4.2 alternating 模式核心优势
+
+alternating 模式让目标算子与 peer 算子交替执行（如 allGather + reduceScatter 流水），消除了 pipeline 模式中 1-5MB 消息的预热偏高问题：
+
+- pipeline 模式在 1-5MB 范围高估 19-63%
+- alternating 模式在相同范围误差 ±3%
+- 大消息（≥3.5MB）两种模式趋同
+
+### 4.3 kernel 模式用于小消息
+
+对于 <1MB 的小消息，event 模式底噪 ~60us 远大于实际 kernel 时间（如 allReduce nd=16 kernel 仅 ~13us），因此小消息必须使用 kernel 模式获取纯 HCCL 传输时间。
+
+### 4.4 固定开销修正
+
+decode 场景小消息的 profiling P50 = bench kernel + 固定开销（调度/同步/AicpuKernel）：
+
+| 模型 | 算子 | nd | 固定开销 |
+|------|------|---:|--------:|
+| Qwen3 | allReduce | 16 | +7.7us |
+| Qwen3 | allGather | 16 | +14.6us |
+| DSV3 | allGather | 8 | +1.2us |
+| DSV3 | reduceScatter | 8 | +2.0us |
+
+### 4.5 HCCL 协议切换异常
+
+DSV3 prefill allGather 768KB（nd=8, per_device ≈ 60KB）处于 HCCL 协议切换点，bench 无法复现此行为，需直接使用 profiler P50。
+
+---
+
+## 5. 仿真策略总表（v6.0 新增）
+
+| 模型 | 阶段 | 算子 | msg_bytes 范围 | 策略 | 数据来源 |
+|------|------|------|--------------|------|---------|
+| Qwen3 | decode | allReduce | 所有 | bench + 固定开销 | alternating (profiler fallback) + 7.7us |
+| Qwen3 | decode | allGather | 所有 | bench + 固定开销 | kernel (profiler) + 14.6us |
+| Qwen3 | prefill | allGather | ≥1.26MB | 直接用 bench | alternating（误差 ±6%）|
+| Qwen3 | prefill | reduceScatter | ≥1.26MB | 直接用 bench | alternating（误差 ±3%）|
+| DSV3 | decode | allGather | ≤126KB (c=8) | bench + 固定开销 | kernel (profiler) + 1.2us |
+| DSV3 | decode | reduceScatter | 14KB (c=8) | bench + 固定开销 | kernel (profiler) + 2.0us |
+| DSV3 | prefill | allGather | 768KB | 用 profiler P50 | HCCL 协议切换点，bench 无法复现 |
+| DSV3 | prefill | allGather | ≥3.5MB | 直接用 bench | alternating（误差 ±3%）|
+| DSV3 | prefill | reduceScatter | ≥3.5MB | 直接用 bench | alternating（误差 ±2%）|
+
+---
+
+## 6. Bench 模式选择指南（v6.0 新增）
+
+| 算子 | 推荐模式 | 原因 |
+|------|---------|------|
+| allGather | alternating | peer=reduceScatter 流水执行，消除预热偏高 |
+| reduceScatter | alternating | peer=allGather 流水执行，消除预热偏高 |
+| allReduce | alternating (自动 profiler fallback) | 无 peer，NPU Event 底噪 ~270us 远大于 kernel 时间 ~13us |
+| all_to_all | kernel 或 event | 无 peer，按需选择 |
+
+关键结论：
+
+1. alternating 模式消除 1-5MB 预热偏高（从 19-63% 高估降至 ±3%）
+2. kernel 模式用于 <1MB 小消息（event 底噪 ~60us 淹没真实值）
+3. 固定开销修正用于 decode 小消息（bench kernel + offset = profiling P50）
+4. HCCL 协议切换点（768KB nd=8, per_device ≈ 60KB）需用 profiler P50
+5. allReduce 无 peer 算子，alternating 自动 fallback 到 profiler 模式
+
+---
+
+## 7. 环境一致性要求
 
 ```bash
-export HCCL_OP_EXPANSION_MODE="AIV"   # 建议（实测对独立微基准影响 <30%）
+export HCCL_OP_EXPANSION_MODE="AIV"   # 建议
 export TASK_QUEUE_ENABLE=1             # 建议
 ```
 
-**v3.1 验证结论**：AIV 模式对独立 HCCL 微基准无显著加速效果（加速比 0.9-1.3x，详见 [对齐报告 §4.1](comm_alignment_report_20260312.md#41-aiv-模式验证)）。
-
-开启 AIV 仍然是最佳实践（保持环境一致），但**不开启不会导致数据不可用**。
-
 ---
 
-## 3. 对齐方法
+## 8. 对比 Checklist（v6.0 更新）
 
-### 3.1 整体流程
+- [ ] 恒等关系 1：验证 Communication = Σ kd hcom（去 AivKernel），应精确 1.0000
+- [ ] 恒等关系 2：检查 Overlap 是否≈0，仅此时 operator_details ≈ COMM_NO
+- [ ] bench 模式选择：allGather/reduceScatter 用 alternating，allReduce 用 alternating (profiler fallback)
+- [ ] 小消息（<1MB）：使用 kernel 模式 + 固定开销修正
+- [ ] 大消息（≥3.5MB）：直接用 alternating bench 值
+- [ ] DSV3 768KB allGather：使用 profiler P50（HCCL 协议切换异常）
+- [ ] 确认 operator_details 嵌套去重（取 Hccl* 不含 Base）
+- [ ] Qwen3 Decode：allReduce 可能不在 operator_details 中（CUDAGraph）
+- [ ] DSV3：注意 MoE 通信方差大（P10 vs P90 差 10-100x）
+- [ ] 详细数据见 [bench_vs_profiler_comm_20260318.md](bench_vs_profiler_comm_20260318.md)
 
-```
-Profiling kernel_details.csv
-        │
-        ▼
-① 提取通信算子耗时（hcom_* kernel，去 AivKernel 重复）
-        │
-        ▼
-② 推算 message_bytes（从 operator_details Input Shapes）
-        │
-        ▼
-③ 从 microbench CSV 插值得到对应 message_bytes 的预测耗时
-        │
-        ▼
-④ 计算 ratio = Profiling / Microbench，判断 PASS/WARN/FAIL
-```
-
-### 3.2 步骤详解
-
-#### ① 提取 Profiling 通信算子耗时
-
-从 `kernel_details.csv` 按 `Name` 前缀过滤：
-
-| Name 前缀 | 对应算子 |
-|-----------|---------|
-| `hcom_allReduce_` | AllReduce |
-| `hcom_allGather_` | AllGather |
-| `hcom_reduceScatter_` | ReduceScatter |
-| `hcom_alltoallv_` | AllToAll |
-
-**名称归一化**：kernel 名称带唯一后缀（如 `hcom_allGather__503_0_1`），需用正则 `hcom_\w+?_\d+_\d+_\d+` 归一化为基础名。
-
-**稳态耗时**：取 p10-p90 区间的中位数：
-
-```python
-def stable_median(durs):
-    s = sorted(durs)
-    lo, hi = int(len(s) * 0.1), int(len(s) * 0.9)
-    return statistics.median(s[lo:hi])
-```
-
-#### ② 推算 message_bytes
-
-**优先从 operator_details.csv 获取**：`c10d::_allgather_base_` / `c10d::_reduce_scatter_base_` 的 `Input Shapes` 字段包含实际 tensor shape。
-
-```python
-# operator_details.csv 中 c10d 算子的 Input Shapes 格式：
-# "2565,5120;41040,5120;;\n;\n"  (分号分隔多个输入)
-# 取第一个 shape，计算 elements * bytes_per_element
-first_shape = row['Input Shapes'].split(';')[0].strip()
-dims = [int(x) for x in first_shape.split(',')]
-msg_bytes = math.prod(dims) * 2  # BF16 = 2 bytes
-```
-
-**kernel_details.csv 中通信算子的 Input Shapes 为 N/A**，不可用。
-
-**备选：从模型配置反推**（当 operator_details 不可用时）：
-
-| 算子 | message_bytes | 说明 |
-|------|-------------|------|
-| AllGather (SP prefill) | `(seq_len/tp) × hidden × 2` | per-rank chunk |
-| ReduceScatter (SP prefill) | `seq_len × hidden × 2` | 全量 tensor |
-| AllReduce (decode) | `batch × hidden × 2` | RowParallelLinear 输出 |
-
-#### ③ microbench CSV 插值
-
-对目标 message_bytes 做**对数线性插值**：
-
-```python
-def interp_bench(rows, msg_bytes, n_dev, tier):
-    candidates = [(mb, d) for mb, nd, t, d in rows if nd == n_dev and t == tier]
-    candidates.sort()
-    for i in range(len(candidates) - 1):
-        mb0, d0 = candidates[i]
-        mb1, d1 = candidates[i + 1]
-        if mb0 <= msg_bytes <= mb1:
-            t = (math.log(msg_bytes) - math.log(mb0)) / (math.log(mb1) - math.log(mb0))
-            return d0 + t * (d1 - d0)
-```
-
-#### ④ 判断标准
-
-| ratio = Profiling / Microbench | 结论 |
-|-------------------------------|------|
-| 0.5x ～ 2.0x | **PASS** |
-| 0.25x ～ 4.0x | **WARN** |
-| 其他 | **FAIL**：需排查根因 |
-
-**v3.1 注意**：ratio < 0.5x（profiling 比 bench 快）通常意味着 profiling Duration 受 CUDAGraph pipeline/overlap 影响，不代表完整集合通信时间。ratio > 2.0x 通常意味着 profiling Duration 包含隐式等待（如 MoE EP 协调）。
-
----
-
-## 4. 已知干扰因素
-
-### 4.1 Profiling Duration 语义差异（v3.1 更新，最重要）
-
-profiling kernel_details 中通信 kernel 的 Duration 在不同执行模式下语义不同，这是 bench-profiling gap 的根因：
-
-1. **CUDAGraph + async-scheduling 下**（如 Qwen3 decode）：通信 kernel 可能被 pipeline 化或与 compute overlap，Duration 不代表完整集合通信 wall-clock 时间，而是 NPU 上该 kernel 的实际执行片段。表现为 profiling 远快于 bench（ratio 0.05-0.22x）。
-
-2. **MoE EP 场景**（如 DSV3 decode）：reduceScatter Duration 包含 expert parallel 协调等待（跨 DP group 的 token dispatch/combine 同步）。14KB 消息量不应需要 5.6ms 纯通信。表现为 profiling 远慢于 bench（ratio 9-20x）。
-
-3. **SP prefill reduceScatter**（如 Qwen3 prefill）：在 compute 之后串行执行，Duration 语义最接近纯通信时间。ratio 1.28-1.57x，在合理范围内。
-
-**结论：bench CSV 数据质量可靠，但不能直接与 profiling Duration 对比。** 两者测量的不是同一个物理量。
-
-> ~~v3.0 原结论~~：AIV 模式差异是最重要的干扰因素。**已证伪**——AIV 对独立微基准无显著影响（0.9-1.3x）。
-
-### 4.2 CUDAGraph 对 Decode 通信的影响
-
-生产环境使用 `FULL_DECODE_ONLY` CUDAGraph，decode 阶段的 kernel launch overhead 被消除，通信 kernel 的 Duration 更接近纯数据传输时间。非 CUDAGraph（enforce-eager）模式下 Duration 包含更多调度等待。
-
-### 4.3 AivKernel 重复记录
-
-同一次通信可能产生两条记录（主 kernel + AivKernel），Duration 相同。统计时需去重。
-
-### 4.4 HCCL JIT 编译开销
-
-首次运行某个 message_size 时触发 JIT 编译，耗时可达正常值 10x。microbench 通过 `WARMUP_ITERS=20` 规避，Profiling 取 p10-p90 稳态中位数去除。
-
-### 4.5 topology_tier 推断
-
-- ATLAS_800_A3 单节点 16 卡：tier=1（intra_pod）
-- 同节点 2 卡（同 die）：tier=2（die_level）
-- 跨节点：tier=0（inter_pod）
-
-### 4.6 DSV3 特有因素
-
-1. **MC2 融合**：DSV3 TP 通信走 `matmul_allreduce` 融合算子，无独立 allReduce
-2. **DispatchFFNCombine 封装 EP 通信**：alltoall 无独立记录
-3. **MoE 通信方差大**：prefill 阶段 allGather P10=29us vs P90=2785us，与 expert 负载不均有关
-
-### 4.7 四算子可观测性（v3.0 更新）
-
-| 算子 | Qwen3-32B | DSV3 |
-|------|-----------|------|
-| allGather | hcom_allGather_ | hcom_allGather_ |
-| reduceScatter | hcom_reduceScatter_ | hcom_reduceScatter_ |
-| allReduce | hcom_allReduce_ | 不存在（MC2 融合） |
-| allToAll | 不存在（dense 模型） | 不存在（DispatchFFNCombine 封装） |
-
-> v2.0 报告中 DSV3 使用 `allgatherAicpuKernel` 路径，在 vLLM 0.15.0 + CANN 8.5 生产环境中未观察到，已统一为 `hcom_*` 路径。
-
----
-
-## 5. Wall-Clock 端到端分析方法
-
-### 5.1 E2E 时间轴模型
-
-```
- NPU Timeline (一个完整 step)
- ═══════════════════════════════════════════════════════════════
- ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐
- │Compute₁ │ │ Comm₁   │ │Compute₂ │ │ Comm₂   │  ...×N layers
- └─────────┘ └─────────┘ └─────────┘ └─────────┘
-
- Stage = Computing + Communication_Not_Overlapped + Free
-```
-
-| 指标 | 含义 |
-|------|------|
-| Stage | wall-clock 时间 |
-| Computing | compute kernel 执行时间总和 |
-| Communication_Not_Overlapped | 通信中未与 compute 重叠的部分 |
-| Free | 调度、kernel launch、stream sync 等空闲时间 |
-
-### 5.2 Overhead Factor
-
-```
-Factor = Stage / (Computing + Communication_Not_Overlapped)
-       = 1 + Free / (Computing + Communication_Not_Overlapped)
-```
-
-- Factor ≈ 1.0x → 调度开销可忽略
-- Factor > 1.1x → 需关注
-
-### 5.3 生产环境实测（0313 数据）
-
-| 模型 | 场景 | Stage(ms) | Comp+Comm(ms) | Free(ms) | Factor | Free% |
-|------|------|-----------|--------------|----------|--------|-------|
-| Qwen3 | Prefill | 5816 | 5733 | 83 | 1.014x | 1.4% |
-| Qwen3 | Decode | 3098 | 2931 | 167 | 1.057x | 5.4% |
-| DSV3 | Prefill | 4555 | 4190 | 365 | 1.087x | 8.0% |
-| DSV3 | Decode | 4880 | 4731 | 149 | 1.031x | 3.1% |
-
-生产环境 Factor 整体 1.01x-1.09x，CUDAGraph + async-scheduling 有效压低了调度开销。
-
----
-
-## 6. 对比 Checklist
-
-- [ ] 确认微基准采集时开启了 `HCCL_OP_EXPANSION_MODE="AIV"` 和 `TASK_QUEUE_ENABLE=1`
-- [ ] 确认 profiling 的 device 数量和 TP 配置
-- [ ] 从 operator_details `Input Shapes` 获取 message_bytes（优先于模型配置反推）
-- [ ] 区分 prefill / decode 的通信耗时，分别对比
-- [ ] 归一化 kernel 名称（去掉 `_\d+_\d+_\d+` 后缀）
-- [ ] 去掉 AivKernel 重复记录
-- [ ] DSV3：确认 MC2 融合（无独立 allReduce）
-- [ ] DSV3：注意 MoE 通信方差大，使用 stable median
-- [ ] ratio < 0.5x 时优先排查微基准 AIV 模式是否开启
-- [ ] 计算 overhead factor 验证 E2E 一致性
