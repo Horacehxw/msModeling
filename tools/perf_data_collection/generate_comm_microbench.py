@@ -865,6 +865,7 @@ def _run_bench_profiler_batch(
     group_ranks: List[int],
     is_npu: bool,
     is_leader: bool,
+    parse_fn: Optional[Callable[[str, str], List[float]]] = None,
 ) -> Optional[Dict[int, float]]:
     """Run ONE profiler session for all msg_sizes, return {msg_bytes: median_us}.
 
@@ -954,8 +955,15 @@ def _run_bench_profiler_batch(
                         torch.npu.synchronize()
                     prof.step()
 
-        # Parse all durations (chronological order in operator_details.csv)
-        durations = _parse_comm_duration(prof_dir, op_type)
+        # Parse all durations (chronological order in CSV)
+        _parse = parse_fn or _parse_comm_duration
+        durations = _parse(prof_dir, op_type)
+
+        if not durations:
+            raise RuntimeError(
+                f"No duration entries found for {op_type} in {prof_dir} "
+                f"(parse_fn={_parse.__name__})"
+            )
 
         expected = total_active
         if len(durations) < expected:
@@ -1519,7 +1527,8 @@ def main() -> None:
         elif args.bench_mode == "alternating" and _has_torch_npu():
             # Alternating mode: ops with a peer (allGather↔reduceScatter) use
             # pipelined event timing; ops without a peer (allReduce) use
-            # profiler-batch (kernel mode) to avoid NPU Event sync overhead
+            # profiler-batch (operator_details Device Total Duration, which
+            # includes AicpuKernel) to avoid NPU Event sync overhead
             # dominating short-duration kernels.
             has_peer_configs = [c for c in configs if _PEER_OP.get(c[0]) is not None]
             no_peer_configs = [c for c in configs if _PEER_OP.get(c[0]) is None]
@@ -1588,6 +1597,63 @@ def main() -> None:
                                     _append_csv(csv_path, row)
 
                     dist.barrier()
+        elif args.bench_mode == "kernel" and _has_torch_npu():
+            # Kernel mode: batch profiler session parsing kernel_details.csv
+            # (same batch strategy as profiler mode to avoid CANN restart crash)
+            batched: OrderedDict = OrderedDict()
+            for op_type, msg_bytes, num_devices, tier, group_ranks in configs:
+                key = (op_type, tuple(group_ranks))
+                if key not in batched:
+                    batched[key] = []
+                batched[key].append((msg_bytes, num_devices, tier))
+
+            is_npu = True
+            local_rank = int(os.environ.get("LOCAL_RANK", rank))
+            device = f"npu:{local_rank}"
+
+            for (op_type, gr_tuple), items in batched.items():
+                group_ranks = list(gr_tuple)
+                group = group_cache[gr_tuple]
+                is_member = rank in group_ranks
+
+                if is_member:
+                    is_leader = rank == group_ranks[0]
+                    msg_bytes_list = [mb for mb, _, _ in items]
+
+                    if is_leader:
+                        print(f"[kernel-batch] op={op_type}  "
+                              f"group={group_ranks}  msg_sizes={len(msg_bytes_list)}")
+
+                    results = _run_bench_profiler_batch(
+                        op_type, msg_bytes_list, args.dtype, device,
+                        group, group_ranks, is_npu, is_leader,
+                        parse_fn=_parse_kernel_comm_duration,
+                    )
+
+                    if results and is_leader:
+                        for msg_bytes, nd, tier in items:
+                            if msg_bytes not in results:
+                                continue
+                            duration_us = results[msg_bytes]
+                            bandwidth_gbps = msg_bytes / (duration_us * 1e-6) / 1e9
+                            row = {
+                                "message_bytes": msg_bytes,
+                                "num_devices": nd,
+                                "dtype": _DTYPE_TO_CSV.get(args.dtype, "DT_BF16"),
+                                "topology_tier": tier,
+                                "Duration(us)": round(duration_us, 2),
+                                "bandwidth_gbps": round(bandwidth_gbps, 2),
+                            }
+                            print(
+                                f"  op={op_type}  bytes={msg_bytes}  devices={nd}"
+                                f"  tier={tier}  duration={duration_us:.2f}us"
+                                f"  bw={bandwidth_gbps:.2f}GB/s"
+                            )
+                            csv_path = _csv_for_op(op_type)
+                            if csv_path:
+                                _append_csv(csv_path, row)
+
+                dist.barrier()
         else:
             # Event / pipeline mode: per-point measurement (no profiler session issue)
             for op_type, msg_bytes, num_devices, tier, group_ranks in configs:

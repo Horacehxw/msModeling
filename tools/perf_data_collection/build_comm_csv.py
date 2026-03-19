@@ -18,11 +18,13 @@ import statistics
 import sys
 from pathlib import Path
 
-# Fixed overhead corrections (us) from bench_vs_profiler report Section 1
+# Fixed overhead corrections (us) from bench_vs_profiler report Section 1.
+# Applied only to kernel-mode data (which measures pure hcom_* Duration
+# without AicpuKernel). allReduce uses profiler-batch (operator_details
+# Device Total Duration, already includes AicpuKernel) so no overhead needed.
 OVERHEAD = {
-    "allReduce": {16: 7.7},
     "allGather": {16: 14.6, 8: 1.2},
-    "reduceScatter": {16: 14.6, 8: 2.0},  # nd=16 reuses allGather overhead
+    "reduceScatter": {16: 14.6, 8: 2.0},
 }
 
 ONE_MB = 1_048_576
@@ -93,17 +95,14 @@ def build_index(rows: list[dict]) -> dict[tuple[int, int], dict]:
 
 
 def build_allreduce(alt_rows: list[dict]) -> list[dict]:
-    """Build allReduce output: alternating data + overhead for nd=16."""
-    result = []
-    for row in alt_rows:
-        r = dict(row)
-        nd = r["num_devices"]
-        overhead = OVERHEAD["allReduce"].get(nd, 0.0)
-        if overhead > 0:
-            r["Duration(us)"] = round(r["Duration(us)"] + overhead, 2)
-            r["bandwidth_gbps"] = calc_bandwidth(r["message_bytes"], r["Duration(us)"])
-        result.append(r)
-    return result
+    """Build allReduce output from alternating data.
+
+    allReduce has no peer in alternating mode, so it falls back to
+    profiler-batch which parses operator_details Device Total Duration.
+    This already includes AicpuKernel overhead, so NO additional fixed
+    overhead is applied (unlike kernel-mode data for allGather/reduceScatter).
+    """
+    return [dict(row) for row in alt_rows]
 
 
 def build_allgather(
@@ -197,7 +196,9 @@ def build_reducescatter(
 
 def write_csv(rows: list[dict], path: str) -> None:
     """Write rows to CSV."""
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    dirname = os.path.dirname(path)
+    if dirname:
+        os.makedirs(dirname, exist_ok=True)
     with open(path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
         writer.writeheader()
