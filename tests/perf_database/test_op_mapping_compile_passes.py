@@ -3,17 +3,22 @@ from pathlib import Path
 
 import yaml
 
-OP_MAPPING_PATH = (
+CANN85_OP_MAPPING = (
     Path(__file__).resolve().parents[2]
     / "tensor_cast/performance_model/perf_database/data"
-    / "ATLAS_800_A3_752T_128G_DIE/vllm_ascend/v0.13.0/op_mapping.yaml"
+    / "ATLAS_800_A3_752T_128G_DIE/vllm_ascend/vllm0.15.0_torch2.9.0_cann8.5"
+    / "op_mapping.yaml"
 )
 
 
+@unittest.skipIf(
+    not CANN85_OP_MAPPING.exists(),
+    "CANN 8.5 op_mapping.yaml not found",
+)
 class CompilePassOpMappingTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        with open(OP_MAPPING_PATH, encoding="utf-8") as f:
+        with open(CANN85_OP_MAPPING, encoding="utf-8") as f:
             full = yaml.safe_load(f)
         cls.mapping = full.get("operator_mappings", {})
         cls.torch_npu_ref = full.get("torch_npu_reference", {})

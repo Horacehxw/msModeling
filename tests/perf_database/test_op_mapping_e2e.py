@@ -22,15 +22,11 @@ import yaml
 # Project paths
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 TRACE_DIR = Path(__file__).parent / "fixtures" / "traces"
+
 OP_MAPPING_PATH = (
     PROJECT_ROOT
-    / "tensor_cast"
-    / "performance_model"
-    / "perf_database"
-    / "data"
-    / "ATLAS_800_A3_752T_128G_DIE"
-    / "vllm_ascend"
-    / "v0.13.0"
+    / "tensor_cast/performance_model/perf_database/data"
+    / "ATLAS_800_A3_752T_128G_DIE/vllm_ascend/vllm0.15.0_torch2.9.0_cann8.5"
     / "op_mapping.yaml"
 )
 
@@ -38,6 +34,9 @@ OP_MAPPING_PATH = (
 @pytest.fixture(scope="module")
 def stub_data_dir():
     """Generate stub CSVs in a temp directory for testing."""
+    if not OP_MAPPING_PATH.exists():
+        pytest.skip("CANN 8.5 op_mapping.yaml not found")
+
     import sys
 
     sys.path.insert(0, str(PROJECT_ROOT / "tools" / "perf_data_collection"))
@@ -79,6 +78,8 @@ def all_trace_ops() -> Dict[str, List[dict]]:
 @pytest.fixture(scope="module")
 def op_mapping():
     """Load op_mapping.yaml."""
+    if not OP_MAPPING_PATH.exists():
+        pytest.skip("CANN 8.5 op_mapping.yaml not found")
     with open(OP_MAPPING_PATH) as f:
         return yaml.safe_load(f)
 
