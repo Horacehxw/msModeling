@@ -31,3 +31,6 @@ tools/perf_data_collection/generated_microbench/
 
 # msprof profiling output (op_replay pipeline)
 PROF_*/
+
+# Ephemeral metrics output (regenerable via /project-status)
+results/
