@@ -56,7 +56,22 @@ torch_npu_reference:
 - `alternate_kernel_types: [Type1, Type2]` —— 主类型未命中时的备选 CSV 类型
 - `category: communication` —— 触发 message_bytes+num_devices 查询而非 shape 匹配
 - `query_mode: attention_special` —— 触发 (batch, seq, heads, head_dim) 匹配
+- `query_mode: elementwise` —— 触发输出形状匹配 + dtype 松弛缩放（逐元素算子）
 - `notes: "..."` —— 包含置信度级别的证据链
+
+#### 逐元素算子 (Elementwise Ops)
+
+对于内存带宽受限的逐元素算子 (`aten.add.Tensor`, `aten.mul.Tensor`, `aten.div.Tensor`),
+使用 `query_mode: elementwise` 代替默认的输入形状匹配:
+
+```yaml
+"aten.add.Tensor":
+  kernel_type: Add
+  query_mode: elementwise
+```
+
+此模式按**输出形状**匹配 CSV,并支持 dtype 松弛匹配 (FP32 → BF16 × 2.0 字节比缩放)。
+不需要设置 `tc_input_count`。
 
 ## 2. 数据流：PyTorch → NPU 内核
 

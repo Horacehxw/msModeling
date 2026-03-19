@@ -7,6 +7,7 @@ from tensor_cast.device import CommGrid, InterconnectTopology
 from tensor_cast.performance_model.perf_database.data_source import QuerySource
 
 from tensor_cast.performance_model.perf_database.profiling_data_source import (
+    _dtype_byte_size,
     DTYPE_MAP,
     fractal_nz_to_nd,
     get_topology_tier,
@@ -39,6 +40,15 @@ def test_dtype_map():
     assert DTYPE_MAP[torch.float16] == "DT_BF16"
     assert DTYPE_MAP[torch.int8] == "INT8"
     assert DTYPE_MAP[torch.float32] == "FLOAT"
+
+
+def test_dtype_byte_size():
+    assert _dtype_byte_size("DT_BF16") == 2
+    assert _dtype_byte_size("FLOAT") == 4
+    assert _dtype_byte_size("INT8") == 1
+    assert _dtype_byte_size("INT32") == 4
+    assert _dtype_byte_size("INT64") == 8
+    assert _dtype_byte_size("UNKNOWN") == 0
 
 
 # --- ProfilingDataSource tests ---
@@ -2235,3 +2245,150 @@ def test_merge_last_dims_not_applied_to_matmul(spike_data_dir):
     )
     result = ds.lookup(op)
     assert result is None, "Merge last dims should NOT apply to MatMulV2"
+
+
+# --- Elementwise output-shape matching tests ---
+
+ELEMENTWISE_OP_MAPPING_YAML = """
+version: "test"
+operator_mappings:
+  "aten.mul.Tensor":
+    kernel_type: Mul
+    query_mode: elementwise
+"""
+
+# CSV where input shapes differ from typical TC broadcast patterns,
+# but output shapes are the matching key for elementwise lookup.
+ELEMENTWISE_MUL_CSV = """\
+Input Shapes,Input Data Types,Input Formats,Output Shapes,Output Data Types,Output Formats,Average Duration(us)
+"256,7168;256,7168","DT_BF16;DT_BF16","ND;ND","256,7168","DT_BF16","ND",10.5
+"512,7168;512,7168","DT_BF16;DT_BF16","ND;ND","512,7168","DT_BF16","ND",20.0
+"""
+
+
+@pytest.fixture
+def elementwise_data_dir(tmp_path):
+    data_dir = tmp_path / "elementwise"
+    data_dir.mkdir()
+    (data_dir / "op_mapping.yaml").write_text(ELEMENTWISE_OP_MAPPING_YAML)
+    (data_dir / "Mul.csv").write_text(ELEMENTWISE_MUL_CSV.strip())
+    return data_dir
+
+
+def test_elementwise_exact_match_same_dtype(elementwise_data_dir):
+    """BF16 tensor out=(256,7168), CSV has BF16 output (256,7168) -> exact HIT."""
+    ds = ProfilingDataSource(elementwise_data_dir)
+    out_tensor = torch.empty(256, 7168, device="meta", dtype=torch.bfloat16)
+    op = _make_op_info(
+        torch.ops.aten.mul.Tensor,
+        [
+            torch.empty(256, 7168, device="meta", dtype=torch.bfloat16),
+            torch.empty(256, 7168, device="meta", dtype=torch.bfloat16),
+        ],
+        [out_tensor],
+    )
+    result = ds.lookup(op)
+    assert result is not None, "Should match elementwise on output shape"
+    assert abs(result.latency_us - 10.5) < 0.01
+    assert result.confidence == 1.0
+    assert result.source == QuerySource.MEASURED
+
+
+def test_elementwise_dtype_scaled_match(elementwise_data_dir):
+    """FP32 tensor out=(256,7168), CSV has BF16 output (256,7168) -> HIT with latency * 2.0."""
+    ds = ProfilingDataSource(elementwise_data_dir)
+    out_tensor = torch.empty(256, 7168, device="meta", dtype=torch.float32)
+    op = _make_op_info(
+        torch.ops.aten.mul.Tensor,
+        [
+            torch.empty(256, 7168, device="meta", dtype=torch.float32),
+            torch.empty(256, 7168, device="meta", dtype=torch.float32),
+        ],
+        [out_tensor],
+    )
+    result = ds.lookup(op)
+    assert result is not None, "Should match elementwise with dtype scaling"
+    # FP32=4 bytes, BF16=2 bytes -> scale = 4/2 = 2.0; 10.5 * 2.0 = 21.0
+    assert abs(result.latency_us - 21.0) < 0.01
+    assert result.confidence == 0.9
+
+
+def test_elementwise_broadcast_ignored(elementwise_data_dir):
+    """Scalar mul where TC has 1 tensor + scalar, out=(256,7168) -> HIT on output shape.
+    Elementwise lookup matches on output shape, not input pattern."""
+    ds = ProfilingDataSource(elementwise_data_dir)
+    out_tensor = torch.empty(256, 7168, device="meta", dtype=torch.bfloat16)
+    op = _make_op_info(
+        torch.ops.aten.mul.Tensor,
+        [
+            torch.empty(256, 7168, device="meta", dtype=torch.bfloat16),
+            # Second arg is a scalar (not a tensor) — broadcast
+            3.14,
+        ],
+        [out_tensor],
+    )
+    result = ds.lookup(op)
+    assert result is not None, (
+        "Should match elementwise on output shape regardless of inputs"
+    )
+    assert abs(result.latency_us - 10.5) < 0.01
+
+
+def test_elementwise_miss_no_shape(elementwise_data_dir):
+    """out=(512,4096) not in CSV -> MISS with elementwise_output_shape_mismatch."""
+    ds = ProfilingDataSource(elementwise_data_dir)
+    out_tensor = torch.empty(512, 4096, device="meta", dtype=torch.bfloat16)
+    op = _make_op_info(
+        torch.ops.aten.mul.Tensor,
+        [
+            torch.empty(512, 4096, device="meta", dtype=torch.bfloat16),
+            torch.empty(512, 4096, device="meta", dtype=torch.bfloat16),
+        ],
+        [out_tensor],
+    )
+    result = ds.lookup(op)
+    assert result is None, "No CSV row with output (512,4096)"
+    assert ds.last_miss_reason == "elementwise_output_shape_mismatch"
+
+
+def test_elementwise_fallback_no_output(elementwise_data_dir):
+    """op_invoke_info.out = None -> falls back to _lookup_compute (returns None
+    since _lookup_compute uses input-shape matching and the CSV input shapes
+    happen to match, but the key test is the fallback path, not the result)."""
+    ds = ProfilingDataSource(elementwise_data_dir)
+    op = _make_op_info(
+        torch.ops.aten.mul.Tensor,
+        [
+            # Use shapes that DON'T match any CSV input shapes to ensure
+            # _lookup_compute also returns None, proving the fallback happened.
+            torch.empty(999, 7168, device="meta", dtype=torch.bfloat16),
+            torch.empty(999, 7168, device="meta", dtype=torch.bfloat16),
+        ],
+    )
+    # out is None (no output_tensors passed)
+    assert op.out is None
+    result = ds.lookup(op)
+    # Falls back to _lookup_compute which returns None (no input shape match)
+    assert result is None
+    # Miss reason should be from _lookup_compute, NOT elementwise
+    assert ds.last_miss_reason == "shape_mismatch"
+
+
+def test_elementwise_fallback_tuple_output(elementwise_data_dir):
+    """op_invoke_info.out = (tensor, tensor2) -> unwraps to first element, matches."""
+    ds = ProfilingDataSource(elementwise_data_dir)
+    out_tensor1 = torch.empty(256, 7168, device="meta", dtype=torch.bfloat16)
+    out_tensor2 = torch.empty(10, device="meta", dtype=torch.bfloat16)
+    op = _make_op_info(
+        torch.ops.aten.mul.Tensor,
+        [
+            torch.empty(256, 7168, device="meta", dtype=torch.bfloat16),
+            torch.empty(256, 7168, device="meta", dtype=torch.bfloat16),
+        ],
+        [out_tensor1, out_tensor2],
+    )
+    # _make_op_info with 2 outputs creates a tuple
+    assert isinstance(op.out, tuple)
+    result = ds.lookup(op)
+    assert result is not None, "Should unwrap tuple output and match on first element"
+    assert abs(result.latency_us - 10.5) < 0.01

@@ -56,6 +56,12 @@ Kernel types can change between CANN versions — renames, fusions, or removals.
 ```
 START: What is the op?
 │
+├─ aten.* elementwise (add, mul, div, sub)?
+│  └─ ELEMENTWISE: use query_mode: elementwise
+│     - Match on OUTPUT shape (not input)
+│     - No tc_input_count needed (mutually exclusive)
+│     - Dtype-relaxed with byte-ratio scaling
+│
 ├─ aten.* op (standard PyTorch)?
 │  └─ PATH A: ATen → op-plugin → aclnn → L0 OpType
 │

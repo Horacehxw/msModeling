@@ -47,6 +47,14 @@ Q: CSV 多出的输入是什么?
 └─ 不确定 → 不设,保守让 MISS,交给 analytic fallback
 ```
 
+## 已解决: 逐元素算子使用 `query_mode: elementwise`
+
+对于逐元素算子 (Add, Mul, Div), 不需要 `tc_input_count`。这些算子使用 `query_mode: elementwise`,
+按**输出形状**匹配,完全绕过输入形状比较。
+
+**规则**: `query_mode: elementwise` 与 `tc_input_count` **互斥**。设置了 `query_mode: elementwise`
+的条目不得设置 `tc_input_count`。
+
 ## 长期解决方案
 
 对逐元素算子,推荐使用 **输出形状匹配** (`query_mode: elementwise`):

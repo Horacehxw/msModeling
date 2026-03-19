@@ -42,6 +42,18 @@ operator_mappings:
   "tensor_cast.attention.default":
     kernel_type: FusedInferAttentionScore
     query_mode: attention_special
+  "aten.add.Tensor":
+    kernel_type: Add
+    query_mode: elementwise
+"""
+
+# Add CSV with multiple M values for elementwise interpolation
+INTERP_ADD_CSV = """\
+Input Shapes,Input Data Types,Input Formats,Output Shapes,Output Data Types,Output Formats,Duration(us)
+"128,7168;128,7168","DT_BF16;DT_BF16","ND;ND","128,7168","DT_BF16","ND",6.0
+"256,7168;256,7168","DT_BF16;DT_BF16","ND;ND","256,7168","DT_BF16","ND",12.0
+"128,1536;128,1536","DT_BF16;DT_BF16","ND;ND","128,1536","DT_BF16","ND",2.0
+"256,1536;256,1536","DT_BF16;DT_BF16","ND;ND","256,1536","DT_BF16","ND",4.0\
 """
 
 # MatMulV2 CSV with multiple seq lengths for interpolation
@@ -71,6 +83,7 @@ def interp_data_dir(tmp_path):
     (data_dir / "MatMulV2.csv").write_text(INTERP_MATMUL_CSV.strip())
     (data_dir / "hcom_allReduce_.csv").write_text(INTERP_COMM_CSV.strip())
     (data_dir / "FusedInferAttentionScore.csv").write_text(INTERP_FIA_CSV.strip())
+    (data_dir / "Add.csv").write_text(INTERP_ADD_CSV.strip())
     return data_dir
 
 
@@ -178,12 +191,8 @@ def test_attention_interpolation_sqrt(interp_data_dir):
         torch.ops.tensor_cast.attention.default,
         [
             torch.empty(1, 512, device="meta", dtype=torch.bfloat16),  # query
-            torch.empty(
-                16, 128, 4, 128, device="meta", dtype=torch.bfloat16
-            ),  # key
-            torch.empty(
-                16, 128, 4, 128, device="meta", dtype=torch.bfloat16
-            ),  # value
+            torch.empty(16, 128, 4, 128, device="meta", dtype=torch.bfloat16),  # key
+            torch.empty(16, 128, 4, 128, device="meta", dtype=torch.bfloat16),  # value
             None,
             None,
             None,
@@ -195,9 +204,9 @@ def test_attention_interpolation_sqrt(interp_data_dir):
     assert result is not None, "Should interpolate attention with sqrt transform"
     assert result.source == QuerySource.INTERPOLATED
     # With sqrt transform, expect ~721 (not 600 from linear)
-    assert (
-        680.0 < result.latency_us < 760.0
-    ), f"Expected ~721 with sqrt, got {result.latency_us}"
+    assert 680.0 < result.latency_us < 760.0, (
+        f"Expected ~721 with sqrt, got {result.latency_us}"
+    )
 
 
 def test_unmapped_op_no_interpolation(interp_data_dir):
@@ -205,7 +214,7 @@ def test_unmapped_op_no_interpolation(interp_data_dir):
     base = ProfilingDataSource(interp_data_dir)
     ds = InterpolatingDataSource(base)
     op = _make_op_info(
-        torch.ops.aten.add.Tensor,
+        torch.ops.aten.mul.Tensor,
         [
             torch.empty(100, 512, device="meta", dtype=torch.bfloat16),
             torch.empty(100, 512, device="meta", dtype=torch.bfloat16),
@@ -213,3 +222,101 @@ def test_unmapped_op_no_interpolation(interp_data_dir):
     )
     result = ds.lookup(op)
     assert result is None
+
+
+def _make_elementwise_op_info(func, input_tensors, out_tensor):
+    """Create mock OpInvokeInfo with .out set to output tensor."""
+    mock = MagicMock()
+    mock.func = func
+    mock.args = tuple(input_tensors)
+    mock.kwargs = {}
+    mock.out = out_tensor
+    return mock
+
+
+def test_interpolate_elementwise_basic(interp_data_dir):
+    """Interpolate (192,7168) BF16 between (128,7168)→6.0us and (256,7168)→12.0us → ~9.0us.
+
+    Linear interp: t = (192-128)/(256-128) = 64/128 = 0.5
+    latency = 6.0 + 0.5 * (12.0 - 6.0) = 9.0 us
+    """
+    base = ProfilingDataSource(interp_data_dir)
+    ds = InterpolatingDataSource(base)
+    out = torch.empty(192, 7168, device="meta", dtype=torch.bfloat16)
+    op = _make_elementwise_op_info(
+        torch.ops.aten.add.Tensor,
+        [
+            torch.empty(192, 7168, device="meta", dtype=torch.bfloat16),
+            torch.empty(192, 7168, device="meta", dtype=torch.bfloat16),
+        ],
+        out,
+    )
+    result = ds.lookup(op)
+    assert result is not None, (
+        "Should interpolate elementwise (192,7168) between bracketing rows"
+    )
+    assert abs(result.latency_us - 9.0) < 0.5, (
+        f"Expected ~9.0 us, got {result.latency_us}"
+    )
+    assert result.source == QuerySource.INTERPOLATED
+    assert result.confidence == 0.7
+
+
+def test_interpolate_elementwise_dtype_scaled(interp_data_dir):
+    """FP32 target, BF16 CSV: candidates are dtype-scaled before interpolation → confidence=0.6.
+
+    CSV rows: (128,7168) BF16 → 6.0us, (256,7168) BF16 → 12.0us
+    FP32 is 4 bytes, BF16 is 2 bytes → scale factor 2.0
+    Scaled candidates: (128,7168) → 12.0us, (256,7168) → 24.0us
+    Interpolate at 192: t=0.5, latency = 12.0 + 0.5*(24.0-12.0) = 18.0us
+    """
+    base = ProfilingDataSource(interp_data_dir)
+    ds = InterpolatingDataSource(base)
+    out = torch.empty(192, 7168, device="meta", dtype=torch.float32)
+    op = _make_elementwise_op_info(
+        torch.ops.aten.add.Tensor,
+        [
+            torch.empty(192, 7168, device="meta", dtype=torch.float32),
+            torch.empty(192, 7168, device="meta", dtype=torch.float32),
+        ],
+        out,
+    )
+    result = ds.lookup(op)
+    assert result is not None, (
+        "Should interpolate FP32 target with dtype-scaled BF16 candidates"
+    )
+    assert abs(result.latency_us - 18.0) < 1.0, (
+        f"Expected ~18.0 us, got {result.latency_us}"
+    )
+    assert result.source == QuerySource.INTERPOLATED
+    assert result.confidence == 0.6, (
+        f"Dtype-scaled interpolation should have confidence=0.6, got {result.confidence}"
+    )
+
+
+def test_interpolate_elementwise_hidden_dim_filter(interp_data_dir):
+    """(M,7168) rows don't mix with (M,1536) rows during interpolation.
+
+    Target: (192,7168) — hidden dim 7168
+    CSV has rows for both (M,7168) and (M,1536).
+    Only the (M,7168) rows should be candidates; (M,1536) must be filtered out.
+    Interpolation should still succeed using only (128,7168) and (256,7168).
+    """
+    base = ProfilingDataSource(interp_data_dir)
+    ds = InterpolatingDataSource(base)
+    out = torch.empty(192, 7168, device="meta", dtype=torch.bfloat16)
+    op = _make_elementwise_op_info(
+        torch.ops.aten.add.Tensor,
+        [
+            torch.empty(192, 7168, device="meta", dtype=torch.bfloat16),
+            torch.empty(192, 7168, device="meta", dtype=torch.bfloat16),
+        ],
+        out,
+    )
+    result = ds.lookup(op)
+    assert result is not None
+    # Result should be ~9.0 us (from 7168 rows only), not ~3.0 us (mixed 7168+1536 rows)
+    assert abs(result.latency_us - 9.0) < 0.5, (
+        f"Expected ~9.0 us (7168 rows only), got {result.latency_us}"
+        " — hidden dim rows may have been mixed"
+    )

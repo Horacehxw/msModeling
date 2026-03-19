@@ -277,6 +277,7 @@ func_name → op_mapping.yaml 查 mapping
   ├─ composite == true → _lookup_composite()
   ├─ category == "communication" → _lookup_comm()
   ├─ query_mode == "attention_special" → _lookup_attention()
+  ├─ query_mode == "elementwise" → _lookup_elementwise()
   └─ 默认 → _lookup_compute()
 ```
 
@@ -459,7 +460,7 @@ comm_operator_mappings:
 |-----|------|------|
 | `kernel_type` | Profiling Type 列名 | `MatMulV2` |
 | `category` | 算子类别（驱动查询分派） | `communication` |
-| `query_mode` | 特殊查询模式 | `attention_special` |
+| `query_mode` | 特殊查询模式 | `attention_special`, `elementwise` |
 | `composite` | 复合映射（1:N） | `true` |
 | `sub_kernels` | 复合映射子内核 | `[TransposeBatchMatMul, ...]` |
 | `notes` | 文档说明 | |
@@ -531,6 +532,17 @@ batch_size,avg_seq_len,num_heads,head_dim,dtype,Duration(us)
 > 详细的布局分析、源码溯源和验证数据见附录 B。
 
 **权重转置匹配**（v1.4 补充）：FRACTAL_NZ 恢复为 ND shape 后，对 matmul 类 kernel（`_MATMUL_KERNELS` 集合，含 `MatMulV2`, `MatMulV3`, `QuantBatchMatmulV3`, `BatchMatMulV2`, `TransposeBatchMatMul` 等）仍需尝试权重转置匹配 `(K,N) ↔ (N,K)`。此规则不限于 ND 格式 — FRACTAL_NZ 恢复后的 shape 同样可能需要转置。
+
+### 4.11 逐元素算子输出形状匹配 (Elementwise Output-Shape Matching)
+
+对于内存带宽受限的逐元素算子 (Add, Mul, Div), 使用**输出形状**而非输入形状进行匹配:
+
+- **输出形状确定性**: 无论标量/向量/逐元素广播, 输出形状相同
+- **dtype 松弛匹配**: FP32 ≈ BF16 × (4/2), 按字节比缩放延迟 (`_dtype_byte_size()`)
+- **适用条件**: `Duration ∝ output_elements × bytes_per_element / memory_bandwidth`
+- **置信度**: dtype 相同 = 1.0; dtype 不同 (缩放后) = 0.9; 插值 + dtype 缩放 = 0.6
+
+在 `op_mapping.yaml` 中标记 `query_mode: elementwise`。与 `tc_input_count` 互斥。
 
 ---
 

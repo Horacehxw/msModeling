@@ -28,7 +28,7 @@ DATA_ROOT = (
 
 # Valid dispatch categories per design doc §4.2
 VALID_CATEGORIES = {"communication"}
-VALID_QUERY_MODES = {"attention_special"}
+VALID_QUERY_MODES = {"attention_special", "elementwise"}
 # Communication kernel CSV prefixes (looked up separately, not in data_dir)
 COMM_KERNEL_PREFIX = "hcom_"
 
@@ -49,7 +49,7 @@ ALL_MAPPINGS = _discover_op_mappings()
 
 
 def _load_entries(yaml_path):
-    with open(yaml_path ,'r', encoding='utf-8') as f:
+    with open(yaml_path, encoding="utf-8") as f:
         return yaml.safe_load(f).get("operator_mappings", {})
 
 
@@ -225,3 +225,13 @@ def test_no_sub_kernels_without_composite(version_ctx):
         f"[{label}] {len(errors)} entries with orphaned sub_kernels:\n"
         + "\n".join(f"  - {e}" for e in errors)
     )
+
+
+def test_elementwise_excludes_tc_input_count(version_ctx):
+    """query_mode: elementwise and tc_input_count are mutually exclusive."""
+    label, entries, _ = version_ctx
+    for op_name, entry in entries.items():
+        if entry.get("query_mode") == "elementwise" and "tc_input_count" in entry:
+            pytest.fail(
+                f"[{label}] {op_name}: query_mode=elementwise must not have tc_input_count"
+            )

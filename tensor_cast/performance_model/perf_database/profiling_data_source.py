@@ -124,6 +124,26 @@ _MERGE_LAST_DIMS_KERNELS = frozenset({"AscendQuantV2", "DynamicQuant"})
 # BF16: 16x16, INT8: 16x32
 _BLOCK_SIZES = (16, 32, 64)
 
+# Byte sizes for profiling dtype strings (for elementwise byte-ratio scaling)
+_DTYPE_BYTE_SIZES = {
+    "DT_BF16": 2,
+    "DT_FLOAT16": 2,
+    "FLOAT": 4,
+    "DT_FLOAT": 4,
+    "INT8": 1,
+    "DT_INT8": 1,
+    "INT16": 2,
+    "INT32": 4,
+    "DT_INT32": 4,
+    "INT64": 8,
+    "DT_INT64": 8,
+}
+
+
+def _dtype_byte_size(dtype_str: str) -> int:
+    """Return byte size for a profiling dtype string. Returns 0 for unknown."""
+    return _DTYPE_BYTE_SIZES.get(dtype_str, 0)
+
 
 def _normalize_rope_inputs(
     tc_inputs: List[Tuple[Tuple[int, ...], torch.dtype]],
@@ -442,6 +462,7 @@ class ProfilingDataSource(DataSource):
             - composite == true -> _lookup_composite()
             - category == "communication" -> _lookup_comm()
             - query_mode == "attention_special" -> _lookup_attention()
+            - query_mode == "elementwise" -> _lookup_elementwise()
             - zero_cost == true -> return QueryResult(0.0)
             - default -> _lookup_compute()
         """
@@ -459,6 +480,8 @@ class ProfilingDataSource(DataSource):
             return self._lookup_comm(op_invoke_info, mapping)
         if mapping.get("query_mode") == "attention_special":
             return self._lookup_attention(op_invoke_info, mapping)
+        if mapping.get("query_mode") == "elementwise":
+            return self._lookup_elementwise(op_invoke_info, mapping)
 
         # Zero-cost ops: shape-only operations with no kernel execution
         if mapping.get("zero_cost"):
@@ -812,6 +835,128 @@ class ProfilingDataSource(DataSource):
             source=QuerySource.MEASURED,
             details={"kernel_type": kernel_type},
         )
+
+    # ---- Elementwise op lookup (output-shape matching) ----
+
+    def _lookup_elementwise(
+        self, op_invoke_info: "OpInvokeInfo", mapping: dict
+    ) -> Optional[QueryResult]:
+        """Look up elementwise op latency by matching output shape.
+
+        Elementwise ops (mul, add, etc.) are bandwidth-bound and their cost
+        scales with output size. Instead of matching input shapes (which may
+        involve broadcast), we match on the output tensor shape and dtype
+        against the CSV's "Output Shapes" / "Output Data Types" columns.
+
+        When the output dtype differs from CSV, latency is scaled by the
+        byte-size ratio (bandwidth-bound assumption).
+
+        Falls back to _lookup_compute when output is unavailable.
+        """
+        # Guard: if output is unavailable, fall back to input-shape matching
+        out = op_invoke_info.out
+        if out is None:
+            return self._lookup_compute(op_invoke_info, mapping)
+
+        # Unwrap tuple outputs (aten ops may return multiple tensors)
+        if isinstance(out, (list, tuple)):
+            out = out[0]
+
+        # Guard: scalar or empty output -> fall back
+        if not isinstance(out, torch.Tensor) or out.ndim == 0 or len(out.shape) < 1:
+            return self._lookup_compute(op_invoke_info, mapping)
+
+        tc_output_shape = _strip_batch_dim(tuple(out.shape))
+        tc_dtype = out.dtype
+        tc_dtype_str = DTYPE_MAP.get(tc_dtype)
+
+        kernel_type = mapping.get("kernel_type")
+        if not kernel_type:
+            self.last_miss_reason = "unmapped"
+            return None
+
+        df = self._load_csv(kernel_type)
+        if df is None:
+            self.last_miss_reason = "csv_not_found"
+            return None
+
+        lat_col = self._latency_col(df)
+
+        for _, row in df.iterrows():
+            csv_out_shapes = _parse_shape_str(str(row.get("Output Shapes", "")))
+            csv_out_dtypes = _parse_str_list(str(row.get("Output Data Types", "")))
+            if not csv_out_shapes:
+                continue
+
+            # Match on first output shape (primary output)
+            csv_shape = csv_out_shapes[0]
+            csv_shape_stripped = _strip_batch_dim(csv_shape)
+
+            shape_matched = (
+                tc_output_shape == csv_shape
+                or tc_output_shape == csv_shape_stripped
+                or self._shapes_match_with_padding(tc_output_shape, csv_shape)
+                or self._shapes_match_with_padding(tc_output_shape, csv_shape_stripped)
+            )
+            if not shape_matched:
+                continue
+
+            # Shape matched — check dtype
+            csv_dtype_str = csv_out_dtypes[0] if csv_out_dtypes else None
+            latency = float(row[lat_col])
+
+            if tc_dtype_str and csv_dtype_str and tc_dtype_str == csv_dtype_str:
+                # Exact dtype match
+                logger.debug(
+                    "HIT (elementwise) %s: output=%s dtype=%s -> %.2f us",
+                    kernel_type,
+                    tc_output_shape,
+                    tc_dtype_str,
+                    latency,
+                )
+                return QueryResult(
+                    latency_us=latency,
+                    confidence=1.0,
+                    source=QuerySource.MEASURED,
+                    details={"kernel_type": kernel_type, "query_mode": "elementwise"},
+                )
+
+            # Dtype differs — scale by byte ratio (bandwidth-bound)
+            tc_bytes = _dtype_byte_size(tc_dtype_str) if tc_dtype_str else 0
+            csv_bytes = _dtype_byte_size(csv_dtype_str) if csv_dtype_str else 0
+            if tc_bytes > 0 and csv_bytes > 0:
+                scale = tc_bytes / csv_bytes
+                scaled_latency = latency * scale
+                logger.debug(
+                    "HIT (elementwise, dtype-scaled) %s: output=%s "
+                    "tc_dtype=%s csv_dtype=%s scale=%.2f -> %.2f us",
+                    kernel_type,
+                    tc_output_shape,
+                    tc_dtype_str,
+                    csv_dtype_str,
+                    scale,
+                    scaled_latency,
+                )
+                return QueryResult(
+                    latency_us=scaled_latency,
+                    confidence=0.9,
+                    source=QuerySource.MEASURED,
+                    details={
+                        "kernel_type": kernel_type,
+                        "query_mode": "elementwise",
+                        "dtype_scale": scale,
+                    },
+                )
+
+        # No match found
+        self.last_miss_reason = "elementwise_output_shape_mismatch"
+        logger.debug(
+            "MISS (elementwise) %s: output=%s dtype=%s",
+            kernel_type,
+            tc_output_shape,
+            tc_dtype_str,
+        )
+        return None
 
     # ---- Compute op lookup (design doc S4.2 _lookup_compute) ----
 

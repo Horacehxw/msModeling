@@ -117,12 +117,12 @@ operator_mappings:
 
   "aten.add.Tensor":
     kernel_type: Add
+    query_mode: elementwise
     notes: >
       [HIGH] op-plugin: AddKernelNpuOpApi.cpp.
       aclnn: aclnnAdd. Profiling: Qwen3 CANN 8.5 Add(30x).
-      Known issue: CSV has mixed 1-input (scalar broadcast) and 2-input (tensor+tensor) rows.
-      TC always passes 2 tensors → input_count_mismatch on scalar-broadcast CSV rows.
-      TODO: implement variable-count matching or output-shape matching for elementwise ops.
+      query_mode=elementwise: output-shape matching with byte-ratio dtype scaling.
+      Solves FP32 vs BF16 dtype gap and broadcast pattern ambiguity.
 
   "aten.to.dtype":
     kernel_type: Cast
@@ -575,17 +575,19 @@ operator_mappings:
   "aten.mul.Tensor":
     kernel_type: Mul
     alternate_kernel_types: [MulAiCore]
+    query_mode: elementwise
     notes: >
       [MEDIUM] op-plugin: MulKernelNpuOpApi.cpp → aclnnMul.
       MulAiCore: AiCore-accelerated variant (CANN 8.5+). 0313 profiling: Mul(176x), MulAiCore(268x).
-      Known issue: same as aten.add.Tensor — CSV has mixed 1/2-input rows.
-      TODO: variable-count matching for elementwise ops.
+      query_mode=elementwise: output-shape matching with byte-ratio dtype scaling.
 
   "aten.div.Tensor":
     kernel_type: Div
     alternate_kernel_types: [RealDiv]
+    query_mode: elementwise
     notes: >
       [MEDIUM] op-plugin: DivKernelNpuOpApi.cpp → aclnnDiv. Qwen3 CANN 8.5 RealDiv(60x).
+      query_mode=elementwise: output-shape matching with byte-ratio dtype scaling.
 
   "aten.sigmoid.default":
     zero_cost: true
