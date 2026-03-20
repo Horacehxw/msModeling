@@ -29,9 +29,9 @@ TYPE_COL = "Type"
 OP_STATE = "OP State"
 ACCELERATOR_CORE = "Accelerator Core"
 DURATION_US = "Duration(us)"
-AVG_DURATION_US = "Average Duration(us)"
-STD_DURATION_US = "Std Duration(us)"
-MEDIAN_DURATION_US = "Median Duration(us)"
+AVG_DURATION_US = "Profiling Average Duration(us)"
+STD_DURATION_US = "Profiling Std Duration(us)"
+MEDIAN_DURATION_US = "Profiling Median Duration(us)"
 EXTRA_NUMERIC_COLUMNS = [
     "aicore_time(us)",
     "aic_total_cycles",
@@ -61,6 +61,30 @@ EXTRA_NUMERIC_COLUMNS = [
 ]
 
 
+def _render_progress(current: int, total: int, width: int = 30) -> str:
+    if total <= 0:
+        return f"[{'-' * width}]"
+    ratio = min(max(current / total, 0.0), 1.0)
+    filled = min(width, int(ratio * width))
+    return f"[{'#' * filled}{'-' * (width - filled)}]"
+
+
+def print_progress(*, stage: str, current: int, total: int, detail: str = "") -> None:
+    bar = _render_progress(current, total)
+    message = f"\r{stage} {bar} {current}/{total}"
+    if detail:
+        message += f" | {detail}"
+    print(message, end="", flush=True)
+
+
+def clear_progress() -> None:
+    print("\r" + " " * 160 + "\r", end="", flush=True)
+
+
+def profiling_column_name(column: str) -> str:
+    return f"Profiling {column}"
+
+
 def check_version(value: str) -> str:
     version = value.strip()
     if not re.fullmatch(r"[0-9A-Za-z]+(?:[._-][0-9A-Za-z]+)*", version):
@@ -83,7 +107,7 @@ def normalize_vllm_ascend_version(version: str) -> str:
 
 
 class KernelDetailsParser:
-    """Parse kernel_details.csv and export averaged op duration by op type."""
+    """Parse one or more kernel_details*.csv files and export aggregated op stats by op type."""
 
     def __init__(self, device: str, kernel_details_path: str, vllm_ascend_version: str):
         self.device = device
@@ -101,6 +125,24 @@ class KernelDetailsParser:
             / "vllm_ascend"
             / self.vllm_ascend_version
         )
+
+    def _resolve_kernel_details_files(self) -> List[Path]:
+        if not self.kernel_details_path.exists():
+            raise FileNotFoundError(
+                f"kernel_details source path not found: {self.kernel_details_path}"
+            )
+        if self.kernel_details_path.is_file():
+            return [self.kernel_details_path]
+        files = sorted(
+            path
+            for path in self.kernel_details_path.rglob("*.csv")
+            if "kernel_details" in path.stem.lower()
+        )
+        if not files:
+            raise FileNotFoundError(
+                f"No CSV files with 'kernel_details' in the filename found under: {self.kernel_details_path}"
+            )
+        return files
 
     @staticmethod
     def _parse_duration(value: str) -> float:
@@ -124,35 +166,41 @@ class KernelDetailsParser:
         return normalized == "N/A"
 
     def _load_rows(self) -> List[Dict[str, str]]:
-        if not self.kernel_details_path.exists():
-            raise FileNotFoundError(
-                f"kernel_details.csv not found: {self.kernel_details_path}"
+        rows: List[Dict[str, str]] = []
+        kernel_details_files = self._resolve_kernel_details_files()
+        required_columns = {
+            TYPE_COL,
+            OP_STATE,
+            ACCELERATOR_CORE,
+            INPUT_SHAPES,
+            INPUT_DTYPES,
+            INPUT_FORMATS,
+            OUTPUT_SHAPES,
+            OUTPUT_DTYPES,
+            OUTPUT_FORMATS,
+            DURATION_US,
+        }
+        required_columns.update(EXTRA_NUMERIC_COLUMNS)
+
+        total_files = len(kernel_details_files)
+        for file_index, kernel_details_file in enumerate(kernel_details_files, start=1):
+            with kernel_details_file.open("r", encoding="utf-8-sig", newline="") as f:
+                reader = csv.DictReader(f)
+                missing = required_columns - set(reader.fieldnames or [])
+                if missing:
+                    missing_str = ", ".join(sorted(missing))
+                    raise ValueError(
+                        f"{kernel_details_file} is missing required columns: "
+                        f"{missing_str}"
+                    )
+                rows.extend(reader)
+            print_progress(
+                stage="Load",
+                current=file_index,
+                total=total_files,
+                detail=kernel_details_file.parent.name,
             )
-
-        with self.kernel_details_path.open("r", encoding="utf-8-sig", newline="") as f:
-            reader = csv.DictReader(f)
-            required_columns = {
-                TYPE_COL,
-                OP_STATE,
-                ACCELERATOR_CORE,
-                INPUT_SHAPES,
-                INPUT_DTYPES,
-                INPUT_FORMATS,
-                OUTPUT_SHAPES,
-                OUTPUT_DTYPES,
-                OUTPUT_FORMATS,
-                DURATION_US,
-            }
-            required_columns.update(EXTRA_NUMERIC_COLUMNS)
-            missing = required_columns - set(reader.fieldnames or [])
-            if missing:
-                missing_str = ", ".join(sorted(missing))
-                raise ValueError(
-                    "kernel_details.csv is missing required columns: "
-                    f"{missing_str}"
-                )
-
-            return list(reader)
+        return rows
 
     @staticmethod
     def _shape_key(row: Dict[str, object]) -> Tuple[str, str]:
@@ -180,7 +228,9 @@ class KernelDetailsParser:
             }
         )
 
-        for row in rows:
+        total_rows = len(rows)
+        progress_interval = max(1, total_rows // 100) if total_rows else 1
+        for row_index, row in enumerate(rows, start=1):
             op_type = self._safe_cell(row, TYPE_COL)
             input_shapes = self._safe_cell(row, INPUT_SHAPES)
             output_shapes = self._safe_cell(row, OUTPUT_SHAPES)
@@ -212,6 +262,13 @@ class KernelDetailsParser:
                 item["output_dtypes"] = self._safe_cell(row, OUTPUT_DTYPES)
             if not item["output_formats"]:
                 item["output_formats"] = self._safe_cell(row, OUTPUT_FORMATS)
+            if row_index == total_rows or row_index % progress_interval == 0:
+                print_progress(
+                    stage="Aggregate",
+                    current=row_index,
+                    total=total_rows,
+                    detail=op_type,
+                )
 
         rows_by_type: Dict[str, List[Dict[str, object]]] = defaultdict(list)
         for (op_type, input_shapes, output_shapes), item in grouped.items():
@@ -224,7 +281,7 @@ class KernelDetailsParser:
             std_duration = math.sqrt(variance)
             median_duration = statistics.median(item["durations"])
             avg_extra = {
-                f"Average {col}": (
+                profiling_column_name(f"Average {col}"): (
                     float(item["sum_extra"][col]) / count
                 )
                 for col in EXTRA_NUMERIC_COLUMNS
@@ -260,33 +317,12 @@ class KernelDetailsParser:
             MEDIAN_DURATION_US,
             STD_DURATION_US,
         ]
-        ordered_columns.extend([f"Average {col}" for col in EXTRA_NUMERIC_COLUMNS])
-        for op_type, type_rows in rows_by_type.items():
+        ordered_columns.extend([profiling_column_name(f"Average {col}") for col in EXTRA_NUMERIC_COLUMNS])
+        total_output_files = len(rows_by_type)
+        for file_index, (op_type, type_rows) in enumerate(rows_by_type.items(), start=1):
             output_path = self.output_dir / f"{self._sanitize_filename(op_type)}.csv"
-            existing_rows: List[Dict[str, str]] = []
-            existing_shape_keys = set()
-            if output_path.exists():
-                with output_path.open("r", encoding="utf-8-sig", newline="") as f:
-                    reader = csv.DictReader(f)
-                    for row in reader:
-                        existing_rows.append(row)
-                        existing_shape_keys.add(self._shape_key(row))
-
-            new_rows = []
-            for row in type_rows:
-                if self._shape_key(row) in existing_shape_keys:
-                    continue
-                new_rows.append(row)
-                existing_shape_keys.add(self._shape_key(row))
-
-            # No new shape data for this op type.
-            if not new_rows and output_path.exists():
-                continue
-
-            # Keep existing rows untouched and append new rows.
-            merged_rows = existing_rows + new_rows
             normalized_rows = []
-            for row in merged_rows:
+            for row in type_rows:
                 normalized_rows.append({col: row.get(col, "") for col in ordered_columns})
 
             with output_path.open("w", encoding="utf-8", newline="") as f:
@@ -294,7 +330,14 @@ class KernelDetailsParser:
                 writer.writeheader()
                 writer.writerows(normalized_rows)
             output_files.append(output_path)
+            print_progress(
+                stage="Write",
+                current=file_index,
+                total=total_output_files,
+                detail=output_path.name,
+            )
 
+        clear_progress()
         return sorted(output_files)
 
 
@@ -323,7 +366,11 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--kernel-details-path",
         required=True,
-        help="Path to Ascend profiler kernel_details.csv file.",
+        help=(
+            "Path to a kernel_details*.csv file or a directory. "
+            "If a directory is provided, the script recursively scans all CSV files whose filename contains "
+            "'kernel_details'."
+        ),
     )
     return parser
 
@@ -338,7 +385,8 @@ def main() -> None:
     output_files = parser.parse_and_export()
     print(
         f"Generated {len(output_files)} csv file(s) under "
-        f"{parser.output_dir.as_posix()}"
+        f"{parser.output_dir.as_posix()} "
+        f"from {args.kernel_details_path}"
     )
 
 
