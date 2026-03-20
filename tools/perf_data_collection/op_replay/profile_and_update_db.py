@@ -49,35 +49,37 @@ BASE_COLUMNS = [
     "Output Data Types",
     "Output Formats",
 ]
-MICROBENCH_DURATION = "MicroBench Duration(us)"
-AVERAGE_DURATION = "Average Duration(us)"
-STD_DURATION = "Std Duration(us)"
-AVERAGE_EXTRA_COLUMNS = [
-    "Average aicore_time(us)",
-    "Average aic_total_cycles",
-    "Average aic_mac_time(us)",
-    "Average aic_mac_ratio",
-    "Average aic_scalar_time(us)",
-    "Average aic_scalar_ratio",
-    "Average aic_mte1_time(us)",
-    "Average aic_mte1_ratio",
-    "Average aic_mte2_time(us)",
-    "Average aic_mte2_ratio",
-    "Average aic_fixpipe_time(us)",
-    "Average aic_fixpipe_ratio",
-    "Average aic_icache_miss_rate",
-    "Average aiv_time(us)",
-    "Average aiv_total_cycles",
-    "Average aiv_vec_time(us)",
-    "Average aiv_vec_ratio",
-    "Average aiv_scalar_time(us)",
-    "Average aiv_scalar_ratio",
-    "Average aiv_mte2_time(us)",
-    "Average aiv_mte2_ratio",
-    "Average aiv_mte3_time(us)",
-    "Average aiv_mte3_ratio",
-    "Average aiv_icache_miss_rate",
-    "Average cube_utilization(%)",
+LEGACY_MICROBENCH_DURATION = "MicroBench Duration(us)"
+MICROBENCH_DURATION = "Average Duration(us)"
+PROFILING_AVERAGE_DURATION = "Profiling Average Duration(us)"
+PROFILING_MEDIAN_DURATION = "Profiling Median Duration(us)"
+PROFILING_STD_DURATION = "Profiling Std Duration(us)"
+PROFILING_AVERAGE_EXTRA_COLUMNS = [
+    "Profiling Average aicore_time(us)",
+    "Profiling Average aic_total_cycles",
+    "Profiling Average aic_mac_time(us)",
+    "Profiling Average aic_mac_ratio",
+    "Profiling Average aic_scalar_time(us)",
+    "Profiling Average aic_scalar_ratio",
+    "Profiling Average aic_mte1_time(us)",
+    "Profiling Average aic_mte1_ratio",
+    "Profiling Average aic_mte2_time(us)",
+    "Profiling Average aic_mte2_ratio",
+    "Profiling Average aic_fixpipe_time(us)",
+    "Profiling Average aic_fixpipe_ratio",
+    "Profiling Average aic_icache_miss_rate",
+    "Profiling Average aiv_time(us)",
+    "Profiling Average aiv_total_cycles",
+    "Profiling Average aiv_vec_time(us)",
+    "Profiling Average aiv_vec_ratio",
+    "Profiling Average aiv_scalar_time(us)",
+    "Profiling Average aiv_scalar_ratio",
+    "Profiling Average aiv_mte2_time(us)",
+    "Profiling Average aiv_mte2_ratio",
+    "Profiling Average aiv_mte3_time(us)",
+    "Profiling Average aiv_mte3_ratio",
+    "Profiling Average aiv_icache_miss_rate",
+    "Profiling Average cube_utilization(%)",
 ]
 MATCH_COLUMNS = [
     "Input Shapes",
@@ -87,31 +89,45 @@ MATCH_COLUMNS = [
     "Output Data Types",
 ]
 OP_SUMMARY_TO_DB_COLUMN = {
-    "aicore_time(us)": "Average aicore_time(us)",
-    "aic_total_cycles": "Average aic_total_cycles",
-    "aic_mac_time(us)": "Average aic_mac_time(us)",
-    "aic_mac_ratio": "Average aic_mac_ratio",
-    "aic_scalar_time(us)": "Average aic_scalar_time(us)",
-    "aic_scalar_ratio": "Average aic_scalar_ratio",
-    "aic_mte1_time(us)": "Average aic_mte1_time(us)",
-    "aic_mte1_ratio": "Average aic_mte1_ratio",
-    "aic_mte2_time(us)": "Average aic_mte2_time(us)",
-    "aic_mte2_ratio": "Average aic_mte2_ratio",
-    "aic_fixpipe_time(us)": "Average aic_fixpipe_time(us)",
-    "aic_fixpipe_ratio": "Average aic_fixpipe_ratio",
-    "aic_icache_miss_rate": "Average aic_icache_miss_rate",
-    "aiv_time(us)": "Average aiv_time(us)",
-    "aiv_total_cycles": "Average aiv_total_cycles",
-    "aiv_vec_time(us)": "Average aiv_vec_time(us)",
-    "aiv_vec_ratio": "Average aiv_vec_ratio",
-    "aiv_scalar_time(us)": "Average aiv_scalar_time(us)",
-    "aiv_scalar_ratio": "Average aiv_scalar_ratio",
-    "aiv_mte2_time(us)": "Average aiv_mte2_time(us)",
-    "aiv_mte2_ratio": "Average aiv_mte2_ratio",
-    "aiv_mte3_time(us)": "Average aiv_mte3_time(us)",
-    "aiv_mte3_ratio": "Average aiv_mte3_ratio",
-    "aiv_icache_miss_rate": "Average aiv_icache_miss_rate",
-    "cube_utilization(%)": "Average cube_utilization(%)",
+    "aicore_time(us)": "Profiling Average aicore_time(us)",
+    "aic_total_cycles": "Profiling Average aic_total_cycles",
+    "aic_mac_time(us)": "Profiling Average aic_mac_time(us)",
+    "aic_mac_ratio": "Profiling Average aic_mac_ratio",
+    "aic_scalar_time(us)": "Profiling Average aic_scalar_time(us)",
+    "aic_scalar_ratio": "Profiling Average aic_scalar_ratio",
+    "aic_mte1_time(us)": "Profiling Average aic_mte1_time(us)",
+    "aic_mte1_ratio": "Profiling Average aic_mte1_ratio",
+    "aic_mte2_time(us)": "Profiling Average aic_mte2_time(us)",
+    "aic_mte2_ratio": "Profiling Average aic_mte2_ratio",
+    "aic_fixpipe_time(us)": "Profiling Average aic_fixpipe_time(us)",
+    "aic_fixpipe_ratio": "Profiling Average aic_fixpipe_ratio",
+    "aic_icache_miss_rate": "Profiling Average aic_icache_miss_rate",
+    "aiv_time(us)": "Profiling Average aiv_time(us)",
+    "aiv_total_cycles": "Profiling Average aiv_total_cycles",
+    "aiv_vec_time(us)": "Profiling Average aiv_vec_time(us)",
+    "aiv_vec_ratio": "Profiling Average aiv_vec_ratio",
+    "aiv_scalar_time(us)": "Profiling Average aiv_scalar_time(us)",
+    "aiv_scalar_ratio": "Profiling Average aiv_scalar_ratio",
+    "aiv_mte2_time(us)": "Profiling Average aiv_mte2_time(us)",
+    "aiv_mte2_ratio": "Profiling Average aiv_mte2_ratio",
+    "aiv_mte3_time(us)": "Profiling Average aiv_mte3_time(us)",
+    "aiv_mte3_ratio": "Profiling Average aiv_mte3_ratio",
+    "aiv_icache_miss_rate": "Profiling Average aiv_icache_miss_rate",
+    "cube_utilization(%)": "Profiling Average cube_utilization(%)",
+}
+
+
+def to_microbench_column(profiling_column: str) -> str:
+    if profiling_column.startswith("Profiling Average "):
+        return "MicroBench " + profiling_column.removeprefix("Profiling Average ")
+    if profiling_column == PROFILING_AVERAGE_DURATION:
+        return MICROBENCH_DURATION
+    raise ValueError(f"Unsupported profiling column for microbench mapping: {profiling_column}")
+
+
+MICROBENCH_EXTRA_COLUMN_MAP = {
+    source_col: to_microbench_column(db_col)
+    for source_col, db_col in OP_SUMMARY_TO_DB_COLUMN.items()
 }
 
 
@@ -153,7 +169,7 @@ def build_argparser() -> argparse.ArgumentParser:
             "Workflow:\n"
             "  1. Run `msprof python .../run_all_op.py` with the same arguments.\n"
             "  2. Parse PROF_*/mindstudio_profiler_output/op_summary_*.csv.\n"
-            "  3. Write Task Duration(us) into `MicroBench Duration(us)` in the\n"
+            "  3. Write Task Duration(us) into `Average Duration(us)` in the\n"
             "     matching {OP Type}.csv under perf_database/data.\n"
             "  4. Remove the generated PROF_* directories."
         ),
@@ -172,6 +188,14 @@ def build_argparser() -> argparse.ArgumentParser:
         required=True,
         type=check_version,
         help="vLLM-Ascend version, e.g. 0.13.0.",
+    )
+    parser.add_argument(
+        "--prof-path",
+        default=None,
+        help=(
+            "Optional existing PROF_* directory to parse directly. "
+            "When provided, the script skips launching msprof and reads op_summary_*.csv under this path."
+        ),
     )
     return parser
 
@@ -200,6 +224,17 @@ def find_op_summary_files(prof_dirs: set[Path]) -> list[Path]:
     if not op_summary_files:
         raise FileNotFoundError("No op_summary_*.csv found in generated PROF_* directories")
     return op_summary_files
+
+
+def resolve_prof_dirs(prof_path: str | None) -> set[Path]:
+    if not prof_path:
+        return set()
+    path = Path(prof_path)
+    if not path.exists():
+        raise FileNotFoundError(f"PROF path does not exist: {path}")
+    if path.is_file():
+        raise ValueError(f"--prof-path must point to a PROF_* directory, got file: {path}")
+    return {path}
 
 
 def parse_float(value: str) -> float:
@@ -260,35 +295,50 @@ def aggregate_op_summary(op_summary_files: list[Path]) -> dict[str, list[dict[st
             "Output Data Types": (source_row.get("Output Data Types", "") or "").strip(),
             "Output Formats": (source_row.get("Output Formats", "") or "").strip(),
             MICROBENCH_DURATION: format_float(float(item["microbench_sum"]) / count),
-            AVERAGE_DURATION: format_float(float(item["microbench_sum"]) / count),
-            STD_DURATION: format_float(0.0),
         }
-        for source_col, db_col in OP_SUMMARY_TO_DB_COLUMN.items():
-            aggregated_row[db_col] = format_float(item["metric_sums"][source_col] / count)
+        for source_col, microbench_col in MICROBENCH_EXTRA_COLUMN_MAP.items():
+            aggregated_row[microbench_col] = format_float(item["metric_sums"][source_col] / count)
         result[op_type].append(aggregated_row)
 
     return result
 
 
 def get_default_columns() -> list[str]:
-    return BASE_COLUMNS + [MICROBENCH_DURATION, AVERAGE_DURATION, STD_DURATION] + AVERAGE_EXTRA_COLUMNS
+    columns = list(BASE_COLUMNS)
+    columns.append(MICROBENCH_DURATION)
+    columns.append(PROFILING_AVERAGE_DURATION)
+    columns.append(PROFILING_MEDIAN_DURATION)
+    columns.append(PROFILING_STD_DURATION)
+    for profiling_col in PROFILING_AVERAGE_EXTRA_COLUMNS:
+        columns.append(to_microbench_column(profiling_col))
+        columns.append(profiling_col)
+    return columns
 
 
 def ensure_microbench_column(fieldnames: list[str]) -> list[str]:
     columns = list(fieldnames)
-    if MICROBENCH_DURATION in columns:
-        return columns
+    if LEGACY_MICROBENCH_DURATION in columns and MICROBENCH_DURATION not in columns:
+        columns[columns.index(LEGACY_MICROBENCH_DURATION)] = MICROBENCH_DURATION
 
-    if AVERAGE_DURATION in columns:
-        insert_index = columns.index(AVERAGE_DURATION)
+    if MICROBENCH_DURATION not in columns and PROFILING_AVERAGE_DURATION in columns:
+        insert_index = columns.index(PROFILING_AVERAGE_DURATION)
         columns.insert(insert_index, MICROBENCH_DURATION)
-        return columns
+    elif MICROBENCH_DURATION not in columns:
+        columns = BASE_COLUMNS + [MICROBENCH_DURATION] + [col for col in columns if col not in BASE_COLUMNS]
 
-    return BASE_COLUMNS + [MICROBENCH_DURATION] + [col for col in columns if col not in BASE_COLUMNS]
+    for profiling_col in PROFILING_AVERAGE_EXTRA_COLUMNS:
+        microbench_col = to_microbench_column(profiling_col)
+        if profiling_col in columns and microbench_col not in columns:
+            insert_index = columns.index(profiling_col)
+            columns.insert(insert_index, microbench_col)
+    return columns
 
 
 def normalize_row_for_columns(row: dict[str, str], columns: list[str]) -> dict[str, str]:
-    return {column: row.get(column, "") for column in columns}
+    normalized_row = dict(row)
+    if LEGACY_MICROBENCH_DURATION in normalized_row and MICROBENCH_DURATION not in normalized_row:
+        normalized_row[MICROBENCH_DURATION] = normalized_row.get(LEGACY_MICROBENCH_DURATION, "")
+    return {column: normalized_row.get(column, "") for column in columns}
 
 
 def update_op_csv(csv_path: Path, rows_to_merge: list[dict[str, str]]) -> tuple[int, int]:
@@ -310,7 +360,17 @@ def update_op_csv(csv_path: Path, rows_to_merge: list[dict[str, str]]) -> tuple[
         matched = False
         for existing_row in existing_rows:
             if build_signature(existing_row) == build_signature(new_row):
-                existing_row[MICROBENCH_DURATION] = new_row[MICROBENCH_DURATION]
+                if (
+                    LEGACY_MICROBENCH_DURATION in existing_row
+                    and MICROBENCH_DURATION not in existing_row
+                ):
+                    existing_row[MICROBENCH_DURATION] = existing_row.get(
+                        LEGACY_MICROBENCH_DURATION, ""
+                    )
+                existing_row[MICROBENCH_DURATION] = new_row.get(MICROBENCH_DURATION, "")
+                for microbench_col in MICROBENCH_EXTRA_COLUMN_MAP.values():
+                    if microbench_col in new_row:
+                        existing_row[microbench_col] = new_row[microbench_col]
                 matched = True
                 updated_count += 1
                 break
@@ -349,14 +409,18 @@ def cleanup_prof_dirs(prof_dirs: set[Path]) -> None:
 
 def main() -> None:
     args = build_argparser().parse_args()
-    ensure_npu_available()
+    if not args.prof_path:
+        ensure_npu_available()
 
     prof_dirs: set[Path] = set()
     try:
-        prof_dirs = run_msprof(
-            device=args.device,
-            vllm_ascend_version=args.vllm_ascend_version,
-        )
+        if args.prof_path:
+            prof_dirs = resolve_prof_dirs(args.prof_path)
+        else:
+            prof_dirs = run_msprof(
+                device=args.device,
+                vllm_ascend_version=args.vllm_ascend_version,
+            )
         op_summary_files = find_op_summary_files(prof_dirs)
         aggregated_rows = aggregate_op_summary(op_summary_files)
         update_database(
@@ -365,7 +429,8 @@ def main() -> None:
             aggregated_rows=aggregated_rows,
         )
     finally:
-        cleanup_prof_dirs(prof_dirs)
+        if not args.prof_path:
+            cleanup_prof_dirs(prof_dirs)
 
 
 if __name__ == "__main__":
