@@ -56,7 +56,7 @@ DEFAULT_FUSED_GROUPS = {
 
 def compute_fused_op_stats(
     hit_details: list[tuple[str, str, tuple, float]],
-    miss_details: list[tuple[str, str, list]],
+    miss_details: list[tuple[str, str, list, ...]],
     fused_groups: dict[str, list[str]] | None = None,
 ) -> dict:
     """Compute Fused Op Match Rate with pessimistic grouping.
@@ -107,7 +107,7 @@ def compute_fused_op_stats(
         if kernel_type == "zero_cost":
             zero_cost_funcs.add(func_name)
 
-    for func_name, _reason, _shapes in miss_details:
+    for func_name, _reason, _shapes, *_ in miss_details:
         all_func_names.add(func_name)
         miss_func_names.add(func_name)
 
@@ -167,7 +167,7 @@ def compute_fused_op_stats(
 
 def compute_per_shape_stats(
     hit_details: list[tuple[str, str, tuple, float]],
-    miss_details: list[tuple[str, str, list]],
+    miss_details: list[tuple[str, str, list, ...]],
 ) -> dict:
     """M4: Per-Shape Match HR (unique shape variants, excl zero_cost).
 
@@ -184,7 +184,7 @@ def compute_per_shape_stats(
         hit_shapes.add((func_name, shape_sig))
 
     all_shapes: set[tuple[str, tuple]] = set(hit_shapes)
-    for func_name, _reason, tc_shapes in miss_details:
+    for func_name, _reason, tc_shapes, *_ in miss_details:
         shape_sig = tuple(tuple(s) for s in tc_shapes) if tc_shapes else ()
         all_shapes.add((func_name, shape_sig))
 
@@ -221,10 +221,13 @@ class EmpiricalPerformanceModel(PerformanceModel):
         self._stats = {"hit": 0, "miss": 0}
         self._hit_details: list[tuple[str, str, tuple, float]] = []
         # Each miss: (func_name, reason, tc_shapes)
-        self._miss_details: list[tuple[str, str, list[tuple]]] = []
+        self._miss_details: list[tuple[str, str, list[tuple], float]] = []
         # M5: Simulated Latency Coverage accumulators
         self._hit_latency_sum = 0.0
         self._total_latency_sum = 0.0
+        # M6: Empirical-only prediction total (sum of HIT empirical latencies
+        # across all process_op calls including replay copies).
+        self._empirical_hit_total_s = 0.0
         # Layer multiplier: TC's region-based replay calls process_op once
         # per unique op, but the model has N region copies (layers). The
         # multiplier = total_replay_events / process_op_calls, set by the
@@ -251,6 +254,8 @@ class EmpiricalPerformanceModel(PerformanceModel):
         if result is not None:
             self._stats["hit"] += 1
             self._hit_latency_sum += analytic_result.execution_time_s
+            empirical_s = result.latency_us * 1e-6
+            self._empirical_hit_total_s += empirical_s
             kernel_type = result.details.get("kernel_type", "?")
             tc_shapes = [
                 tuple(a.shape)
@@ -259,10 +264,10 @@ class EmpiricalPerformanceModel(PerformanceModel):
             ]
             shape_sig = tuple(tc_shapes)
             self._hit_details.append(
-                (func_name, kernel_type, shape_sig, result.latency_us * 1e-6)
+                (func_name, kernel_type, shape_sig, empirical_s)
             )
             return PerformanceModel.Result(
-                execution_time_s=result.latency_us * 1e-6,
+                execution_time_s=empirical_s,
                 statistics={
                     "source": result.source.name,
                     "confidence": result.confidence,
@@ -275,7 +280,9 @@ class EmpiricalPerformanceModel(PerformanceModel):
             tuple(a.shape) for a in op_invoke_info.args if isinstance(a, torch.Tensor)
         ]
         reason = getattr(self.data_source, "last_miss_reason", "unknown")
-        self._miss_details.append((func_name, reason, tc_shapes))
+        self._miss_details.append(
+            (func_name, reason, tc_shapes, analytic_result.execution_time_s)
+        )
         return analytic_result
 
     def get_stats(self) -> dict:
@@ -310,7 +317,7 @@ class EmpiricalPerformanceModel(PerformanceModel):
         # MISSes grouped by reason category
         if self._miss_details:
             by_reason: dict[str, list[tuple[str, list[tuple]]]] = {}
-            for func_name, reason, tc_shapes in self._miss_details:
+            for func_name, reason, tc_shapes, _lat in self._miss_details:
                 by_reason.setdefault(reason, []).append((func_name, tc_shapes))
 
             miss_lines = []
@@ -379,15 +386,25 @@ class EmpiricalPerformanceModel(PerformanceModel):
                 self._total_latency_sum * 1000,
             )
 
-    def export_hit_miss_report(self, output_path: Path | None = None) -> dict:
+    def export_hit_miss_report(
+        self,
+        output_path: Path | None = None,
+        tc_predicted_total_s: float | None = None,
+    ) -> dict:
         """Export structured HIT/MISS report for offline M6 computation.
 
         Returns dict with all M1-M5 metrics and per-op HIT/MISS details.
         If output_path provided, writes JSON to file.
 
+        Args:
+            output_path: Optional path to write JSON report.
+            tc_predicted_total_s: TC predicted total E2E time (seconds),
+                from runtime.total_execution_time_s(). Required for M6.
+
         Note on latency fields:
         - _hit_latency_sum / _total_latency_sum = analytic (Roofline) latency → M5
-        - _hit_details[i][3] = empirical (microbenchmark CSV) latency → M6 numerator
+        - _hit_details[i][3] = empirical (microbenchmark CSV) latency
+        - tc_predicted_total_s = TC full-model predicted E2E → M6
         """
         fused = compute_fused_op_stats(self._hit_details, self._miss_details)
         shape = compute_per_shape_stats(self._hit_details, self._miss_details)
@@ -441,18 +458,15 @@ class EmpiricalPerformanceModel(PerformanceModel):
                     "func_name": fn,
                     "reason": r,
                     "tc_shapes": [list(s) for s in shapes],
+                    "analytic_latency_s": lat,
                 }
-                for fn, r, shapes in self._miss_details
+                for fn, r, shapes, lat in self._miss_details
             ],
             "m6_input": {
-                "empirical_hit_duration_sum_s": sum(
-                    lat for _, _, _, lat in self._hit_details
+                "tc_predicted_total_s": tc_predicted_total_s,
+                "empirical_hit_total_s": (
+                    self._empirical_hit_total_s * self._replay_multiplier
                 ),
-                "replay_multiplier": self._replay_multiplier,
-                "empirical_hit_duration_scaled_s": sum(
-                    lat for _, _, _, lat in self._hit_details
-                )
-                * self._replay_multiplier,
             },
         }
 

@@ -11,7 +11,7 @@
 | M3 | 多少个计算算子命中了？ | TC profiling 运行 | **核心进度指标** |
 | M4 | 多少个 shape 变体命中了？ | TC profiling 运行 | 定位缺失 shape，指导数据采集 |
 | M5 | 仿真延迟中多少有实测数据？ | TC profiling 运行 | 延迟加权覆盖率 (仿真视角) |
-| M6 | 真实 E2E 中多少被覆盖？ | TC profiling 运行 + kernel_details.csv | **辅助验收标准** |
+| M6 | Empirical 预测 vs 真实单次 forward pass | TC profiling 运行 + step_trace + kernel_details | **验收标准：0.85–1.15** |
 
 ## 运行 M1–M5 (在线指标)
 
@@ -89,88 +89,79 @@ Simulated Latency Coverage: 50.8% (12.723ms / 25.037ms)          ← M5
 
 ## 运行 M6 (半离线指标)
 
-M6 = Σ(empirical HIT duration) / (Computing + Communication_NotOverlapped)
+```
+M6 = Empirical_HIT_total / Real_per_forward_pass
+```
+
+M6 = 1.0 表示完美预测。M6 > 1 = 高估，M6 < 1 = 低估。Phase 3 目标：0.85 ≤ M6 ≤ 1.15。
+
+**只含 empirical HIT**（不含 analytic fallback 的 MISS ops），直接衡量已有 microbench 数据的质量。
 
 两步：
 1. 跑 TC profiling 并导出 JSON：`--export-metrics report.json`
-2. 用 `compute_m6.py` 计算 M6（需要 ASCEND_PROFILER_OUTPUT 目录）
+2. 用 `compute_m6.py` 计算 M6（需要 ASCEND_PROFILER_OUTPUT 目录 + `--model` 参数）
 
 ### 前置条件
 
 1. 已有对应场景的 profiling 数据（包含 `step_trace_time.csv` + `kernel_details.csv`）
 2. 已跑过对应的 TC profiling 命令并导出了 metrics JSON
 
-### Profiling 数据位置
-
-```
-# Phase 1 E2E 测试数据
-/mnt/d/Data/Profiling/Profiling-0313-phase1-e2e-test/
-  profilier_prefill_qwen32b-input4096-output1/   ← Qwen3 Prefill
-  profilier_decode_qwen32b-input4k/              ← Qwen3 Decode
-  profilier_prefill_dsv3-input4096-output1/      ← DSv3 Prefill
-  profilier_decode_dsv3-input4096-output1536/    ← DSv3 Decode
-```
-
-每个目录下有 `{hash}_ascend_pt/ASCEND_PROFILER_OUTPUT/` 包含 `step_trace_time.csv` 和 `kernel_details.csv`。
-
 ### 计算 M6
 
 ```bash
 # Step 1: TC profiling + 导出 JSON (同 M1-M5 命令，加 --export-metrics)
 python3.10 -m tensor_cast.scripts.text_generate Qwen/Qwen3-32B \
-  --num-queries 10 --query-length 4104 --word-embedding-tp row \
+  --num-queries 10 --query-length 4104 \
   --device ATLAS_800_A3_752T_128G_DIE --world-size 16 --tp-size 16 \
   --quantize-linear-action DISABLED \
   --performance-model profiling --compile \
   --perf-database $DATA_DIR \
   --export-metrics results/qwen3_prefill_metrics.json
 
-# Step 2: 计算 M6
+# Step 2: 计算 M6 (--model 用于估算 forward pass 数量)
 python3.10 tools/perf_data_collection/compute_m6.py \
   --tc-report results/qwen3_prefill_metrics.json \
-  --profiler-output /path/to/ASCEND_PROFILER_OUTPUT
+  --profiler-output /path/to/ASCEND_PROFILER_OUTPUT \
+  --model qwen3
 ```
 
 ### 输出示例
 
 ```
 ============================================================
-M6: Empirical Prediction Coverage
+M6: Empirical E2E Prediction Ratio
 ============================================================
 
-Empirical HIT duration: 3,842.5 us
-Step duration:          5,733.3 us (Computing: 3,242.3 + Comm: 2,491.0)
+Empirical HIT total:    609,642.0 us (609.6 ms)
+Real per-fwd:         1,146,669.8 us (1,146.7 ms)
+TC full prediction:   1,407,989.9 us (1,408.0 ms)  [for reference]
+  Step total:         5,733,348.9 us (Computing: 3,242,347.5 + Comm: 2,491,001.4)
+  Forward passes:               5   (anchor: FusedInferAttentionScore [320])
 
-M6 = 67.0%
-
-Top unmatched kernels (from kernel_details.csv, excl AicpuKernel):
-  Type                                     Duration(us)    %KD Total
-  ---------------------------------------- -------------- ----------
-  FusedInferAttentionScore                      346,767.9       6.0%
-  split_qkv_rmsnorm_rope                       309,817.0       5.4%
-  ReshapeAndCacheNdKernel                        48,466.1       0.8%
-  TensorMove                                    10,630.3       0.2%
+M6 = 0.532  (TC / Real)
+     underestimate by 47%
+Phase 3 target: 0.85 ≤ M6 ≤ 1.15 [FAIL]
 ```
 
 ### 如何解读
 
-- **M6 = 85%+**: empirical 模型覆盖了大部分真实执行时间
-- **M6 vs M5 差异大**: analytic 模型对算子延迟权重判断有偏差
-- **M6 > 100%**: microbench 数据系统性高估了 kernel 延迟（isolation vs contention 差异）
-- **unmatched 列表**: 按 kernel_details.csv duration 排序的缺口（诊断参考，非 M6 分母）
+- **M6 ≈ 1.0**: empirical 数据精准，已匹配算子的 microbench 延迟与真实运行一致
+- **M6 < 1 (如 0.5)**: 低估，说明 MISS ops 贡献了大量真实延迟但没有 empirical 数据覆盖
+- **M6 > 1 (如 2.0)**: 高估，microbench 数据偏高（isolation vs real workload 差异），或通信 microbench 与真实 serving 差距大
+- **M6 远小于 1 但 M5 高**: M5 (analytic加权) 认为已匹配算子重要，但实际它们在真实延迟中占比小
+- **unmatched 列表**: 诊断参考，显示未被 empirical 覆盖的 kernel 按时间排序
 
-### 分母选择说明
+### Forward Pass 估算说明
 
-使用 `step_trace_time.csv` 的 `Computing + Communication(Not Overlapped)` 而非 `kernel_details.csv sum`：
+`step_trace_time.csv` 的 `Step` 列为空时，聚合了整个 profiling 窗口（可能包含数十到数百次 forward pass）。
+`compute_m6.py` 通过 `kernel_details.csv` 中的算子调用计数自动估算 forward pass 数量：
 
-| 场景 | kernel_details sum | step_trace_time | 差异 |
-|------|-------------------|-----------------|------|
-| Qwen3 Prefill | 5.74M us | 5.73M us | 0.1% |
-| DSv3 Prefill | 4.30M us | 4.19M us | 2.5% |
-| Qwen3 Decode | 4.39M us | 2.93M us | **49.7%** |
-| DSv3 Decode | 8.16M us | 4.73M us | **72.5%** |
+| 模型 | Anchor Kernel | 每层每 fwd pass 调用数 | 层数 |
+|------|--------------|:---:|:---:|
+| Qwen3 | FusedInferAttentionScore | 1 | 64 |
+| DSv3 | DispatchFFNCombine | 1 | 58 (MoE layers) |
 
-Decode 场景 CUDAGraph 导致计算/通信 overlap，kernel_details sum >> wall-clock。step_trace_time 已处理 overlap，是 profiler 的权威 E2E 分解。
+如果自动估算不准确，可使用 `--n-forward-passes N` 手动指定。
 
 ## 指标关系图
 
@@ -185,9 +176,10 @@ M1 ──→ M2 ──→ M3 ──→ M4
  │
  └──────────────────────→ M5 (analytic 延迟加权, 在线)
                           │
-                          └→ M6 (empirical 预测 vs 真实 E2E, 半离线)
+                          └→ M6 (empirical-only ratio vs 真实 per-fwd, 半离线)
                               ↑
-                              需要 step_trace_time.csv
+                              需要 step_trace_time.csv + kernel_details.csv
+                              (估算 forward pass 数量)
 ```
 
 ## Phase 目标
@@ -196,4 +188,4 @@ M1 ──→ M2 ──→ M3 ──→ M4
 |-------|:---:|:---:|:---:|
 | Phase 1 (✅) | 建立指标 | — | — |
 | Phase 2 (✅) | > 50% | 建立指标 | 建立指标 |
-| Phase 3 | — | > 80% | 辅助验收 (TBD) |
+| Phase 3 | — | > 80% | **0.85 ≤ M6 ≤ 1.15** |

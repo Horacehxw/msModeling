@@ -54,6 +54,19 @@ Launch parallel reads of:
 3. **Daily standup notes**: Read all 日报 files for the reporting week (typically Mon-Fri)
 4. **CHANGELOG** (if generated this week): `docs/perf_database/CHANGELOG_*.md`
 
+### Step 2b: Gather M1-M6 Metrics (if profiling data available)
+
+Run TC profiling + compute_m6 for the standard 4 scenarios to get current M1-M6 values.
+See `docs/perf_database/METRICS_GUIDE.md` for commands and interpretation.
+
+Key metrics to include in the report:
+- **M3** (Fused Op HR excl zero_cost): core progress indicator, Phase 2 target >50%
+- **M5** (Simulated Latency Coverage): analytic-weighted coverage, Phase 3 target >80%
+- **M6** (Empirical E2E Ratio): empirical_hit / real_per_fwd, Phase 3 target 0.85-1.15
+  - M6 = 1.0 perfect; >1 overestimate; <1 underestimate (coverage gap)
+
+If metrics changed significantly from last week, highlight the delta and root cause.
+
 ### Step 3: Identify Core Contributions
 
 For each Q1 delivery goal:
@@ -115,7 +128,7 @@ Q1 交付目标 2：{goal description}
 - Start each delivery goal with a `> 背景` block for non-project readers
 - Group by functional milestone, not by person or task ID
 - 3-6 core contributions per goal — quality over quantity
-- Include quantitative metrics (coverage %, error ratios, checkpoint counts)
+- Include M1-M6 metrics where relevant (see METRICS_GUIDE.md for definitions)
 - Highlight risk status changes inline (e.g., "原高风险项，已缓解")
 - End with progress % and 1-sentence gap summary
 
