@@ -58,13 +58,21 @@ description: Generate perf-database project progress dashboard. Default=concise 
 DATA_DIR="$(pwd)/tensor_cast/performance_model/perf_database/data/ATLAS_800_A3_752T_128G_DIE/vllm_ascend/vllm0.15.0_torch2.9.0_cann8.5"
 
 # M1-M5 (在线): 4 个场景各跑一次 TC profiling + --export-metrics
+
+# Qwen3 Prefill: --enable-flashcomm-v1 对标 vLLM ENABLE_FLASHCOMM1=1
+# FlashComm 将 all_reduce→rms_norm 替换为 reduce_scatter→rms_norm→all_gather
+# 效果: M3 33%→50%, M5 62%→88%, 但 reduce_scatter CSV 有膨胀风险 (35ms/call vs 真实 ~2ms)
 python3.10 -m tensor_cast.scripts.text_generate Qwen/Qwen3-32B \
   --num-queries 10 --query-length 4104 --word-embedding-tp row \
   --device ATLAS_800_A3_752T_128G_DIE --world-size 16 --tp-size 16 \
   --quantize-linear-action DISABLED \
   --performance-model profiling --compile --perf-database "$DATA_DIR" \
+  --enable-flashcomm-v1 \
   --export-metrics results/qwen3_prefill_metrics.json --log-level info
 
+# Qwen3 Decode: 暂不加 --enable-flashcomm-v1
+# 原因: vLLM cudagraph FULL_DECODE_ONLY 模式下 decode 可能不走 flashcomm 路径
+# decode profiling 中是否有 hcom_reduceScatter_ 待确认, 如有则加此 flag
 python3.10 -m tensor_cast.scripts.text_generate Qwen/Qwen3-32B \
   --num-queries 16 --query-length 1 --context-length 4096 --word-embedding-tp row \
   --device ATLAS_800_A3_752T_128G_DIE --world-size 16 --tp-size 16 \
@@ -72,24 +80,48 @@ python3.10 -m tensor_cast.scripts.text_generate Qwen/Qwen3-32B \
   --performance-model profiling --compile --perf-database "$DATA_DIR" \
   --export-metrics results/qwen3_decode_metrics.json --log-level info
 
+# DSv3 Prefill: 对标 profiler-dsv3-input2048-output1 (QBM batch=2048)
+# 参数推导: profiling kernel_details 中 QuantBatchMatmulV3 batch dim=2048
+# vLLM max-num-batched-tokens=2048, 单请求 ISL=2048 → nq=1 ql=2048
 python3.10 -m tensor_cast.scripts.text_generate deepseek-ai/DeepSeek-V3 \
-  --num-queries 1 --query-length 256 --word-embedding-tp row \
+  --num-queries 1 --query-length 2048 --word-embedding-tp row \
   --device ATLAS_800_A3_752T_128G_DIE --world-size 16 --tp-size 8 --dp-size 2 --ep-size 16 \
   --quantize-linear-action W8A8_STATIC \
   --performance-model profiling --compile --perf-database "$DATA_DIR" \
   --export-metrics results/dsv3_prefill_metrics.json --log-level info
 
+# DSv3 Decode: 对标 profiler-dsv3-input4096-output1536-concurrency8 (QBM batch=5)
+# 参数推导: profiling kernel_details 中 QuantBatchMatmulV3 batch dim=5
+# vLLM max-num-seqs=8, DP=2 → per-rank ~5 queries → nq=10 (dp_size=2, 10/2=5)
 python3.10 -m tensor_cast.scripts.text_generate deepseek-ai/DeepSeek-V3 \
-  --num-queries 16 --query-length 1 --context-length 4096 --word-embedding-tp row \
+  --num-queries 10 --query-length 1 --context-length 4096 --word-embedding-tp row \
   --device ATLAS_800_A3_752T_128G_DIE --world-size 16 --tp-size 8 --dp-size 2 --ep-size 16 \
   --quantize-linear-action W8A8_STATIC \
   --performance-model profiling --compile --perf-database "$DATA_DIR" \
   --export-metrics results/dsv3_decode_metrics.json --log-level info
 
-# M6 (半离线): Empirical E2E Ratio = empirical_hit_total / real_per_fwd
+# M6 (半离线): TC Prediction Ratio = tc_full_prediction / real_per_fwd
 # M6=1.0 完美, >1 高估, <1 低估. Phase 3 目标: 0.85-1.15
-# 自动通过 ArgMaxV2 (sampling kernel) 检测 forward pass 数量，model-agnostic
-# 需要 ASCEND_PROFILER_OUTPUT 目录 (含 step_trace_time.csv + kernel_details.csv)
+#
+# M6 计算方法论 (2026-03-20 修正):
+#   分子: TC 全量预测 (empirical + analytic fallback), 从 --export-metrics JSON 的
+#         m6_input.tc_predicted_total_s 获取
+#   分母: 真实单个 forward pass 耗时, 通过以下步骤获取:
+#     1. 用 ArgMaxV2 做 forward pass 边界切分 (kernel_details.csv)
+#     2. AI 分析每个 forward pass 的结构 (batch dim, kernel 组成)
+#     3. 确认所有 forward pass 结构一致后, 用 Stage / n_forward_passes 作为分母
+#     4. 如不一致, 需找到与 TC 仿真参数匹配的那一个 forward pass
+#
+# TC 参数推导方法论:
+#   1. 从 profiling kernel_details.csv 的 QuantBatchMatmulV3 (主计算 kernel) 读 batch dim
+#   2. 根据 batch dim 和 DP/TP 配置反推 TC 的 nq/ql 参数
+#   3. 用 ArgMaxV2 切分 forward passes, 验证每个 pass 结构是否一致
+#
+# Qwen3 profiling 数据 (0314):
+PROF_QWEN3="/Users/horacehxw/Data/Profiling/Profiling-0317-full/profiler-qwen3-0314"
+# DSv3 profiling 数据 (0319, 最新):
+PROF_DSV3="/Users/horacehxw/Data/Profiling/Profiling-0320-DSv3/profiler-dsv3-0319"
+# Phase 1 E2E 基线 (0313, Qwen3 M6 用):
 PROF_BASE="/Users/horacehxw/Data/Profiling/Profiling-0313-phase1-e2e-test"
 
 python3.10 tools/perf_data_collection/compute_m6.py \
@@ -100,13 +132,14 @@ python3.10 tools/perf_data_collection/compute_m6.py \
   --tc-report results/qwen3_decode_metrics.json \
   --profiler-output "$PROF_BASE/profilier_decode_qwen32b-input4k/$(ls $PROF_BASE/profilier_decode_qwen32b-input4k/)/ASCEND_PROFILER_OUTPUT"
 
+# DSv3 M6: 使用新 0319 profiling 数据 (通信模式已从 reduceScatter 变为 allReduce)
 python3.10 tools/perf_data_collection/compute_m6.py \
   --tc-report results/dsv3_prefill_metrics.json \
-  --profiler-output "$PROF_BASE/profilier_prefill_dsv3-input4096-output1/$(ls $PROF_BASE/profilier_prefill_dsv3-input4096-output1/)/ASCEND_PROFILER_OUTPUT"
+  --profiler-output "$PROF_DSV3/profiler-dsv3-input2048-output1"
 
 python3.10 tools/perf_data_collection/compute_m6.py \
   --tc-report results/dsv3_decode_metrics.json \
-  --profiler-output "$PROF_BASE/profilier_decode_dsv3-input4096-output1536/$(ls $PROF_BASE/profilier_decode_dsv3-input4096-output1536/)/ASCEND_PROFILER_OUTPUT"
+  --profiler-output "$PROF_DSV3/profiler-dsv3-input4096-output1536-concurrency8-rrate4"
 
 # 汇总结果到指标表
 python3.10 -c "
