@@ -25,6 +25,15 @@
 #   - 新增 MatMulV3 (大 M Prefill GEMM, CANN 8.5 新 kernel; Decode 仍用 MatMulV2)
 #   - 新增 LinearIndex (ScatterElementsV2 内部子 kernel)
 #   - DispatchFFNCombine: vllm-ascend v0.15.0 超级融合 MoE op (csrc/dispatch_ffn_combine/)
+#
+# DSv3 0319 新增内核 (vs 0316):
+#   - 通信模式变化: hcom_reduceScatter_ → hcom_allReduce_ (新数据中 reduceScatter 消失)
+#   - 新增 PadV3 / PadV3AiCore (decode padding, 35K+ 次调用)
+#   - 新增 MemSet (内存初始化, 35K+ 次)
+#   - 新增 allreduceAicpuKernel (AICPU allReduce 变体, 6.6K 次)
+#   - 新增 BatchMatMulNd (BMM 变体, 282 次)
+#   - 大量 AiCore 加速变体: SliceAiCore, AddAiCore, AscendQuantV2Aicore, TransposeAiCore 等
+#   - TransData 消失
 #     替代 MoeDistributeDispatchV2 + GroupedMatmul(×2) + SwiGlu + MoeDistributeCombineV2 + Unpermute
 #     在 DSv3 profiling 中, 路由专家 FFN 全部由 DispatchFFNCombine 执行, 不再出现 GroupedMatmul
 
@@ -74,7 +83,7 @@ operator_mappings:
 
   "aten.bmm.default":
     kernel_type: BatchMatMulV2
-    alternate_kernel_types: [TransposeBatchMatMul]
+    alternate_kernel_types: [TransposeBatchMatMul, BatchMatMulNd]
     notes: >
       [HIGH] op-plugin: BmmKernelNpuOpApi.cpp → aclnnBatchMatMul → BatchMatMulV2.
       Dispatch: transpose_b parameter → TransposeBatchMatMul (MLA attn_output @ W_UV).
@@ -117,6 +126,7 @@ operator_mappings:
 
   "aten.add.Tensor":
     kernel_type: Add
+    alternate_kernel_types: [AddAiCore]
     query_mode: elementwise
     notes: >
       [HIGH] op-plugin: AddKernelNpuOpApi.cpp.
@@ -450,6 +460,7 @@ operator_mappings:
 
   "tensor_cast.quantize.default":
     kernel_type: AscendQuantV2
+    alternate_kernel_types: [AscendQuantV2Aicore]
     tc_input_count: 1
     notes: >
       [HIGH] op-plugin: npu_quantize → aclnnAscendQuant/V3.
@@ -794,7 +805,8 @@ operator_mappings:
 
   "profiling.Transpose":
     kernel_type: Transpose
-    notes: "[MEDIUM] Data layout transformation."
+    alternate_kernel_types: [TransposeAiCore]
+    notes: "[MEDIUM] Data layout transformation. DSv3 0319: TransposeAiCore 282x."
 
   "profiling.Muls":
     kernel_type: Muls
@@ -802,7 +814,8 @@ operator_mappings:
 
   "profiling.AsStrided":
     kernel_type: AsStrided
-    notes: "[MEDIUM] Memory view / stride manipulation."
+    alternate_kernel_types: [AsStridedAiCore]
+    notes: "[MEDIUM] Memory view / stride manipulation. DSv3 0319: AsStridedAiCore 282x."
 
   "profiling.RINGMLAPrefillBF16Kernel":
     kernel_type: RINGMLAPrefillBF16Kernel
@@ -835,11 +848,13 @@ operator_mappings:
 
   "profiling.Slice":
     kernel_type: Slice
-    notes: "[LOW] CANN internal slice with data copy. 0313 profiling: 2433x."
+    alternate_kernel_types: [SliceAiCore]
+    notes: "[LOW] CANN internal slice with data copy. 0313: 2433x. DSv3 0319 decode: SliceAiCore 7626x."
 
   "profiling.Sub":
     kernel_type: Sub
-    notes: "[LOW] op-plugin: aclnnSub. 0313 profiling: 166x."
+    alternate_kernel_types: [SubAiCore]
+    notes: "[LOW] op-plugin: aclnnSub. 0313: 166x. DSv3 0319: SubAiCore 950x."
 
   "profiling.Neg":
     kernel_type: Neg
@@ -859,25 +874,79 @@ operator_mappings:
 
   "profiling.MaskedFill":
     kernel_type: MaskedFill
-    notes: "[LOW] op-plugin: aclnnInplaceMaskedFillScalar. 0313 profiling: 162x."
+    alternate_kernel_types: [MaskedFillAiCore]
+    notes: "[LOW] op-plugin: aclnnInplaceMaskedFillScalar. 0313: 162x. DSv3 0319: MaskedFillAiCore 950x."
 
   "profiling.Less":
     kernel_type: Less
-    notes: "[LOW] op-plugin: aclnnLtScalar. 0313 profiling: 14x."
+    alternate_kernel_types: [LessAiCore]
+    notes: "[LOW] op-plugin: aclnnLtScalar. 0313: 14x. DSv3 0319: LessAiCore 950x."
 
   "profiling.LogicalAnd":
     kernel_type: LogicalAnd
-    notes: "[LOW] op-plugin: aclnnLogicalAnd. 0313 profiling: 14x."
+    alternate_kernel_types: [LogicalAndAiCore]
+    notes: "[LOW] op-plugin: aclnnLogicalAnd. 0313: 14x. DSv3 0319: LogicalAndAiCore 950x."
 
   "profiling.LogicalNot":
     kernel_type: LogicalNot
-    notes: "[LOW] op-plugin: aclnnLogicalNot. 0313 profiling: 14x."
+    alternate_kernel_types: [LogicalNotAiCore]
+    notes: "[LOW] op-plugin: aclnnLogicalNot. 0313: 14x. DSv3 0319: LogicalNotAiCore 950x."
 
   "profiling.reshape_and_cache_200000000":
     kernel_type: reshape_and_cache_200000000
     notes: >
       [LOW] vllm-ascend Triton KV cache kernel variant.
       Number suffix is Triton JIT hash/config ID. 0313 profiling: 8576x.
+
+  # ===== DSv3 0319 新增内核 =====
+
+  "profiling.PadV3":
+    kernel_type: PadV3
+    alternate_kernel_types: [PadV3AiCore]
+    notes: >
+      [MEDIUM] DSv3 0319 decode 新增. Padding kernel, 35K+ 次调用.
+      CANN 8.5 图编译模式下出现, 旧 0316 数据中不存在.
+
+  "profiling.MemSet":
+    kernel_type: MemSet
+    zero_cost: true
+    notes: >
+      [LOW] DSv3 0319 新增. 内存初始化 kernel, 35K+ 次.
+      zero_cost: 非计算 kernel, 延迟由硬件内存控制器决定, TC 不建模.
+
+  "profiling.allreduceAicpuKernel":
+    kernel_type: allreduceAicpuKernel
+    category: communication
+    notes: >
+      [MEDIUM] DSv3 0319 新增. AICPU 侧 allReduce dispatch kernel.
+      与 hcom_allReduce_ 成对出现. 延迟已包含在 hcom_allReduce_ 的 Stage 时间中.
+
+  "profiling.BatchMatMulNd":
+    kernel_type: BatchMatMulNd
+    notes: >
+      [LOW] DSv3 0319 decode 新增. BMM ND 格式变体. 282 次.
+
+  # ===== AiCore 加速变体 (DSv3 0319) =====
+
+  "profiling.AddAiCore":
+    kernel_type: AddAiCore
+    notes: "[LOW] DSv3 0319. AiCore 加速 Add. 846x."
+
+  "profiling.AscendQuantV2Aicore":
+    kernel_type: AscendQuantV2Aicore
+    notes: "[LOW] DSv3 0319. AiCore 加速 AscendQuantV2. 846x."
+
+  "profiling.AddRmsNormDynamicQuantAiCore":
+    kernel_type: AddRmsNormDynamicQuantAiCore
+    notes: "[LOW] DSv3 0319. AiCore 加速 AddRmsNormDynamicQuant. 282x."
+
+  "profiling.AsStridedAiCore":
+    kernel_type: AsStridedAiCore
+    notes: "[LOW] DSv3 0319. AiCore 加速 AsStrided. 282x."
+
+  "profiling.TransposeAiCore":
+    kernel_type: TransposeAiCore
+    notes: "[LOW] DSv3 0319. AiCore 加速 Transpose. 282x."
 
 
 # ============================================================================
