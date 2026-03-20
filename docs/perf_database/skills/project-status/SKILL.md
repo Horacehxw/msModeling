@@ -107,7 +107,9 @@ python3.10 -m tensor_cast.scripts.text_generate deepseek-ai/DeepSeek-V3 \
 #   分子: TC 全量预测 (empirical + analytic fallback), 从 --export-metrics JSON 的
 #         m6_input.tc_predicted_total_s 获取
 #   分母: 真实单个 forward pass 耗时, 通过以下步骤获取:
-#     1. 用 ArgMaxV2 做 forward pass 边界切分 (kernel_details.csv)
+#     1. 从 kernel_details.csv 中识别 forward pass 边界 (寻找每 forward pass 出现恰好一次的
+#        anchor kernel, 如 ArgMaxV2/ApplyTopKTopPCustom 等 sampling kernel, 或
+#        DispatchFFNCombine/FusedInferAttentionScore 等模型特有 kernel)
 #     2. AI 分析每个 forward pass 的结构 (batch dim, kernel 组成)
 #     3. 确认所有 forward pass 结构一致后, 用 Stage / n_forward_passes 作为分母
 #     4. 如不一致, 需找到与 TC 仿真参数匹配的那一个 forward pass
@@ -115,7 +117,7 @@ python3.10 -m tensor_cast.scripts.text_generate deepseek-ai/DeepSeek-V3 \
 # TC 参数推导方法论:
 #   1. 从 profiling kernel_details.csv 的 QuantBatchMatmulV3 (主计算 kernel) 读 batch dim
 #   2. 根据 batch dim 和 DP/TP 配置反推 TC 的 nq/ql 参数
-#   3. 用 ArgMaxV2 切分 forward passes, 验证每个 pass 结构是否一致
+#   3. 用 anchor kernel 切分 forward passes, 验证每个 pass 结构是否一致
 #
 # Qwen3 profiling 数据 (0314):
 PROF_QWEN3="/Users/horacehxw/Data/Profiling/Profiling-0317-full/profiler-qwen3-0314"
@@ -141,21 +143,79 @@ python3.10 tools/perf_data_collection/compute_m6.py \
   --tc-report results/dsv3_decode_metrics.json \
   --profiler-output "$PROF_DSV3/profiler-dsv3-input4096-output1536-concurrency8-rrate4"
 
-# 汇总结果到指标表
+# 汇总 M1-M5
 python3.10 -c "
 import json
+print('场景                  M1     M2     M3     M4     M5     TC(ms)')
+print('-' * 70)
 for name, path in [
-    ('Qwen3 PF', 'results/qwen3_prefill_metrics.json'),
-    ('Qwen3 DC', 'results/qwen3_decode_metrics.json'),
-    ('DSv3 PF', 'results/dsv3_prefill_metrics.json'),
-    ('DSv3 DC', 'results/dsv3_decode_metrics.json'),
+    ('Qwen3 PF (+FC)', 'results/qwen3_prefill_metrics.json'),
+    ('Qwen3 DC',       'results/qwen3_decode_metrics.json'),
+    ('DSv3 PF',        'results/dsv3_prefill_metrics.json'),
+    ('DSv3 DC',        'results/dsv3_decode_metrics.json'),
 ]:
     r = json.load(open(path))
-    print(f'{name}: M1={r[\"m1\"][\"m1_raw_op_count_hr\"]:.1%} '
-          f'M2={r[\"m2\"][\"m2_fused_op_hr\"]:.1%} '
-          f'M3={r[\"m3\"][\"m3_fused_op_hr_no_zc\"]:.1%} '
-          f'M4={r[\"m4\"][\"m4_per_shape_hr\"]:.1%} '
-          f'M5={r[\"m5\"][\"m5_simulated_latency_coverage\"]:.1%}')
+    m1=r['m1']['m1_raw_op_count_hr']
+    m2=r['m2']['m2_fused_op_hr']
+    m3=r['m3']['m3_fused_op_hr_no_zc']
+    m4=r['m4']['m4_per_shape_hr']
+    m5=r['m5']['m5_simulated_latency_coverage']
+    tc=r['m6_input']['tc_predicted_total_s']*1000
+    print(f'{name:<22} {m1:>5.1%} {m2:>5.1%} {m3:>5.1%} {m4:>5.1%} {m5:>5.1%} {tc:>8.1f}')
+"
+
+# ==========================================
+# M6 计算: AI 分析 profiling forward pass
+# ==========================================
+# compute_m6.py 会自动寻找 anchor kernel (默认 ArgMaxV2) 做 forward pass 切分并取平均。
+# 但 **必须** 由 AI (即你) 在使用前先验证:
+#
+# 步骤 1: 分析 profiling 中每个 forward pass 的结构
+#   对每个 profiling 场景, 用 kernel_details.csv 做以下分析:
+#   - 识别 anchor kernel 做 forward pass 边界切分 (每 fwd 恰好出现一次的 kernel type)
+#   - 检查每个 forward pass 的 kernel 组成 (DFC/QBM/FIA/RING_MLA 数量)
+#   - 提取每个 forward pass 的 QuantBatchMatmulV3 batch dim (= 实际 batch size)
+#   - 确认: 所有 forward pass 结构是否一致 (batch dim, kernel 数量, 算子类型)
+#
+# 步骤 2: 匹配 TC 仿真的 forward pass
+#   - 如果所有 forward pass 结构一致 → 可以用 Stage/N 作为 M6 分母
+#   - 如果不一致 (混合 prefill+decode, 不同 batch size):
+#     → 找到 batch dim 匹配 TC 参数的那一个 forward pass
+#     → 用该 forward pass 的 kernel duration sum 作为 M6 分母
+#     → 注意: kernel sum 含 compute-comm overlap, 应优先用 step_trace Stage/N
+#
+# 步骤 3: 计算 M6
+#   M6 = TC_prediction / real_per_fwd
+#   - 分子: m6_input.tc_predicted_total_s (混合预测: empirical for HIT + analytic for MISS)
+#   - 分母: AI 确认后的单个 forward pass 真实耗时
+#
+# 示例 (已验证的 forward pass 结构):
+#   DSv3 PF (input2048): 12 个一致的纯 prefill pass, QBM batch=2048, Stage/12=295ms
+#   DSv3 DC (c8): 62 个一致的纯 decode pass, QBM batch=5, Stage/62=51ms
+#   Qwen3 PF (input4096): 5 个纯 prefill pass, Stage/5=1147ms
+
+# 自动计算 (仅在 AI 确认 forward pass 结构后使用):
+python3.10 -c "
+import json
+print()
+print('场景                  TC(ms)   Real(ms)   M6      判断')
+print('-' * 65)
+for name, path in [
+    ('Qwen3 PF (+FC)', 'results/qwen3_prefill_m6.json'),
+    ('Qwen3 DC',       'results/qwen3_decode_m6.json'),
+    ('DSv3 PF',        'results/dsv3_prefill_m6.json'),
+    ('DSv3 DC',        'results/dsv3_decode_m6.json'),
+]:
+    r = json.load(open(path))
+    tc = r['tc_predicted_us']/1e3
+    real = r['real_per_fwd_us']/1e3
+    m6 = tc / real if real > 0 else 0
+    flag = 'OK' if 0.85 <= m6 <= 1.15 else ('HIGH' if m6 > 1.15 else 'LOW')
+    n_fwd = r.get('n_forward_passes', '?')
+    print(f'{name:<22} {tc:>8.1f} {real:>8.1f} {m6:>6.3f}   {flag}  (N={n_fwd})')
+print()
+print('注意: M6 因 microbench CSV 膨胀 (R10) 暂不可信。Phase 3 验收以 M3+M5 为主指标。')
+print('      如果 forward pass 结构未经 AI 验证, M6 分母可能不准确。')
 "
 ```
 
