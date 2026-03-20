@@ -98,6 +98,11 @@ def main():
         help="Quantize the KV cache with the given action",
     )
     parser.add_argument(
+        "--enable-flashcomm-v1",
+        action="store_true",
+        help="Enable FlashCommV1 graph rewrite pass during compilation.",
+    )
+    parser.add_argument(
         "--graph-log-url",
         type=str,
         default=None,
@@ -292,6 +297,7 @@ def main():
 
     if args.graph_log_url:
         config.compilation.debug.graph_log_url = args.graph_log_url
+    config.compilation.passes.enable_flashcomm_v1 = args.enable_flashcomm_v1
 
     selected_embedding_tp_mode = args.word_embedding_tp
     args.word_embedding_tp = selected_embedding_tp_mode is not None

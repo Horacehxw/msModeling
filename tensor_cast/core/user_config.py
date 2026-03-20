@@ -41,6 +41,7 @@ class UserInputConfig:
     quantize_attention_action: QuantizeAttentionAction = (
         QuantizeAttentionAction.DISABLED
     )
+    enable_flashcomm_v1: bool = False
     decode: bool = False
     num_mtp_tokens: int = 0
     mtp_acceptance_rate: List[float] = field(

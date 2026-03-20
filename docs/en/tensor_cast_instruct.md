@@ -60,6 +60,15 @@ Run a simulated LLM inference pass and dump the perf result.
 ```
 Run `python -m cli.inference.text_generate --help` for details.
 
+When using the legacy `tensor_cast.scripts.text_generate` entrypoint, you can
+optionally add `--enable-flashcomm-v1` to enable the FlashCommV1 graph rewrite
+pass. This flag is only meaningful together with `--compile`. FlashCommV1 and
+the matmul-allreduce fusion path target overlapping communication patterns, so
+they should be treated as alternative compile configurations and enabled
+explicitly by the user when needed. The current intended usage is prefill only:
+the original profiling setup does not enable FlashCommV1 for decode, so decode
+alignment should be validated without `--enable-flashcomm-v1`.
+
 
 ### Run video generation inference for diffusion models
 We provide a `video_generate.py` command line interface to simulate the forward pass and performance of diffusion transformer models. The script supports simulating the inference process of video generation models (e.g., Stable Video Diffusion-like architectures) with configurable input dimensions, sampling steps, and parallelism settings. A detailed table summary of operator performance breakdown is provided by default. An option is also provided to dump the performance timeline as a Chrome Trace file.
@@ -108,6 +117,19 @@ python -m cli.inference.text_generate Qwen/Qwen3-32B --num-queries 2 --query-len
 Running decode is similar by tweaking the input length and context length. Usually, the input length is 1.
 ```bash
 python -m cli.inference.text_generate Qwen/Qwen3-32B --num-queries 10 --query-length 1 --context-length 4500 --device TEST_DEVICE --quantize-linear-action W8A8_STATIC
+```
+
+#### Run prefill profiling with FlashCommV1
+If you want to study FlashCommV1 behavior in compile mode, enable it explicitly
+on the legacy script entrypoint for prefill workloads. Decode profiling should
+keep FlashCommV1 disabled to stay aligned with the original profiling setup:
+```bash
+python3.10 -m tensor_cast.scripts.text_generate Qwen/Qwen3-32B \
+  --num-queries 10 --query-length 4104 \
+  --device ATLAS_800_A3_752T_128G_DIE --world-size 16 --tp-size 16 \
+  --word-embedding-tp row --quantize-linear-action DISABLED \
+  --performance-model profiling --compile --enable-flashcomm-v1 \
+  --perf-database tensor_cast/performance_model/perf_database/data/ATLAS_800_A3_752T_128G_DIE/vllm_ascend/vllm0.15.0_torch2.9.0_cann8.5
 ```
 
 ## TODO List
