@@ -18,6 +18,7 @@ class compilation:
         enable_life_combine_quant = True
         enable_merge_linear = True
         enable_sink_split = True
+        enable_flashcomm_v1 = False
 
     class fusion_patterns:
         enable_rms_norm = True

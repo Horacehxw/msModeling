@@ -23,6 +23,7 @@ from .passes.lift_quant_pass import LiftCombineQuantPass
 from .passes.merge_linear_pass import MergeLinearPass
 from .passes.peep_hole_pass import PeepHolePass
 from .passes.redundant_node_elimination_pass import ReduandantNodeEliminationPass
+from .passes.flashcomm_v1_pass import FlashCommV1Pass
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +79,7 @@ class CompilerBackend:
             self.apply_redundant_node_elimination_pass(fx_graph, inputs)
             self.apply_quantization_passes(fx_graph, inputs)
             self.apply_pattern_match_passes(fx_graph, inputs)
+            self.apply_flashcomm_v1_pass(fx_graph, inputs)
             return fx_graph
 
         def graph_rewrite_after_freezing(fx_graph, inputs):
@@ -151,6 +153,20 @@ class CompilerBackend:
         logger.debug("Graph after pattern matching:")
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(gm.print_readable(print_output=False))
+
+    def apply_flashcomm_v1_pass(self, gm: fx.GraphModule, inputs):
+        GraphTransformObserver = functools.partial(
+            torch.fx.passes.graph_transform_observer.GraphTransformObserver,
+            subsystem="flashcomm_v1_pass",
+            log_url=config.compilation.debug.graph_log_url,
+        )
+        if config.compilation.passes.enable_flashcomm_v1:
+            GraphTransformObserver(gm, "flashcomm_v1_pass").apply_gm_pass(
+                FlashCommV1Pass()
+            )
+            logger.debug("Graph after FlashCommV1 pass:")
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(gm.print_readable(print_output=False))
 
     def apply_decompose_auto_functionalized_pass(self, gm: fx.GraphModule):
         GraphTransformObserver = functools.partial(

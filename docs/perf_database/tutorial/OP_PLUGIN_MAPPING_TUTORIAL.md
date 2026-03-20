@@ -343,6 +343,12 @@ python3.10 -m tensor_cast.scripts.text_generate $MODEL \
   --perf-database $DATA_DIR
 ```
 
+如果你在验证 FlashCommV1 对齐，可额外添加 `--enable-flashcomm-v1`。
+该开关只在 `--compile` 打开时生效；同时它与 `matmul_allreduce` 这类
+MC2 融合路径会竞争同一部分通信子图，因此通常应作为单独配置显式开启，
+不要默认与其他 compile pass 一起混用。当前该开关仅用于 prefill 对齐；
+原始 decode profiling 不启用 FlashCommV1，因此 decode 场景下应保持关闭。
+
 ### 步骤 3：对每个 MISS 进行分类
 
 输出会显示 `EmpiricalPerformanceModel: X/Y ops matched`。对每个 MISS 进行分类：
@@ -382,21 +388,23 @@ MoE 模型匹配率较低是预期的，因为 TC 的 compile pass 产生的中�
 
 ## 10. 常见陷阱
 
-1. **缺少 `--compile`**：不加此参数时，融合算子（SwiGlu、AddRmsNorm、MC2）会分解为 70+ 个 aten 原始算子，无法匹配 profiling 内核。profiling 模式下务必使用 `--compile`。
+1. **缺少 `--compile`**：不加此参数时，融合算子（SwiGlu、AddRmsNorm、MC2、FlashCommV1）会分解为 70+ 个 aten 原始算子，无法匹配 profiling 内核。profiling 模式下务必使用 `--compile`。
 
-2. **验证参数错误**：用 prefill 参数（`--query-length 3500`）去验证 decode 的 profiling 数据（`batch=4, query-length=1`）会导致大量 shape 不匹配。务必先从 CSV shape 推导参数（见第 9 节步骤 1）。
+2. **混用 `--enable-flashcomm-v1` 与 MC2 配置**：FlashCommV1 与 `matmul_allreduce` 会改写部分重叠的通信模式，通常应视为二选一的 compile 配置。做 profiling 对齐时，先明确当前要验证哪条路径，再决定是否添加 `--enable-flashcomm-v1`。另外，当前 FlashCommV1 只用于 prefill，对齐 decode profiling 时不要开启。
 
-3. **重命名内核类型错误**：CANN 版本可能重命名内核。务必核实 profiling 数据中的 `Type` 列，并用 `alternate_kernel_types` 实现跨版本兼容。
+3. **验证参数错误**：用 prefill 参数（`--query-length 3500`）去验证 decode 的 profiling 数据（`batch=4, query-length=1`）会导致大量 shape 不匹配。务必先从 CSV shape 推导参数（见第 9 节步骤 1）。
 
-4. **混淆 Name 和 Type 列**：`Type` 列是干净的 OPTYPE（我们的查询键），`Name` 列是完整的层级路径。始终按 Type 聚合。
+4. **重命名内核类型错误**：CANN 版本可能重命名内核。务必核实 profiling 数据中的 `Type` 列，并用 `alternate_kernel_types` 实现跨版本兼容。
 
-5. **复合 vs 单一**：某些 TC 算子映射到多个 NPU 内核（MLA decode = BatchMatMulV2 + FIA + batch_matmul_transpose）。使用 `composite: true` + `sub_kernels`。
+5. **混淆 Name 和 Type 列**：`Type` 列是干净的 OPTYPE（我们的查询键），`Name` 列是完整的层级路径。始终按 Type 聚合。
 
-6. **Shape 不匹配 ≠ 映射错误**：shape MISS（CSV 中无匹配 shape）与映射错误（kernel_type 错误）不同。shape 缺失是数据覆盖缺口，不是 op_mapping 的问题。
+6. **复合 vs 单一**：某些 TC 算子映射到多个 NPU 内核（MLA decode = BatchMatMulV2 + FIA + batch_matmul_transpose）。使用 `composite: true` + `sub_kernels`。
 
-7. **MoE 模型低匹配率**：MoE 模型（DSv3）天然匹配率较低（35-50%），因为 TC 的 MoE 分发和 MLA 分解产生的中间 shape 与真实 vLLM-ascend 不同。这是已知的 TC 仿真限制，不是算子映射错误。
+7. **Shape 不匹配 ≠ 映射错误**：shape MISS（CSV 中无匹配 shape）与映射错误（kernel_type 错误）不同。shape 缺失是数据覆盖缺口，不是 op_mapping 的问题。
 
-8. **通信算子不使用 shape**：HCCL 算子（allreduce、allgather 等）使用 message_bytes，不使用 tensor shape。不要尝试 shape 匹配。
+8. **MoE 模型低匹配率**：MoE 模型（DSv3）天然匹配率较低（35-50%），因为 TC 的 MoE 分发和 MLA 分解产生的中间 shape 与真实 vLLM-ascend 不同。这是已知的 TC 仿真限制，不是算子映射错误。
+
+9. **通信算子不使用 shape**：HCCL 算子（allreduce、allgather 等）使用 message_bytes，不使用 tensor shape。不要尝试 shape 匹配。
 
 ## 11. 快速参考：常用映射
 
