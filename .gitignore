@@ -1,6 +1,10 @@
 .vscode
 **/__pycache__
 .idea
+.DS_Store
+
+# perf_database task tracking (ephemeral)
+docs/perf_database/tasks/
 
 # DT coverage report
 **/coverage

@@ -841,7 +841,7 @@ def discover_operators(profiling_output: Path, op_mapping_yaml: Path) -> Dict:
 | **M3**: Fused Op HR (不含 zc) | 同 M2 排除 zero_cost | 同 M2 排除 zero_cost | ✓ | ✓ | ✓ | 在线 | 真实计算覆盖 |
 | **M4**: Per-Shape Match HR | HIT 唯一 (func, shape) 数 | 所有唯一 (func, shape) 数 | ✓ | — | — | 在线 | Shape 缺口诊断 |
 | **M5**: Simulated Latency Coverage | HIT ops 的 analytic 延迟之和 | 所有 ops 的 analytic 延迟之和 | — | — | — | 在线 | 仿真视角延迟覆盖率 |
-| **M6**: Empirical Prediction Coverage | HIT ops 的 empirical (microbench) duration 之和 | step_trace_time 的 Computing + Comm(Not Overlapped) | — | — | — | 半离线 | **辅助验收：empirical 预测 vs 真实 E2E** |
+| **M6**: Empirical E2E Ratio | HIT ops 的 empirical (microbench) duration 之和 (全模型 replay) | step_trace_time / N_forward_passes (单次 forward pass) | — | — | — | 半离线 | **验收标准：M6=1.0 完美，0.85–1.15 为 Phase 3 目标** |
 
 #### 指标详细定义
 
@@ -864,23 +864,33 @@ def discover_operators(profiling_output: Path, op_mapping_yaml: Path) -> Dict:
 - 本质是 M3 的延迟加权版本：高延迟算子权重大，低延迟辅助算子权重小
 - 在线计算，不需要外部数据
 
-**M6**: Empirical Prediction Coverage（v1.4.2 更新）
+**M6**: Empirical E2E Prediction Ratio（v1.5 重新定义）
 
-- 跑一次 TC `--performance-model profiling --export-metrics report.json` 得到 HIT/MISS 结果和 empirical duration
-- 分子 = HIT ops 从 DataSource 返回的 empirical (microbench CSV) 延迟之和（per-shape 精确匹配）
-- 分母 = `step_trace_time.csv` 的 `Computing + Communication(Not Overlapped)`（Ascend profiler 权威 E2E 分解）
-- M6 回答："我们的 empirical 模型能预测真实 E2E kernel 时间的多少？"
-- 不使用 kernel_details.csv sum 做分母，因为 Decode 场景下 CUDAGraph 导致 kernel_details sum >> wall-clock（差异 50-72%）
-- `*AicpuKernel` 条目为 AICPU dispatch wrapper，与 `hcom_*` 1:1 重复，仅用于诊断（排除）
-- M6 理论上可 >100%（microbench 高估 vs 真实运行），此差异反映 microbench 数据质量
+```
+M6 = Empirical_HIT_total / Real_per_forward_pass
+```
 
-**M5 vs M6**: M5 从 TC 仿真视角看（权重=analytic Roofline），M6 从 empirical 预测 vs NPU 真实 E2E 视角看。两者差异反映 analytic 模型对算子重要性判断的准确性。
+- 跑一次 TC `--performance-model profiling --export-metrics report.json` 得到 empirical HIT duration
+- **分子** = HIT ops 的 empirical (microbench CSV) 延迟之和，乘以 replay_multiplier 得到全模型 replay 总量。**不含 analytic fallback**（MISS ops 不计入）
+- **分母** = `step_trace_time.csv` 的 `(Computing + Comm_NotOverlapped) / N_forward_passes`
+  - `step_trace_time.csv` 的 `Step` 列为空时，聚合了整个 profiling 窗口的所有 forward passes
+  - `N_forward_passes` 从 `kernel_details.csv` 估算：Qwen3 用 `FIA_count / 64`，DSv3 用 `DFC_count / 58`
+  - 也可通过 `--n-forward-passes` 手动指定
+- M6 = 1.0 表示完美预测；M6 > 1 表示 empirical 高估（microbench isolation effect）；M6 < 1 表示覆盖不足（MISS ops 未贡献）
+- `*AicpuKernel` 条目为 AICPU dispatch wrapper，仅用于诊断（排除）
+
+**为什么只看 empirical-only（不含 analytic fallback）？**
+- Analytic fallback 用 Roofline 模型估算 MISS ops 延迟，其精度受限于通信模型、不可预测的 kernel fusion 等因素
+- 将 analytic fallback 计入 M6 会混淆"empirical 数据质量"和"analytic 模型准确度"两个不同问题
+- M6 的目的是评估 **已有 empirical 数据的质量和覆盖度**：M6 < 1 说明覆盖不足（需要更多 microbench 数据），M6 > 1 说明 microbench 数据偏高（isolation vs real workload）
+
+**M5 vs M6**: M5 从 TC 仿真视角看（权重=analytic Roofline，在线），M6 从 empirical 预测 vs NPU 真实单次 forward pass 看（半离线）。M5 含 analytic fallback，M6 不含。
 
 #### Phase 目标
 
 - Phase 1: M1–M3 指标体系建立 ✅
 - Phase 2: M3 > 50%, M4/M5 建立 ✅
-- Phase 3: M5 > 80%, M6 作为辅助验收（目标 TBD）
+- Phase 3: M5 > 80%, **0.85 ≤ M6 ≤ 1.15**（±15% 以内）
 
 ---
 

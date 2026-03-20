@@ -86,7 +86,10 @@ python3.10 -m tensor_cast.scripts.text_generate deepseek-ai/DeepSeek-V3 \
   --performance-model profiling --compile --perf-database "$DATA_DIR" \
   --export-metrics results/dsv3_decode_metrics.json --log-level info
 
-# M6 (半离线): 需要 ASCEND_PROFILER_OUTPUT 目录 (含 step_trace_time.csv)
+# M6 (半离线): Empirical E2E Ratio = empirical_hit_total / real_per_fwd
+# M6=1.0 完美, >1 高估, <1 低估. Phase 3 目标: 0.85-1.15
+# 自动通过 ArgMaxV2 (sampling kernel) 检测 forward pass 数量，model-agnostic
+# 需要 ASCEND_PROFILER_OUTPUT 目录 (含 step_trace_time.csv + kernel_details.csv)
 PROF_BASE="/Users/horacehxw/Data/Profiling/Profiling-0313-phase1-e2e-test"
 
 python3.10 tools/perf_data_collection/compute_m6.py \
@@ -145,7 +148,7 @@ for name, path in [
 4. **指标趋势**: M1-M6 当前值 vs Phase 目标，差距分析。重点关注:
    - M3 vs >50% 目标 (Phase 2)
    - M5 vs >80% 目标 (Phase 3)
-   - M6 baseline 建立情况
+   - M6 vs 0.85-1.15 目标 (Phase 3): M6<1 说明覆盖不足（需更多 microbench 数据），M6>1 说明 microbench 偏高
    - M4 MISS shape list → 指导 microbench 数据采集优先级
 
 ### Step 3: 按模式生成输出
@@ -173,18 +176,19 @@ Phase 3      [3.19━━━━3.23]
 ## 关键指标 (M1-M6)
 {完整 6 指标表 + 进度条}
 示例:
-| 场景 | M1 | M2 | M3 | M4 | M5 | M6 |
-|------|:--:|:--:|:--:|:--:|:--:|:--:|
-| Qwen3 PF | 78.6% | 63.3% | 31.2% | 45.5% | 61.0% | 12.9% |
-| Qwen3 DC | 81.8% | 70.0% | 43.8% | 54.5% | 61.0% | 1.6% |
-| DSv3 PF  | 60.2% | 38.6% | 12.9% | 32.8% | 62.6% | 13.2% |
-| DSv3 DC  | 60.6% | 40.9% | 16.1% | 32.8% | 46.4% | 10.1% |
+| 场景 | M1 | M2 | M3 | M4 | M5 | M6 (ratio) |
+|------|:--:|:--:|:--:|:--:|:--:|:----------:|
+| Qwen3 PF | 77.8% | 47.4% | 23.1% | 47.4% | 52.4% | 0.531 |
+| Qwen3 DC | 84.1% | 63.2% | 46.2% | 63.2% | 59.5% | 1.607 |
+| DSv3 PF  | 70.6% | 50.0% | 15.4% | 41.2% | 71.9% | 0.531 |
+| DSv3 DC  | 71.8% | 52.3% | 19.2% | 43.1% | 56.3% | 0.303 |
 
 Phase 目标进度:
 | 指标 | 目标 | Qwen3 PF | DSv3 PF | 进度 |
 |------|:---:|:--------:|:-------:|------|
-| M3   | >50% | 31.2% | 12.9% | ▓▓▓░░░░░░░ |
-| M5   | >80% | 61.0% | 62.6% | ▓▓▓▓▓▓░░░░ |
+| M3   | >50% | 23.1% | 15.4% | ▓▓░░░░░░░░ |
+| M5   | >80% | 52.4% | 71.9% | ▓▓▓▓▓░░░░░ |
+| M6   | 0.85-1.15 | 0.531 | 0.531 | ▓▓▓▓▓░░░░░ |
 
 如有历史数据，附趋势:
 M3 趋势 (Qwen3 PF):  Phase1 → Phase2 → 当前
@@ -196,7 +200,7 @@ M3 趋势 (Qwen3 PF):  Phase1 → Phase2 → 当前
 - M3: 计算算子 HIT 率 (核心进度)
 - M4: per-shape HIT 率 (缺口诊断)
 - M5: 仿真延迟覆盖 (Roofline 权重)
-- M6: empirical 预测覆盖 (vs 真实 E2E, 辅助验收)
+- M6: empirical E2E ratio (vs 真实 per-fwd, 目标 0.85–1.15)
 
 ## 风险矩阵
 {用 ASCII 矩阵可视化 TOP 风险的 影响×概率 分布}
@@ -270,8 +274,9 @@ feat/perf-database vs gitcode-ascend/develop:
 {3-5 句话总结当前状态，核心矛盾，关键判断}
 
 ## 二、关键指标 (M1-M6)
-{M1-M6 全量指标表 (4 场景) + Phase 目标进度 + 收益路径估算}
-{M6 需要 ASCEND_PROFILER_OUTPUT 数据，如不可用则注明}
+{M1-M5: 百分比指标表 (4 场景) + M6: ratio 列 (1.0=完美, 目标 0.85-1.15)}
+{M6 需要 ASCEND_PROFILER_OUTPUT 数据 + --export-metrics JSON，如不可用则注明}
+{Phase 目标进度 + 收益路径估算}
 
 ## 三、TOP 风险 (按影响排序)
 {风险表: #/风险/影响/状态/缓解}

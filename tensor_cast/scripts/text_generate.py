@@ -311,7 +311,10 @@ def main():
         from ..performance_model.empirical import EmpiricalPerformanceModel
 
         if isinstance(model_runner.perf_model, EmpiricalPerformanceModel):
-            model_runner.perf_model.export_hit_miss_report(Path(args.export_metrics))
+            model_runner.perf_model.export_hit_miss_report(
+                output_path=Path(args.export_metrics),
+                tc_predicted_total_s=metrics.execution_time_s,
+            )
 
 
 if __name__ == "__main__":

@@ -216,19 +216,35 @@ class TestExportHitMissReport:
         assert m1["m1_total"] == 2
         assert abs(m1["m1_raw_op_count_hr"] - 0.5) < 1e-9
 
-    def test_m6_input_empirical_sum(self):
-        """m6_input contains sum of empirical (not analytic) HIT durations."""
+    def test_m6_input_tc_predicted_total(self):
+        """m6_input contains tc_predicted_total_s when provided."""
         shape_a = ((2048, 5120), (5120, 768))
-        model = self._make_model(hit_shapes={shape_a}, analytic_latency_s=999.0)
+        model = self._make_model(hit_shapes={shape_a})
+        model.process_op(_make_op([(2048, 5120), (5120, 768)]))
+
+        report = model.export_hit_miss_report(tc_predicted_total_s=1.5)
+        assert report["m6_input"]["tc_predicted_total_s"] == 1.5
+
+    def test_m6_input_empirical_hit_total(self):
+        """m6_input.empirical_hit_total_s accumulates across process_op calls."""
+        shape_a = ((2048, 5120), (5120, 768))
+        model = self._make_model(hit_shapes={shape_a})
         model.process_op(_make_op([(2048, 5120), (5120, 768)]))  # HIT
         model.process_op(_make_op([(2048, 5120), (5120, 768)]))  # HIT
 
         report = model.export_hit_miss_report()
         # ControlledDataSource returns 100.0 us = 100e-6 s per HIT
         expected = 100e-6 * 2
-        assert (
-            abs(report["m6_input"]["empirical_hit_duration_sum_s"] - expected) < 1e-12
-        )
+        assert abs(report["m6_input"]["empirical_hit_total_s"] - expected) < 1e-12
+
+    def test_m6_input_default_none(self):
+        """m6_input.tc_predicted_total_s is None when not provided."""
+        shape_a = ((2048, 5120), (5120, 768))
+        model = self._make_model(hit_shapes={shape_a})
+        model.process_op(_make_op([(2048, 5120), (5120, 768)]))
+
+        report = model.export_hit_miss_report()
+        assert report["m6_input"]["tc_predicted_total_s"] is None
 
     def test_write_json(self, tmp_path):
         """export_hit_miss_report writes valid JSON when output_path given."""
@@ -252,4 +268,5 @@ class TestExportHitMissReport:
         report = model.export_hit_miss_report()
         assert report["m1"]["m1_total"] == 0
         assert report["m5"]["m5_simulated_latency_coverage"] == 0.0
-        assert report["m6_input"]["empirical_hit_duration_sum_s"] == 0.0
+        assert report["m6_input"]["tc_predicted_total_s"] is None
+        assert report["m6_input"]["empirical_hit_total_s"] == 0.0
