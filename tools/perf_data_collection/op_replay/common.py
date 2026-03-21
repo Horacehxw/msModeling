@@ -97,6 +97,25 @@ def normalize_vllm_ascend_version(version: str) -> str:
     return normalized
 
 
+def normalize_op_name(name: str) -> str:
+    normalized = name.strip()
+    if normalized.endswith("_run.py"):
+        normalized = normalized.removesuffix("_run.py")
+    elif normalized.endswith("_run"):
+        normalized = normalized.removesuffix("_run")
+    elif normalized.endswith(".csv"):
+        normalized = normalized.removesuffix(".csv")
+    return normalized
+
+
+def resolve_device_type(runtime_torch) -> str:
+    if hasattr(runtime_torch, "npu") and runtime_torch.npu.is_available():
+        return "npu"
+    if hasattr(runtime_torch, "cuda") and runtime_torch.cuda.is_available():
+        return "cuda"
+    return "cpu"
+
+
 def ensure_npu_available() -> None:
     runtime_torch, _ = get_runtime_modules()
     has_npu = hasattr(runtime_torch, "npu") and runtime_torch.npu.is_available()
