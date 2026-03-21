@@ -6,16 +6,21 @@ Purpose:
 """
 
 from __future__ import annotations
+
+from pathlib import Path
+
 from common import (
     build_input_tensor,
     build_standard_argparser,
     ensure_npu_available,
     get_runtime_modules,
+    resolve_device_type,
     get_target_data_dir,
     iter_csv_rows,
     parse_list_field,
     parse_shape,
 )
+
 
 def build_argparser():
     return build_standard_argparser(
@@ -26,7 +31,8 @@ def build_argparser():
         version_help="vLLM-Ascend version.",
     )
 
-def run_row(csv_path, row_index: int, row: dict[str, str]) -> None:
+
+def run_row(csv_path: Path, row_index: int, row: dict[str, str]) -> None:
     runtime_torch, _ = get_runtime_modules()
     input_shapes = [parse_shape(item) for item in parse_list_field(row["Input Shapes"])]
     input_formats = parse_list_field(row["Input Formats"])
@@ -37,19 +43,14 @@ def run_row(csv_path, row_index: int, row: dict[str, str]) -> None:
         print(f"[SKIP] {csv_path}:{row_index} Missing shapes")
         return
 
-    # Resolve device
-    device_type = "cpu"
-    if hasattr(runtime_torch, "npu") and runtime_torch.npu.is_available():
-        device_type = "npu"
-    elif hasattr(runtime_torch, "cuda") and runtime_torch.cuda.is_available():
-        device_type = "cuda"
+    device_type = resolve_device_type(runtime_torch)
 
     x = build_input_tensor(input_shapes[0], input_formats[0], input_dtypes[0])
     if device_type == "cuda":
         x = x.cuda()
     elif device_type == "cpu":
         x = x.cpu()
-    
+
     # Infer transposed dims
     in_shape = input_shapes[0]
     out_shape = output_shapes[0]
@@ -62,7 +63,7 @@ def run_row(csv_path, row_index: int, row: dict[str, str]) -> None:
 
     # microbench_api: torch.transpose + contiguous
     result = runtime_torch.transpose(x, dim0, dim1).contiguous()
-    
+
     # Synchronization
     if device_type == "npu":
         runtime_torch.npu.synchronize()
@@ -74,6 +75,7 @@ def run_row(csv_path, row_index: int, row: dict[str, str]) -> None:
         f"shapes={row['Input Shapes']} formats={row['Input Formats']} "
         f"dtypes={row['Input Data Types']} output={tuple(result.shape)}"
     )
+
 
 def main() -> None:
     args = build_argparser().parse_args()
@@ -99,6 +101,7 @@ def main() -> None:
         f"Processed {total_rows} Transpose rows from {len(csv_paths)} csv file(s) "
         f"under {target_data_dir}."
     )
+
 
 if __name__ == "__main__":
     main()

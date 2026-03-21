@@ -22,21 +22,11 @@ import runpy
 import subprocess
 import sys
 
-from common import SUPPORTED_DEVICES, check_version, get_target_data_dir
+from common import SUPPORTED_DEVICES, check_version, get_target_data_dir, normalize_op_name
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 SELF_NAME = Path(__file__).name
-
-
-def normalize_op_name(name: str) -> str:
-    normalized = name.strip()
-    if normalized.endswith("_run.py"):
-        normalized = normalized.removesuffix("_run.py")
-    elif normalized.endswith("_run"):
-        normalized = normalized.removesuffix("_run")
-    return normalized
-
 
 def build_argparser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -204,9 +194,8 @@ def main() -> None:
             )
             executed_count += 1
         except subprocess.CalledProcessError as exc:
-            if exc.returncode != 0:
-                print(f"[FAIL] {script_path.name} exited with code {exc.returncode}")
-                raise
+            print(f"[FAIL] {script_path.name} exited with code {exc.returncode}")
+            raise
         except SystemExit as exc:
             if exc.code not in (0, None):
                 print(f"[FAIL] {script_path.name} exited with code {exc.code}")

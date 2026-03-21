@@ -23,7 +23,6 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-import shlex
 import shutil
 import subprocess
 import sys
@@ -35,7 +34,7 @@ OP_REPLAY_DIR = CURRENT_DIR / "op_replay"
 if str(OP_REPLAY_DIR) not in sys.path:
     sys.path.insert(0, str(OP_REPLAY_DIR))
 
-from common import SUPPORTED_DEVICES, check_version, get_target_data_dir
+from common import SUPPORTED_DEVICES, check_version, get_target_data_dir, normalize_op_name
 
 if TYPE_CHECKING:
     import torch
@@ -126,18 +125,6 @@ SUMMARY_SAMPLE_LIMIT = 3
 DEFAULT_GAP_RATIO_LOWER_BOUND = 0.8
 DEFAULT_GAP_RATIO_UPPER_BOUND = 1.2
 TOP_GAP_REPORT_LIMIT = 20
-
-
-def normalize_op_name(name: str) -> str:
-    normalized = name.strip()
-    if normalized.endswith("_run.py"):
-        normalized = normalized.removesuffix("_run.py")
-    elif normalized.endswith("_run"):
-        normalized = normalized.removesuffix("_run")
-    elif normalized.endswith(".csv"):
-        normalized = normalized.removesuffix(".csv")
-    return normalized
-
 
 def list_available_ops() -> list[str]:
     return sorted(normalize_op_name(path.stem) for path in OP_REPLAY_DIR.glob("*_run.py"))
@@ -262,15 +249,20 @@ def list_prof_dirs() -> set[Path]:
 
 def run_msprof(device: str, vllm_ascend_version: str, selected_ops: list[str] | None) -> set[Path]:
     before_prof_dirs = list_prof_dirs()
-    command = (
-        f"msprof python {shlex.quote(RUN_ALL_SCRIPT.as_posix())} "
-        f"--device {shlex.quote(device)} "
-        f"--vllm-ascend-version {shlex.quote(vllm_ascend_version)} "
-        f"--execution-mode inprocess"
-    )
+    command = [
+        "msprof",
+        "python",
+        str(RUN_ALL_SCRIPT),
+        "--device",
+        device,
+        "--vllm-ascend-version",
+        vllm_ascend_version,
+        "--execution-mode",
+        "inprocess",
+    ]
     if selected_ops:
-        command += " --op " + " ".join(shlex.quote(op_name) for op_name in selected_ops)
-    subprocess.run(command, shell=True, check=True, cwd=REPO_ROOT)
+        command += ["--op"] + selected_ops
+    subprocess.run(command, check=True, cwd=REPO_ROOT)
     after_prof_dirs = list_prof_dirs()
     return after_prof_dirs - before_prof_dirs
 
@@ -725,6 +717,7 @@ def main() -> None:
     if not args.prof_path:
         ensure_npu_available()
 
+    succeeded = False
     prof_dirs: set[Path] = set()
     target_data_dir = get_target_data_dir(args.device, args.vllm_ascend_version)
     try:
@@ -761,9 +754,13 @@ def main() -> None:
         )
         print(f"\n[REPORT] {report_path}")
         print(f"[REPORT] {full_gap_csv_path}")
+        succeeded = True
     finally:
-        if not args.prof_path:
+        if not args.prof_path and succeeded:
             cleanup_prof_dirs(prof_dirs)
+        elif not args.prof_path and prof_dirs:
+            preserved = ", ".join(str(path) for path in sorted(prof_dirs))
+            print(f"[PRESERVE] profiling data kept for debugging: {preserved}")
 
 
 if __name__ == "__main__":
