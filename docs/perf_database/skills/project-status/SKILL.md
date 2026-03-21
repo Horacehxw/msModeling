@@ -225,7 +225,14 @@ print('      如果 forward pass 结构未经 AI 验证, M6 分母可能不准�
 **Agent 3: 团队动态**
 ```
 1. 读取日报: /Users/horacehxw/Documents/hxw-华为/蚂蚁仿真器项目/日报\日报汇总.txt
-2. 读取最近 3 天站会纪要 PDF: /Users/horacehxw/Documents/hxw-华为/蚂蚁仿真器项目/日报\智能纪要*.pdf
+2. 读取所有站会纪要 PDF: /Users/horacehxw/Documents/hxw-华为/蚂蚁仿真器项目/日报/智能纪要*.pdf
+   先列出所有纪要文件，然后逐个提取:
+   ls "/Users/horacehxw/Documents/hxw-华为/蚂蚁仿真器项目/日报/"智能纪要*.pdf
+   对每个 PDF 使用 text 模式提取 (低 context 开销):
+   python3.10 ~/.claude/scripts/read_pdf.py "<pdf_path>" --mode text
+   如需查看图表/流程图, 改用 image 模式:
+   python3.10 ~/.claude/scripts/read_pdf.py "<pdf_path>" --mode image --pages 1
+   然后用 Read 工具读取输出的 PNG 文件
    - 提取每人进展、阻塞、风险信号
    - 提取站会决策和 action items
    - 提取待办清单
