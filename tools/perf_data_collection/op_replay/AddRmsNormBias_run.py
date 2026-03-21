@@ -30,6 +30,7 @@ from common import (
     ensure_npu_available,
     get_runtime_modules,
     get_target_data_dir,
+    init_runtime,
     iter_csv_rows,
     parse_shape,
 )
@@ -56,15 +57,23 @@ def normalize_dtype_name(dtype_name: str) -> str:
 
 
 def build_row_case(row: dict[str, str]):
+    init_runtime()
     input_shapes = [parse_shape_or_none(item) for item in split_metadata_field(row["Input Shapes"])]
     input_formats = [item if item else "NULL" for item in split_metadata_field(row["Input Formats"])]
     input_dtypes = [normalize_dtype_name(item) for item in split_metadata_field(row["Input Data Types"])]
     output_shapes = [parse_shape_or_none(item) for item in split_metadata_field(row["Output Shapes"])]
+    output_dtypes = [normalize_dtype_name(item) for item in split_metadata_field(row["Output Data Types"])]
+    output_formats = [item if item else "NULL" for item in split_metadata_field(row["Output Formats"])]
 
     if not (len(input_shapes) == len(input_formats) == len(input_dtypes) == 4):
         raise ValueError(
             "AddRmsNormBias expects four input metadata slots, got "
             f"shapes={len(input_shapes)} formats={len(input_formats)} dtypes={len(input_dtypes)}"
+        )
+    if not (len(output_shapes) == len(output_dtypes) == len(output_formats) == 3):
+        raise ValueError(
+            "AddRmsNormBias expects three output metadata slots, got "
+            f"shapes={len(output_shapes)} dtypes={len(output_dtypes)} formats={len(output_formats)}"
         )
 
     if any(input_shapes[index] is None for index in (0, 1, 2)):
@@ -104,15 +113,26 @@ def build_row_case(row: dict[str, str]):
         dtype_name=input_dtypes[2],
     )
 
+    beta_is_absent = beta_shape is None or input_dtypes[3] == "DT_UNDEFINED" or input_formats[3] == "NULL"
     beta_tensor = None
-    if beta_shape is not None:
-        if input_dtypes[3] == "DT_UNDEFINED":
-            raise ValueError("beta shape exists but dtype is DT_UNDEFINED")
+    if not beta_is_absent:
         beta_tensor = build_input_tensor(
             shape=beta_shape,
             input_format=input_formats[3],
             dtype_name=input_dtypes[3],
         )
+    elif beta_shape is not None and input_dtypes[3] != "DT_UNDEFINED":
+        raise ValueError("beta format is NULL but shape/dtype indicate a present tensor")
+
+    expected_y_shape = output_shapes[0]
+    expected_rstd_shape = output_shapes[1]
+    expected_x_shape = output_shapes[2]
+    if expected_y_shape != x1_shape:
+        raise ValueError(f"expected y shape must match x shape, got y={expected_y_shape}, x={x1_shape}")
+    if expected_x_shape != x1_shape:
+        raise ValueError(f"expected x shape must match x1 shape, got x={expected_x_shape}, x1={x1_shape}")
+    if expected_rstd_shape is None:
+        raise ValueError("AddRmsNormBias expects rstd output shape metadata")
 
     return {
         "x1_tensor": x1_tensor,
@@ -121,6 +141,8 @@ def build_row_case(row: dict[str, str]):
         "beta_tensor": beta_tensor,
         "epsilon": 1e-6,
         "expected_output_shapes": output_shapes,
+        "expected_output_dtypes": output_dtypes,
+        "expected_output_formats": output_formats,
     }
 
 
@@ -143,21 +165,47 @@ def build_argparser():
 
 
 def run_row(csv_path, row_index: int, row: dict[str, str]) -> None:
-    runtime_torch, _ = get_runtime_modules()
+    runtime_torch, runtime_torch_npu = get_runtime_modules()
     case = build_row_case(row)
 
-    y, rstd, x = runtime_torch.ops._C_ascend.npu_add_rms_norm_bias(
-        case["x1_tensor"],
-        case["x2_tensor"],
-        case["gamma_tensor"],
-        case["beta_tensor"],
-        case["epsilon"],
-    )
+    api_name = "torch.ops._C_ascend.npu_add_rms_norm_bias"
+    try:
+        y, rstd, x = runtime_torch.ops._C_ascend.npu_add_rms_norm_bias(
+            case["x1_tensor"],
+            case["x2_tensor"],
+            case["gamma_tensor"],
+            case["beta_tensor"],
+            case["epsilon"],
+        )
+    except RuntimeError as exc:
+        if "does not support opType [AddRmsNormBias]" not in str(exc):
+            raise
+        # Some SoC/CANN combinations do not register AddRmsNormBias.
+        # Fall back to AddRmsNorm and apply beta separately so current rows
+        # remain replayable, while still surfacing the degraded path in logs.
+        y, rstd, x = runtime_torch_npu.npu_add_rms_norm(
+            case["x1_tensor"],
+            case["x2_tensor"],
+            case["gamma_tensor"],
+            case["epsilon"],
+        )
+        if case["beta_tensor"] is not None:
+            y = y.add(case["beta_tensor"])
+        api_name = "torch_npu.npu_add_rms_norm(+bias fallback)"
     runtime_torch.npu.synchronize()
+
+    actual_shapes = [tuple(y.shape), tuple(rstd.shape), tuple(x.shape)]
+    expected_shapes = case["expected_output_shapes"]
+    if expected_shapes[0] is not None and actual_shapes[0] != expected_shapes[0]:
+        raise ValueError(f"y shape mismatch: actual={actual_shapes[0]} expected={expected_shapes[0]}")
+    if expected_shapes[1] is not None and actual_shapes[1] != expected_shapes[1]:
+        raise ValueError(f"rstd shape mismatch: actual={actual_shapes[1]} expected={expected_shapes[1]}")
+    if expected_shapes[2] is not None and actual_shapes[2] != expected_shapes[2]:
+        raise ValueError(f"x shape mismatch: actual={actual_shapes[2]} expected={expected_shapes[2]}")
 
     print(
         f"[OK] {csv_path}:{row_index} "
-        f"api=torch.ops._C_ascend.npu_add_rms_norm_bias "
+        f"api={api_name} "
         f"shapes={row['Input Shapes']} dtypes={row['Input Data Types']} "
         f"beta={'present' if case['beta_tensor'] is not None else 'absent'} "
         f"y={tuple(y.shape)} rstd={tuple(rstd.shape)} x={tuple(x.shape)} "

@@ -30,7 +30,6 @@ from common import (
     get_target_data_dir,
     init_runtime,
     iter_csv_rows,
-    parse_list_field,
     parse_shape,
 )
 
@@ -72,9 +71,13 @@ def resolve_runtime_dtype(dtype_name: str):
 
 def parse_optional_shapes(raw_value: str) -> list[tuple[int, ...] | None]:
     values = []
-    for item in parse_list_field(raw_value):
+    cleaned = raw_value.strip().strip('"')
+    for item in cleaned.split(";"):
+        item = item.strip()
         upper = item.upper()
         if upper in {"UNDEFINED", "DT_UNDEFINED", "N/A", "NA", "NULL"}:
+            values.append(None)
+        elif not item:
             values.append(None)
         else:
             values.append(parse_shape(item))
@@ -83,9 +86,11 @@ def parse_optional_shapes(raw_value: str) -> list[tuple[int, ...] | None]:
 
 def parse_optional_text(raw_value: str) -> list[str]:
     values = []
-    for item in parse_list_field(raw_value):
+    cleaned = raw_value.strip().strip('"')
+    for item in cleaned.split(";"):
+        item = item.strip()
         upper = item.upper()
-        values.append("" if upper in {"UNDEFINED", "DT_UNDEFINED", "N/A", "NA", "NULL"} else item)
+        values.append("" if upper in {"", "UNDEFINED", "DT_UNDEFINED", "N/A", "NA", "NULL"} else item)
     return values
 
 
@@ -208,6 +213,14 @@ def build_row_case(row: dict[str, str]):
     if has_prefix_state:
         q_len = q_nope.shape[0]
         kv_len = k_nope.shape[0]
+        output_dtype_name = normalize_dtype_name(
+            pick_dtype_name(output_dtypes[0] if output_dtypes else "", pre_out_dtype, input_dtypes[0])
+        )
+        lse_dtype_name = pick_dtype_name(
+            output_dtypes[1] if len(output_dtypes) > 1 else "",
+            prev_lse_dtype,
+            "DT_FLOAT",
+        )
         pre_out = build_input_tensor(
             shape=pre_out_shape,
             input_format=input_formats[13],
@@ -229,6 +242,14 @@ def build_row_case(row: dict[str, str]):
         output = pre_out
         softmax_lse = prev_lse
     else:
+        output_dtype_name = normalize_dtype_name(
+            pick_dtype_name(output_dtypes[0] if output_dtypes else "", input_dtypes[0])
+        )
+        lse_dtype_name = pick_dtype_name(
+            output_dtypes[1] if len(output_dtypes) > 1 else "",
+            prev_lse_dtype,
+            "DT_FLOAT",
+        )
         pre_out = None
         prev_lse = None
         mask = build_mask_tensor(
@@ -245,17 +266,11 @@ def build_row_case(row: dict[str, str]):
         output = build_input_tensor(
             shape=output_shape,
             input_format="ND",
-            dtype_name=normalize_dtype_name(
-                pick_dtype_name(output_dtypes[0] if output_dtypes else "", input_dtypes[0])
-            ),
+            dtype_name=output_dtype_name,
         )
         softmax_lse = build_lse_tensor(
             shape=lse_shape,
-            dtype_name=pick_dtype_name(
-                output_dtypes[1] if len(output_dtypes) > 1 else "",
-                prev_lse_dtype,
-                "DT_FLOAT",
-            ),
+            dtype_name=lse_dtype_name,
         )
 
     head_num = q_nope.shape[1]
@@ -270,6 +285,7 @@ def build_row_case(row: dict[str, str]):
         "mask": mask,
         "seqlen": seqlen,
         "seqlen_candidates": seqlen_candidates,
+        "has_prefix_state": has_prefix_state,
         "head_num": head_num,
         "kv_head_num": head_num,
         "pre_out": pre_out,
@@ -279,6 +295,11 @@ def build_row_case(row: dict[str, str]):
         "calc_type": calc_type,
         "output": output,
         "softmax_lse": softmax_lse,
+        "output_shape": output_shape,
+        "lse_shape": lse_shape,
+        "output_dtype_name": output_dtype_name,
+        "lse_dtype_name": lse_dtype_name,
+        "input_dtype_name": pick_dtype_name(input_dtypes[0]),
     }
 
 
@@ -303,43 +324,104 @@ def run_row(csv_path, row_index: int, row: dict[str, str]) -> None:
     runtime_torch, runtime_torch_npu = get_runtime_modules()
     case = build_row_case(row)
 
+    default_configs = [
+        {
+            "name": "default_nomask_alias_2d",
+            "mask_type": "no_mask",
+            "mask": case["mask"],
+            "alias_output": True,
+        },
+        {
+            "name": "default_nomask_separate_2d",
+            "mask_type": "no_mask",
+            "mask": case["mask"],
+            "alias_output": False,
+        },
+        {
+            "name": "default_triu_alias_3d",
+            "mask_type": "mask_type_triu",
+            "mask": build_mask_tensor((1, RING_MASK_SIZE, RING_MASK_SIZE), case["input_dtype_name"]),
+            "alias_output": True,
+        },
+        {
+            "name": "default_triu_separate_3d",
+            "mask_type": "mask_type_triu",
+            "mask": build_mask_tensor((1, RING_MASK_SIZE, RING_MASK_SIZE), case["input_dtype_name"]),
+            "alias_output": False,
+        },
+    ]
+    configs = default_configs if case["has_prefix_state"] else [{
+        "name": "first_ring",
+        "mask_type": case["mask_type"],
+        "mask": case["mask"],
+        "alias_output": False,
+    }]
+
     last_exc = None
-    for seqlen in case["seqlen_candidates"]:
-        try:
-            output, softmax_lse = runtime_torch_npu.atb.npu_ring_mla(
-                q_nope=case["q_nope"],
-                q_rope=case["q_rope"],
-                k_nope=case["k_nope"],
-                k_rope=case["k_rope"],
-                value=case["value"],
-                mask=case["mask"],
-                seqlen=seqlen,
-                head_num=case["head_num"],
-                kv_head_num=case["kv_head_num"],
-                pre_out=case["pre_out"],
-                prev_lse=case["prev_lse"],
-                qk_scale=case["qk_scale"],
-                kernel_type="kernel_type_high_precision",
-                mask_type=case["mask_type"],
-                input_layout="type_bsnd",
-                calc_type=case["calc_type"],
-                output=case["output"],
-                softmax_lse=case["softmax_lse"],
-            )
-            case["seqlen"] = seqlen
-            break
-        except RuntimeError as exc:
-            last_exc = exc
+    attempts = []
+    for config in configs:
+        for seqlen in case["seqlen_candidates"]:
+            try:
+                if config["alias_output"]:
+                    output = case["pre_out"]
+                    softmax_lse = case["prev_lse"]
+                else:
+                    output = build_input_tensor(
+                        shape=case["output_shape"],
+                        input_format="ND",
+                        dtype_name=case["output_dtype_name"],
+                    )
+                    softmax_lse = build_lse_tensor(
+                        shape=case["lse_shape"],
+                        dtype_name=case["lse_dtype_name"],
+                    )
+
+                output, softmax_lse = runtime_torch_npu.atb.npu_ring_mla(
+                    q_nope=case["q_nope"],
+                    q_rope=case["q_rope"],
+                    k_nope=case["k_nope"],
+                    k_rope=case["k_rope"],
+                    value=case["value"],
+                    mask=config["mask"],
+                    seqlen=seqlen,
+                    head_num=case["head_num"],
+                    kv_head_num=case["kv_head_num"],
+                    pre_out=case["pre_out"],
+                    prev_lse=case["prev_lse"],
+                    qk_scale=case["qk_scale"],
+                    kernel_type="kernel_type_high_precision",
+                    mask_type=config["mask_type"],
+                    input_layout="type_bsnd",
+                    calc_type=case["calc_type"],
+                    output=output,
+                    softmax_lse=softmax_lse,
+                )
+                runtime_torch.npu.synchronize()
+                case["seqlen"] = seqlen
+                case["mask_type"] = config["mask_type"]
+                case["output"] = output
+                case["softmax_lse"] = softmax_lse
+                case["selected_config"] = config["name"]
+                break
+            except RuntimeError as exc:
+                last_exc = exc
+                attempts.append(f"{config['name']} seqlen={seqlen.tolist()}")
+        else:
+            continue
+        break
     else:
-        raise last_exc
-    runtime_torch.npu.synchronize()
+        raise RuntimeError(
+            "All RINGMLAPrefillBF16Kernel replay attempts failed: "
+            + ", ".join(attempts)
+        ) from last_exc
 
     print(
         f"[OK] {csv_path}:{row_index} "
         f"q={tuple(case['q_nope'].shape)} q_rope={tuple(case['q_rope'].shape)} "
         f"k={tuple(case['k_nope'].shape)} v={tuple(case['value'].shape)} "
         f"output={tuple(output.shape)} lse={tuple(softmax_lse.shape)} "
-        f"mask_type={case['mask_type']} calc_type={case['calc_type']}"
+        f"mask_type={case['mask_type']} calc_type={case['calc_type']} "
+        f"seqlen={case['seqlen'].tolist()} config={case['selected_config']}"
     )
 
 
