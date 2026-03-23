@@ -1,4 +1,4 @@
-﻿# CLAUDE.md
+# CLAUDE.md
 
 **Wiki**: https://deepwiki.com/Horacehxw/msModeling
 
@@ -66,13 +66,13 @@ python -m tensor_cast.scripts.text_generate moonshotai/Kimi-K2-Instruct \
 
 ### TensorCast - Profiling Mode (perf database)
 ```bash
-# --compile is REQUIRED for profiling mode (even BF16) 鈥?without it,
+# --compile is REQUIRED for profiling mode (even BF16) — without it,
 # fused ops decompose to 72+ aten primitives that can't match profiling kernels
-# --perf-database is REQUIRED 鈥?path to directory with op_mapping.yaml + kernel CSVs
+# --perf-database is REQUIRED — path to directory with op_mapping.yaml + kernel CSVs
 # --quantize-linear-action must match profiling data (default is W8A8_DYNAMIC, use DISABLED for BF16 data)
 # --num-queries/--query-length must produce token counts matching profiling CSV shapes
 
-# BF16 鈥?reference data has 136/64 token shapes, nq=2 ql=68 鈫?144 tokens (block-padding match)
+# BF16 — reference data has 136/64 token shapes, nq=2 ql=68 → 144 tokens (block-padding match)
 python -m tensor_cast.scripts.text_generate Qwen/Qwen3-32B \
   --num-queries 2 --query-length 68 \
   --device ATLAS_800_A3_752T_128G_DIE --world-size 16 --tp-size 16 \
@@ -140,11 +140,11 @@ python serving_cast/main.py \
 ### Compilation / Fusion Passes
 
 `--compile` enables pattern-based fusion in `tensor_cast/compilation/patterns/`:
-- `swiglu.py` 鈥?SwiGlu fusion
-- `rms_norm.py` 鈥?RmsNorm / AddRmsNorm fusion
-- `rotary_embedding.py` 鈥?RoPE fusion
-- `freezing_passes/grouped_matmul_swiglu_pass.py` 鈥?GroupedMatmul+SwiGlu (5 quant variants)
-- `freezing_passes/patterns/matmul_allreduce.py` 鈥?MC2 MatMul+AllReduce fusion
+- `swiglu.py` — SwiGlu fusion
+- `rms_norm.py` — RmsNorm / AddRmsNorm fusion
+- `rotary_embedding.py` — RoPE fusion
+- `freezing_passes/grouped_matmul_swiglu_pass.py` — GroupedMatmul+SwiGlu (5 quant variants)
+- `freezing_passes/patterns/matmul_allreduce.py` — MC2 MatMul+AllReduce fusion
 
 ## Perf Database Subsystem
 
@@ -156,37 +156,37 @@ Phase 1 E2E report: `docs/perf_database/reports/phase1-e2e-20260314/phase1_e2e_v
 ### Architecture
 
 ```
-Runtime (OpInvokeInfo) 鈫?EmpiricalPerformanceModel 鈫?DataSource.lookup()
-                                                      鈹溾攢鈹€ ProfilingDataSource (op_mapping + CSV query)
-                                                      鈹溾攢鈹€ InterpolatingDataSource (wrapper: miss 鈫?interpolate)
-                                                      鈹斺攢鈹€ fallback 鈫?AnalyticPerformanceModel
+Runtime (OpInvokeInfo) → EmpiricalPerformanceModel → DataSource.lookup()
+                                                      ├── ProfilingDataSource (op_mapping + CSV query)
+                                                      ├── InterpolatingDataSource (wrapper: miss → interpolate)
+                                                      └── fallback → AnalyticPerformanceModel
 ```
 
 ### Query Dispatch (ProfilingDataSource)
 
 | Category | Method | Data Source |
 |----------|--------|-------------|
-| `compute` | op_mapping 鈫?kernel_type 鈫?CSV shape match | `{kernel_type}.csv` |
+| `compute` | op_mapping → kernel_type → CSV shape match | `{kernel_type}.csv` |
 | `communication` | message_bytes + topology_tier | comm CSV |
-| `composite` | decompose sub_kernels 鈫?query each 鈫?sum | sub-kernel CSVs |
+| `composite` | decompose sub_kernels → query each → sum | sub-kernel CSVs |
 | `attention_special` | (batch, seq, heads, head_dim) | `FusedInferAttentionScore.csv` |
-| `zero_cost` | return 0 | 鈥?(view, permute, etc.) |
+| `zero_cost` | return 0 | — (view, permute, etc.) |
 | MISS | fallback | AnalyticPerformanceModel |
 
 ### Data Directory Layout
 
 ```
 tensor_cast/performance_model/perf_database/
-鈹溾攢鈹€ data_source.py              # DataSource ABC: lookup(OpInvokeInfo) 鈫?LookupResult
-鈹溾攢鈹€ profiling_data_source.py    # CSV query + 8 shape matching rules + op_mapping
-鈹溾攢鈹€ interpolating_data_source.py # Wrapper: nearest-neighbor + linear interpolation
-鈹溾攢鈹€ data/
-鈹?  鈹斺攢鈹€ {device}/{backend}/{version}/
-鈹?      鈹溾攢鈹€ op_mapping.yaml     # TC op 鈫?NPU kernel_type mapping (60+ entries)
-鈹?      鈹溾攢鈹€ MatMulV2.csv        # Per-kernel profiling data
-鈹?      鈹溾攢鈹€ FusedInferAttentionScore.csv
-鈹?      鈹斺攢鈹€ hcom_allReduce_.csv
-鈹斺攢鈹€ __init__.py
+├── data_source.py              # DataSource ABC: lookup(OpInvokeInfo) → LookupResult
+├── profiling_data_source.py    # CSV query + 8 shape matching rules + op_mapping
+├── interpolating_data_source.py # Wrapper: nearest-neighbor + linear interpolation
+├── data/
+│   └── {device}/{backend}/{version}/
+│       ├── op_mapping.yaml     # TC op → NPU kernel_type mapping (60+ entries)
+│       ├── MatMulV2.csv        # Per-kernel profiling data
+│       ├── FusedInferAttentionScore.csv
+│       └── hcom_allReduce_.csv
+└── __init__.py
 ```
 
 ### op_mapping.yaml Structure
@@ -210,7 +210,7 @@ References: `docs/perf_database/examples/op_mapping_example.yaml`, `docs/perf_da
 | # | Type | TC | NPU Profiling | Handling |
 |---|------|----|----|---|
 | 1 | Batch dim | `(1,S,D)` | `(S,D)` | `_strip_batch_dim()` |
-| 2 | Seq padding | `ceil(S/16)*16` | raw S | block-padding tolerance (bs鈭坽16,32,64}) |
+| 2 | Seq padding | `ceil(S/16)*16` | raw S | block-padding tolerance (bs∈{16,32,64}) |
 | 3 | FRACTAL_NZ | ND `(K,N)` | `[H,W,bh,bw]` | `fractal_nz_to_nd()` |
 | 4 | ND transpose | `(K,N)` | `(N,K)` | MatMul-specific check (all `_MATMUL_KERNELS`) |
 | 5 | SwiGlu inputs | 2x`(S,D/2)` | 1x`(S,D)` | concat on last dim |
@@ -223,9 +223,13 @@ References: `docs/perf_database/examples/op_mapping_example.yaml`, `docs/perf_da
 
 | Tool | Purpose |
 |------|---------|
-| `parse_kernel_details.py` | Parse NPU kernel_details.csv 鈫?per-kernel CSVs |
+| `parse_kernel_details.py` | Parse NPU kernel_details.csv → per-kernel CSVs |
+| `discover_operators.py` | Compare Profiling vs op_mapping coverage |
 | `generate_shape_grid.py` | Generate microbenchmark shape grids |
+| `generate_microbench.py` | Generate torch_npu benchmark scripts |
 | `generate_comm_microbench.py` | Generate HCCL communication benchmarks |
+| `build_database.py` | Build final CSV database from microbenchmark results |
+| `validate.py` | Per-operator + end-to-end accuracy validation |
 
 ## Quantization Framework
 
@@ -244,7 +248,7 @@ References: `docs/perf_database/examples/op_mapping_example.yaml`, `docs/perf_da
 |------|----------------|---------------|
 | **TP** | `ColumnParallelLinear`, `RowParallelLinear` | all-reduce, all-gather |
 | **EP** | `ParallelMoELayer` | all-to-all |
-| **DP** | Batch distribution | 鈥?|
+| **DP** | Batch distribution | — |
 | **SP** | Ulysses-style | all-to-all |
 
 Configured via `--tp-size`, `--dp-size`, `--ep`, `--world-size`.
@@ -257,7 +261,7 @@ Configured via `--tp-size`, `--dp-size`, `--ep`, `--world-size`.
 | `tensor_cast/device.py` | `DeviceProfile` and `CommGrid` |
 | `tensor_cast/model_config.py` | `ModelConfig`, `ParallelConfig`, `QuantConfig` |
 | `tensor_cast/core/model_runner.py` | Inference API, profiling hooks |
-| `tensor_cast/core/config_resolver.py` | Config 鈫?model transformations |
+| `tensor_cast/core/config_resolver.py` | Config → model transformations |
 | `tensor_cast/transformers/utils.py` | Model type detection, config loading |
 | `tensor_cast/layers/quant_linear.py` | Quantization (W4A8, W8A8, FP8) |
 | `tensor_cast/performance_model/analytic.py` | Roofline-based performance model |
@@ -284,4 +288,4 @@ Kimi-K2 auto-detected and reloaded as DeepSeek-V3 in `tensor_cast/transformers/u
 
 ### EmpiricalPerformanceModel + DataSource
 
-EmpiricalPerformanceModel accepts a generic DataSource interface (e.g., ProfilingDataSource) for profiling-data-based estimation. Design should align with actual NPU kernels 鈥?match real kernel types and shapes, don't compromise for TC's op abstractions. Long-term: capture op graphs directly from vLLM runs rather than relying on TC dispatch traces. See `docs/perf_database/OPERATOR_PERF_DATABASE_DESIGN_zh_v1.2.md`.
+EmpiricalPerformanceModel accepts a generic DataSource interface (e.g., ProfilingDataSource) for profiling-data-based estimation. Design should align with actual NPU kernels — match real kernel types and shapes, don't compromise for TC's op abstractions. Long-term: capture op graphs directly from vLLM runs rather than relying on TC dispatch traces. See `docs/perf_database/OPERATOR_PERF_DATABASE_DESIGN_zh_v1.2.md`.

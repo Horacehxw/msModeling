@@ -293,9 +293,9 @@ def build_argparser():
             "FRACTAL_NZ weight rows are replayed in graph mode."
         ),
         usage_examples=[
-            "py -3 tools/perf_data_collection/op_replay/QuantBatchMatmulV3_run.py "
+            "py -3 tensor_cast/performance_model/perf_database/op_run/QuantBatchMatmulV3_run.py "
             "--device ATLAS_800_A3_752T_128G_DIE --vllm-ascend-version 0.13.0",
-            "python tools/perf_data_collection/op_replay/QuantBatchMatmulV3_run.py "
+            "python tensor_cast/performance_model/perf_database/op_run/QuantBatchMatmulV3_run.py "
             "--device TEST_DEVICE --vllm-ascend-version 0.9.2",
         ],
         version_help="vLLM-Ascend version, e.g. 0.13.0.",

@@ -1,217 +1,216 @@
-﻿# Phase 1 Profiling 鍒嗘瀽: Kernel Duration 涓庣鍒扮鏃堕棿鍏崇郴 (aclgraph)
+# Phase 1 Profiling 分析: Kernel Duration 与端到端时间关系 (aclgraph)
 
-**杞欢鏍?*: CANN 8.5 / vLLM 0.15.0 / PyTorch 2.9.0 / **aclgraph** (FULL_DECODE_ONLY cudagraph)
-**纭欢**: Atlas 800 A3 (Ascend 910B)
-**妯″瀷**: DeepSeek-V3 (W8A8, TP=8/DP=2/EP) + Qwen3-32B (BF16, TP=16)
-**鏁版嵁**: `/mnt/d/Data/Profiling/Profiling-0313-phase1-e2e-test/`
-
----
-
-## 鏍稿績缁撹
-
-1. **e2e = Computing + Comm(Not Overlapped) + Free 鍦ㄦ墍鏈夊満鏅簿纭垚绔?* (step_trace 楠岃瘉)
-2. **Compute/Comm Overlap 浠嶇劧鍙拷鐣?* 鈥?鏈€澶?13.7ms (Qwen3 Decode), 鍗?comm 浠?1%
-3. **aclgraph 鐨?Free/CPU gap** 涓?eager 妯″紡涓嶅悓: PandD 鍦烘櫙鐨?Free 鍖呭惈 step 闂寸┖闂? 涓嶈兘鐩存帴瀵规瘮
-4. **aclgraph 涓?HCCL 閫氫俊浠?AivKernel 褰㈠紡鍑虹幇鍦ㄧ嫭绔?stream 涓?*, kernel_details.csv 闇€鎸夋璇嗗埆
+**软件栈**: CANN 8.5 / vLLM 0.15.0 / PyTorch 2.9.0 / **aclgraph** (FULL_DECODE_ONLY cudagraph)
+**硬件**: Atlas 800 A3 (Ascend 910B)
+**模型**: DeepSeek-V3 (W8A8, TP=8/DP=2/EP) + Qwen3-32B (BF16, TP=16)
+**数据**: `/mnt/d/Data/Profiling/Profiling-0313-phase1-e2e-test/`
 
 ---
 
-## 涓€銆乤clgraph 妯″紡鐨?Stream 缁撴瀯
+## 核心结论
 
-aclgraph 妯″紡涓?kernel_details.csv 鐨?stream 鍒嗗竷涓?eager 妯″紡鏈夐噸瑕佸樊寮?
+1. **e2e = Computing + Comm(Not Overlapped) + Free 在所有场景精确成立** (step_trace 验证)
+2. **Compute/Comm Overlap 仍然可忽略** — 最大 13.7ms (Qwen3 Decode), 占 comm 仅 1%
+3. **aclgraph 的 Free/CPU gap** 与 eager 模式不同: PandD 场景的 Free 包含 step 间空闲, 不能直接对比
+4. **aclgraph 下 HCCL 通信以 AivKernel 形式出现在独立 stream 上**, kernel_details.csv 需按此识别
+
+---
+
+## 一、aclgraph 模式的 Stream 结构
+
+aclgraph 模式下 kernel_details.csv 的 stream 分布与 eager 模式有重要差异:
 
 ### 1.1 DSv3 (Prefill + Decode)
 
-| Stream | 鍐呭 | Prefill 鏃堕棿 | Decode 鏃堕棿 |
+| Stream | 内容 | Prefill 时间 | Decode 时间 |
 |--------|------|-------------|-------------|
-| **Stream 2** | 涓昏绠?(MatMul, Norm, Attention, DispatchFFNCombine) | 2,829 ms | 1,306 ms |
-| **Stream 37** | AivKernel = **HCCL 閫氫俊鎵ц** | 100 ms | 3,425 ms |
+| **Stream 2** | 主计算 (MatMul, Norm, Attention, DispatchFFNCombine) | 2,829 ms | 1,306 ms |
+| **Stream 37** | AivKernel = **HCCL 通信执行** | 100 ms | 3,425 ms |
 | Stream 40 | Sampling (Sort, ArgMax, Neg) | 6 ms | 6 ms |
-| Stream 69 | AICPU comm (reduce_scatter, allgather) | 275 ms | 鈥?|
-| **NaN** | hcom_* 琛?(HCCL 瀹樻柟璁板綍, 涓?Stream 37 瀵瑰簲) | 1,361 ms | 3,425 ms |
+| Stream 69 | AICPU comm (reduce_scatter, allgather) | 275 ms | — |
+| **NaN** | hcom_* 行 (HCCL 官方记录, 与 Stream 37 对应) | 1,361 ms | 3,425 ms |
 
-**鍏抽敭鍙戠幇: Stream 37 涓婄殑 AivKernel = HCCL 閫氫俊**
-- DSv3 Decode: Stream 37 (977 kernels, 3,425.1 ms) 鈮?NaN hcom (975 kernels, 3,425.1 ms) 鈥?**鏃堕棿瀹屽叏鍖归厤**
-- DSv3 Prefill: Stream 37 浠?262 AivKernel (100ms), 鍥犱负 prefill 鐨勯€氫俊璧?AICPU 璺緞 (Stream 69)
+**关键发现: Stream 37 上的 AivKernel = HCCL 通信**
+- DSv3 Decode: Stream 37 (977 kernels, 3,425.1 ms) ≈ NaN hcom (975 kernels, 3,425.1 ms) — **时间完全匹配**
+- DSv3 Prefill: Stream 37 仅 262 AivKernel (100ms), 因为 prefill 的通信走 AICPU 路径 (Stream 69)
 
 ### 1.2 Qwen3-32B (Prefill + Decode)
 
-| Stream | 鍐呭 | Prefill 鏃堕棿 | Decode 鏃堕棿 |
+| Stream | 内容 | Prefill 时间 | Decode 时间 |
 |--------|------|-------------|-------------|
-| **Stream 6/62** | 涓昏绠?(eager 璺緞) | 3,242 ms | 88 ms |
-| **Stream 148** | Graph-compiled 璁＄畻 (decode 涓讳綋) | 鈥?| 1,429 ms |
-| **Stream 149** | AivKernel = **HCCL 閫氫俊鎵ц** | 鈥?| 1,403 ms |
-| Stream 67 | AivKernel (灏戦噺, prefill) | 0.2 ms | 10 ms |
+| **Stream 6/62** | 主计算 (eager 路径) | 3,242 ms | 88 ms |
+| **Stream 148** | Graph-compiled 计算 (decode 主体) | — | 1,429 ms |
+| **Stream 149** | AivKernel = **HCCL 通信执行** | — | 1,403 ms |
+| Stream 67 | AivKernel (少量, prefill) | 0.2 ms | 10 ms |
 | Stream 71 | Sampling | 3 ms | 47 ms |
-| Stream 99 | AICPU comm (prefill only) | 5,572 ms | 鈥?|
-| **NaN** | hcom_* 琛?| 2,491 ms | 1,413 ms |
+| Stream 99 | AICPU comm (prefill only) | 5,572 ms | — |
+| **NaN** | hcom_* 行 | 2,491 ms | 1,413 ms |
 
-**娉ㄦ剰:**
-- Qwen3 Prefill: AICPU comm stream (5,572 ms) >> NaN hcom (2,491 ms). AICPU 鏃堕棿鍚瓑寰?HCCL 瀹屾垚鐨?idle銆?*step_trace 浣跨敤 NaN hcom 鏃堕棿 (2,491 ms) 浣滀负鏉冨▉ Communication 鍊笺€?*
-- Qwen3 Decode: Stream 149 AivKernel (1,403 ms) 鈮?NaN hcom (1,413 ms)
+**注意:**
+- Qwen3 Prefill: AICPU comm stream (5,572 ms) >> NaN hcom (2,491 ms). AICPU 时间含等待 HCCL 完成的 idle。**step_trace 使用 NaN hcom 时间 (2,491 ms) 作为权威 Communication 值。**
+- Qwen3 Decode: Stream 149 AivKernel (1,403 ms) ≈ NaN hcom (1,413 ms)
 
-### 1.3 涓?eager 妯″紡鐨?Stream 宸紓
+### 1.3 与 eager 模式的 Stream 差异
 
-| 鐗瑰緛 | Eager 妯″紡 | aclgraph 妯″紡 |
+| 特征 | Eager 模式 | aclgraph 模式 |
 |------|-----------|--------------|
-| HCCL 鎵ц stream | 鐙珛 HCCL stream (鏈?Stream ID) | AivKernel 鍦ㄧ嫭绔?stream (37/149) |
-| hcom_* 鍙岄噸璁℃暟 | hcom (NaN) + AivKernel (HCCL stream) | hcom (NaN) + AivKernel (鏂?stream) |
-| Graph-compiled kernel | 鏃?| Decode 鏈?hash 鍚庣紑 (Stream 148) |
-| AICPU comm | Prefill 鏈?| 鍚?eager |
+| HCCL 执行 stream | 独立 HCCL stream (有 Stream ID) | AivKernel 在独立 stream (37/149) |
+| hcom_* 双重计数 | hcom (NaN) + AivKernel (HCCL stream) | hcom (NaN) + AivKernel (新 stream) |
+| Graph-compiled kernel | 无 | Decode 有 hash 后缀 (Stream 148) |
+| AICPU comm | Prefill 有 | 同 eager |
 
 ---
 
-## 浜屻€乻tep_trace 瀹樻柟鍒嗚В
+## 二、step_trace 官方分解
 
-step_trace_time.csv 鐩存帴缁欏嚭 Computing / Communication / Overlapped / Free 鐨勬潈濞佸垎瑙?
+step_trace_time.csv 直接给出 Computing / Communication / Overlapped / Free 的权威分解:
 
-| 鍦烘櫙 | Computing (ms) | Comm(Not Overlapped) (ms) | **Overlapped (ms)** | Free (ms) | **Stage/e2e (ms)** |
+| 场景 | Computing (ms) | Comm(Not Overlapped) (ms) | **Overlapped (ms)** | Free (ms) | **Stage/e2e (ms)** |
 |------|-----------|-----------|-----------|------|------|
 | DSv3 Prefill | 2,829 (62.1%) | 1,361 (29.9%) | **0.07 (~0%)** | 365 (8.0%) | **4,555** |
 | DSv3 Decode | 1,306 (26.8%) | 3,425 (70.2%) | **0.27 (~0%)** | 149 (3.1%) | **4,880** |
 | Qwen3 Prefill | 3,242 (55.7%) | 2,491 (42.8%) | **0.0 (0%)** | 83 (1.4%) | **5,816** |
 | Qwen3 Decode | 1,532 (49.5%) | 1,399 (45.1%) | **13.7 (0.4%)** | 166 (5.4%) | **3,098** |
 
-**楠岃瘉: e2e = Computing + Comm(Not Overlapped) + Free**
-- DSv3 Prefill: 2829 + 1361 + 365 = 4,555 鉁?
-- DSv3 Decode: 1306 + 3425 + 149 = 4,880 鉁?
-- Qwen3 Prefill: 3242 + 2491 + 83 = 5,816 鉁?
-- Qwen3 Decode: 1532 + 1399 + 166 = 3,098 鉁?(Overlap 13.7ms 琚垎鍒墸鍑?
+**验证: e2e = Computing + Comm(Not Overlapped) + Free**
+- DSv3 Prefill: 2829 + 1361 + 365 = 4,555 ✓
+- DSv3 Decode: 1306 + 3425 + 149 = 4,880 ✓
+- Qwen3 Prefill: 3242 + 2491 + 83 = 5,816 ✓
+- Qwen3 Decode: 1532 + 1399 + 166 = 3,098 ✓ (Overlap 13.7ms 被分别扣减)
 
 ---
 
-## 涓夈€丆ompute / Comm Overlap 鍒嗘瀽
+## 三、Compute / Comm Overlap 分析
 
-**鎵€鏈夊満鏅?Overlap 鍧囧彲蹇界暐:**
+**所有场景 Overlap 均可忽略:**
 
-| 鍦烘櫙 | Overlapped | 鍗?Comm 姣斾緥 | 缁撹 |
+| 场景 | Overlapped | 占 Comm 比例 | 结论 |
 |------|-----------|-------------|------|
-| DSv3 Prefill | 0.07 ms | 0.005% | 鏃?overlap |
-| DSv3 Decode | 0.27 ms | 0.008% | 鏃?overlap |
-| Qwen3 Prefill | 0.0 ms | 0% | 鏃?overlap |
-| Qwen3 Decode | 13.7 ms | **0.97%** | 寰噺 overlap, 鍙拷鐣?|
+| DSv3 Prefill | 0.07 ms | 0.005% | 无 overlap |
+| DSv3 Decode | 0.27 ms | 0.008% | 无 overlap |
+| Qwen3 Prefill | 0.0 ms | 0% | 无 overlap |
+| Qwen3 Decode | 13.7 ms | **0.97%** | 微量 overlap, 可忽略 |
 
-涓庝箣鍓?eager 鍒嗘瀽缁撹涓€鑷? **aclgraph 娌℃湁鍚敤 compute/comm pipeline**銆傛瘡灞備粛鐒舵槸 compute 鈫?allReduce 鈫?涓嬩竴灞?compute 鐨勪覆琛屾ā寮忋€?
+与之前 eager 分析结论一致: **aclgraph 没有启用 compute/comm pipeline**。每层仍然是 compute → allReduce → 下一层 compute 的串行模式。
 
-鍘熷洜涓嶅彉: `multistream_overlap_shared_expert=false`, aclgraph 鍙墦鍖呬覆琛屽簭鍒? 鍑忓皯 CPU dispatch, 浣嗕笉鏀瑰彉 stream 闂翠緷璧栧叧绯汇€?
+原因不变: `multistream_overlap_shared_expert=false`, aclgraph 只打包串行序列, 减少 CPU dispatch, 但不改变 stream 间依赖关系。
 
 ---
 
-## 鍥涖€丆PU Gap / Free 鏃堕棿鍒嗘瀽
+## 四、CPU Gap / Free 时间分析
 
-| 鍦烘櫙 | Free (ms) | Free% | 璇存槑 |
+| 场景 | Free (ms) | Free% | 说明 |
 |------|----------|-------|------|
-| DSv3 Prefill | 365 | 8.0% | 鍖呭惈 PandD step 闂寸┖闂?+ profiling overhead |
-| DSv3 Decode | 149 | 3.1% | 姝ｅ父 CPU dispatch gap |
-| Qwen3 Prefill | 83 | 1.4% | 鏋佷綆, 鍑犱箮鏃?gap |
-| Qwen3 Decode | 166 | 5.4% | 鍖呭惈 PandD step 闂寸┖闂?|
+| DSv3 Prefill | 365 | 8.0% | 包含 PandD step 间空闲 + profiling overhead |
+| DSv3 Decode | 149 | 3.1% | 正常 CPU dispatch gap |
+| Qwen3 Prefill | 83 | 1.4% | 极低, 几乎无 gap |
+| Qwen3 Decode | 166 | 5.4% | 包含 PandD step 间空闲 |
 
-涓庝箣鍓?eager 鏁版嵁瀵规瘮:
+与之前 eager 数据对比:
 
-| 鍦烘櫙 | eager Free% | aclgraph Free% | 璇存槑 |
+| 场景 | eager Free% | aclgraph Free% | 说明 |
 |------|-----------|---------------|------|
-| DSv3 decode_b8 | 1.3% | 3.1% | aclgraph PandD 鍚?step 闂?idle |
-| Qwen3 decode_b8 | 1.8% | 5.4% | 鍚屼笂 |
-| Qwen3 prefill_4096 | 35.5% | 1.4% | eager 鐨?35% 鏄?profiling overhead |
+| DSv3 decode_b8 | 1.3% | 3.1% | aclgraph PandD 含 step 间 idle |
+| Qwen3 decode_b8 | 1.8% | 5.4% | 同上 |
+| Qwen3 prefill_4096 | 35.5% | 1.4% | eager 的 35% 是 profiling overhead |
 
-> **娉ㄦ剰: aclgraph PandD 鍦烘櫙鐨?Free 涓嶈兘鐩存帴涓?eager 鍗曞満鏅姣?*, 鍥犱负 PandD 鐨?profiling trace 璺ㄥ涓?step, Free 鍖呭惈浜?step 闂寸殑璋冨害绌洪棽銆俀wen3 Prefill 鐨?1.4% 鏇磋兘浠ｈ〃瀹為檯 CPU gap 涓嬮檺銆?
+> **注意: aclgraph PandD 场景的 Free 不能直接与 eager 单场景对比**, 因为 PandD 的 profiling trace 跨多个 step, Free 包含了 step 间的调度空闲。Qwen3 Prefill 的 1.4% 更能代表实际 CPU gap 下限。
 
 ---
 
-## 浜斻€丳er-Stream 楠岃瘉
+## 五、Per-Stream 验证
 
-閫氳繃鎸?Stream ID 鍒嗙粍 kernel_details.csv 楠岃瘉 step_trace:
+通过按 Stream ID 分组 kernel_details.csv 验证 step_trace:
 
 ### 5.1 DSv3 Prefill
 
-| 鏉ユ簮 | Compute (ms) | Comm (ms) |
+| 来源 | Compute (ms) | Comm (ms) |
 |------|-------------|-----------|
 | step_trace | 2,829 | 1,361 (NaN hcom) |
-| Stream 鍒嗙粍 | 2,829 (Stream 2) | 1,361 (NaN hcom) |
-| 鉁?**鍖归厤** | | |
+| Stream 分组 | 2,829 (Stream 2) | 1,361 (NaN hcom) |
+| ✅ **匹配** | | |
 
-鍒嗚В: Stream 2 = 璁＄畻 0.315s + DispatchFFNCombine 2.515s = 2.830s
+分解: Stream 2 = 计算 0.315s + DispatchFFNCombine 2.515s = 2.830s
 
 ### 5.2 DSv3 Decode
 
-| 鏉ユ簮 | Compute (ms) | Comm (ms) |
+| 来源 | Compute (ms) | Comm (ms) |
 |------|-------------|-----------|
 | step_trace | 1,306 | 3,425 (NaN hcom) |
-| Stream 鍒嗙粍 | 1,306 (Stream 2) + 6 (Stream 40) | 3,425 (Stream 37 AivKernel = NaN hcom) |
-| 鉁?**鍖归厤** | | |
+| Stream 分组 | 1,306 (Stream 2) + 6 (Stream 40) | 3,425 (Stream 37 AivKernel = NaN hcom) |
+| ✅ **匹配** | | |
 
 ### 5.3 Qwen3 Prefill
 
-| 鏉ユ簮 | Compute (ms) | Comm (ms) |
+| 来源 | Compute (ms) | Comm (ms) |
 |------|-------------|-----------|
 | step_trace | 3,242 | 2,491 (NaN hcom) |
-| Stream 鍒嗙粍 | 3,242 (Stream 6) | **5,572 (Stream 99 AICPU)** 鈮?2,491 |
+| Stream 分组 | 3,242 (Stream 6) | **5,572 (Stream 99 AICPU)** ≠ 2,491 |
 
-> AICPU stream 涓婄殑 allgatherAicpuKernel + reduce_scatterAicpuKernel 鎬绘椂闂?(5,572 ms) 杩滃ぇ浜庡疄闄?HCCL 鎵ц (2,491 ms). AICPU kernel 鐨?Duration 鍖呭惈浜嗙瓑寰?HCCL 瀹屾垚鐨勬椂闂淬€?*浣跨敤 NaN hcom 鏃堕棿 (= step_trace Communication) 鎵嶆槸姝ｇ‘鐨勯€氫俊鏃堕棿銆?*
+> AICPU stream 上的 allgatherAicpuKernel + reduce_scatterAicpuKernel 总时间 (5,572 ms) 远大于实际 HCCL 执行 (2,491 ms). AICPU kernel 的 Duration 包含了等待 HCCL 完成的时间。**使用 NaN hcom 时间 (= step_trace Communication) 才是正确的通信时间。**
 
 ### 5.4 Qwen3 Decode
 
-| 鏉ユ簮 | Compute (ms) | Comm (ms) |
+| 来源 | Compute (ms) | Comm (ms) |
 |------|-------------|-----------|
 | step_trace | 1,532 | 1,413 (NaN hcom) |
-| Stream 鍒嗙粍 | 1,429 (Stream 148) + 88 (Stream 62) + 47 (Stream 71) + 10 (Stream 67) = 1,574 | 1,403 (Stream 149 AivKernel) |
+| Stream 分组 | 1,429 (Stream 148) + 88 (Stream 62) + 47 (Stream 71) + 10 (Stream 67) = 1,574 | 1,403 (Stream 149 AivKernel) |
 
-> Compute stream 鍚堣 (1,574ms) 鐣ュぇ浜?step_trace Computing (1,532ms), 宸紓鏉ヨ嚜 Stream 71 涓婄殑 sampling 绠楀瓙 (47ms) 鍙兘琚?step_trace 褰掑叆 Free銆?
+> Compute stream 合计 (1,574ms) 略大于 step_trace Computing (1,532ms), 差异来自 Stream 71 上的 sampling 算子 (47ms) 可能被 step_trace 归入 Free。
 
 ---
 
-## 鍏€佸 Perf-Database 浠跨湡鐨勬剰涔?
+## 六、对 Perf-Database 仿真的意义
 
-| 缁撹 | 璇存槑 |
+| 结论 | 说明 |
 |------|------|
-| **浠跨湡鍏紡** | `e2e 鈮?危(compute_kernels) + 危(comm) + t_free` 鈥?aclgraph 涓嬩緷鐒舵垚绔?|
-| **涓嶉渶瑕佸缓妯?overlap** | Overlap < 1% |
-| **comm 鏃堕棿浣跨敤 NaN hcom** | Stream 涓婄殑 AICPU kernel 鍚瓑寰呮椂闂? 涓嶇瓑浜庡疄闄呴€氫俊 |
-| **aclgraph Free 鍚?step 闂?idle** | 浠跨湡涓嶅簲鐩存帴鐢?PandD trace 鐨?Free 浣滀负 CPU gap |
-| **Graph kernel 鍚嶇О闇€褰掍竴鍖?* | `MatMulV2_NDNZ_..._229955` 鈫?`MatMulV2` |
-| **AivKernel = HCCL comm** | 鍦?kernel_details.csv 涓渶璇嗗埆骞舵纭垎绫?|
-| **鍗曟 PandD trace 鍙彁渚?baseline** | 鏃犻渶澶氫釜鍗曞満鏅?profiling, PandD 鍗冲彲瑕嗙洊 prefill + decode |
+| **仿真公式** | `e2e ≈ Σ(compute_kernels) + Σ(comm) + t_free` — aclgraph 下依然成立 |
+| **不需要建模 overlap** | Overlap < 1% |
+| **comm 时间使用 NaN hcom** | Stream 上的 AICPU kernel 含等待时间, 不等于实际通信 |
+| **aclgraph Free 含 step 间 idle** | 仿真不应直接用 PandD trace 的 Free 作为 CPU gap |
+| **Graph kernel 名称需归一化** | `MatMulV2_NDNZ_..._229955` → `MatMulV2` |
+| **AivKernel = HCCL comm** | 在 kernel_details.csv 中需识别并正确分类 |
+| **单次 PandD trace 可提供 baseline** | 无需多个单场景 profiling, PandD 即可覆盖 prefill + decode |
 
 ---
 
-## 闄勫綍
+## 附录
 
-### A. 鏁版嵁鏂囦欢
+### A. 数据文件
 
-姣忎釜鍦烘櫙鍖呭惈: `kernel_details.csv`, `step_trace_time.csv`, `op_statistic.csv`, `communication.json`, `communication_matrix.json`, `operator_details.csv`, `api_statistic.csv`, `trace_view.json`.
+每个场景包含: `kernel_details.csv`, `step_trace_time.csv`, `op_statistic.csv`, `communication.json`, `communication_matrix.json`, `operator_details.csv`, `api_statistic.csv`, `trace_view.json`.
 
-閰嶇疆鏂囦欢:
-- `deepseekv3_vllm+bench閰嶇疆.txt`
-- `qwen3-32b_vllm+bench閰嶇疆.txt`
+配置文件:
+- `deepseekv3_vllm+bench配置.txt`
+- `qwen3-32b_vllm+bench配置.txt`
 
-### B. aclgraph Stream 璇嗗埆瑙勫垯
+### B. aclgraph Stream 识别规则
 
 ```
 DSv3:
-  Stream 2  鈫?Main compute (鍚?DispatchFFNCombine)
-  Stream 37 鈫?AivKernel = HCCL comm
-  Stream 40 鈫?Sampling
-  Stream 69 鈫?AICPU comm (prefill only)
-  NaN       鈫?hcom_* (authoritative comm timing)
+  Stream 2  → Main compute (含 DispatchFFNCombine)
+  Stream 37 → AivKernel = HCCL comm
+  Stream 40 → Sampling
+  Stream 69 → AICPU comm (prefill only)
+  NaN       → hcom_* (authoritative comm timing)
 
 Qwen3:
-  Stream 6/62  鈫?Main compute (eager path)
-  Stream 148   鈫?Graph-compiled compute (decode main)
-  Stream 149   鈫?AivKernel = HCCL comm (decode)
-  Stream 67    鈫?AivKernel (minimal, prefill)
-  Stream 71    鈫?Sampling
-  Stream 99    鈫?AICPU comm (prefill only)
-  NaN          鈫?hcom_* (authoritative comm timing)
+  Stream 6/62  → Main compute (eager path)
+  Stream 148   → Graph-compiled compute (decode main)
+  Stream 149   → AivKernel = HCCL comm (decode)
+  Stream 67    → AivKernel (minimal, prefill)
+  Stream 71    → Sampling
+  Stream 99    → AICPU comm (prefill only)
+  NaN          → hcom_* (authoritative comm timing)
 ```
 
-### C. 鍒嗘瀽鑴氭湰
+### C. 分析脚本
 
 ```bash
-python3.10 docs/perf_database/reports/profiling_analysis_aclgraph/analyze_phase1.py    # Stream 鍒嗙粍 + 绠楀瓙鍒嗙被
+python3.10 docs/perf_database/reports/profiling_analysis_aclgraph/analyze_phase1.py    # Stream 分组 + 算子分类
 ```
 
-### D. 鐩稿叧鎶ュ憡
+### D. 相关报告
 
-- 濮婂鎶ュ憡: [绠楀瓙绋冲畾鎬т笌鎺ュ叆鍙鎬(report_op_stability_zh.md)
-- 鍓嶅簭鎶ュ憡 (eager): [kernel duration 涓?e2e](../profiling_analysis_kernel_vs_e2e_zh.md)
-
+- 姊妹报告: [算子稳定性与接入可行性](report_op_stability_zh.md)
+- 前序报告 (eager): [kernel duration 与 e2e](../profiling_analysis_kernel_vs_e2e_zh.md)

@@ -1,70 +1,69 @@
-﻿# tc_input_count 浣跨敤瑙勫垯
+# tc_input_count 使用规则
 
-## 姒傝堪
+## 概述
 
-`tc_input_count` 鎴柇 TC 鍜?CSV 鐨勮緭鍏ユ暟閲忓埌 N 杩涜鍖归厤銆傝繖鏄竴涓矖绮掑害宸ュ叿,浣跨敤涓嶅綋浼氬鑷磋鍖归厤銆?
+`tc_input_count` 截断 TC 和 CSV 的输入数量到 N 进行匹配。这是一个粗粒度工具,使用不当会导致误匹配。
 
-## 瀹夊叏鍦烘櫙: 鎴柇 NPU 鍐呴儴鍙傛暟
+## 安全场景: 截断 NPU 内部参数
 
-褰?CSV 棰濆杈撳叆鏄?CANN 鍐呴儴鍙傛暟(axis, scale, offset 绛?鏃?`tc_input_count` 鏄畨鍏ㄧ殑:
+当 CSV 额外输入是 CANN 内部参数(axis, scale, offset 等)时,`tc_input_count` 是安全的:
 
-| Op | tc_input_count | TC 杈撳叆 | CSV 杈撳叆 | 鎴柇鍘熷洜 |
+| Op | tc_input_count | TC 输入 | CSV 输入 | 截断原因 |
 |---|---|---|---|---|
-| `aten.scatter.value` | 2 | (self, index) | (self, index, **axis**) | axis 鏄?CANN 鍐呴儴鍙傛暟 |
-| `aten.gather.default` | 2 | (self, index) | (self, index, **axis**) | 鍚屼笂 |
-| `aten.embedding.default` | 2 | (weight, indices) | (weight, indices, **axis**) | 鍚屼笂 |
-| `tensor_cast.quantize.default` | 1 | (tensor, scale, zp) | (tensor) | scale/zp 鏄?kernel 鍙傛暟,涓嶅湪 CSV |
-| `tensor_cast.static_quant_linear.default` | 2 | (x, weight, scale, ...) | (x, weight_NZ, scale, scale) | 鍙尮閰?x+weight |
-| `tensor_cast.dispatch_ffn_combine.default` | 1 | (x, expert_indices) | (x, w1, w2, idx, s1, s2, probs) | 鏉冮噸鏄ā鍨嬪浐瀹氱殑 |
+| `aten.scatter.value` | 2 | (self, index) | (self, index, **axis**) | axis 是 CANN 内部参数 |
+| `aten.gather.default` | 2 | (self, index) | (self, index, **axis**) | 同上 |
+| `aten.embedding.default` | 2 | (weight, indices) | (weight, indices, **axis**) | 同上 |
+| `tensor_cast.quantize.default` | 1 | (tensor, scale, zp) | (tensor) | scale/zp 是 kernel 参数,不在 CSV |
+| `tensor_cast.static_quant_linear.default` | 2 | (x, weight, scale, ...) | (x, weight_NZ, scale, scale) | 只匹配 x+weight |
+| `tensor_cast.dispatch_ffn_combine.default` | 1 | (x, expert_indices) | (x, w1, w2, idx, s1, s2, probs) | 权重是模型固定的 |
 
-**鍒ゆ柇鏍囧噯**: CSV 澶氬嚭鐨勮緭鍏ユ槸 NPU kernel 鐨?*鍥哄畾鍙傛暟**(涓嶉殢 batch/seq 鍙樺寲)鈫?瀹夊叏鎴柇銆?
+**判断标准**: CSV 多出的输入是 NPU kernel 的**固定参数**(不随 batch/seq 变化)→ 安全截断。
 
-## 涓嶅畨鍏ㄥ満鏅? 鍙橀噺骞挎挱妯″紡鐨勯€愬厓绱犵畻瀛?
+## 不安全场景: 变量广播模式的逐元素算子
 
-褰?CSV 琛岀殑杈撳叆鏁伴噺鍥犲箍鎾ā寮忎笉鍚岃€屽彉鍖栨椂,`tc_input_count` 涓嶅畨鍏?
-
-```
-# Add.csv 涓殑娣峰悎妯″紡:
-(16, 7168;)              BF16   5.2 us   鈫?鏍囬噺骞挎挱 (1 tensor read)
-(16, 7168; 7168)         BF16   6.8 us   鈫?鍚戦噺骞挎挱 (2 tensor reads)
-(16, 7168; 16, 7168)     BF16   7.1 us   鈫?閫愬厓绱?(2 tensor reads, same shape)
-```
-
-璁剧疆 `tc_input_count=1` 鍚?
-- TC 鐨?`add(x=(16,7168), y=(16,7168))` 浼氬尮閰嶇涓€琛?(5.2 us)
-- 姝ｇ‘搴斿尮閰嶇涓夎 (7.1 us)
-- **~30% 寤惰繜浣庝及**
-
-**褰卞搷鐨勭畻瀛?*: `aten.add.Tensor`, `aten.mul.Tensor`, `aten.div.Tensor`, `aten.sub.Tensor`
-
-## 鍐崇瓥娴佺▼
+当 CSV 行的输入数量因广播模式不同而变化时,`tc_input_count` 不安全:
 
 ```
-Q: CSV 澶氬嚭鐨勮緭鍏ユ槸浠€涔?
-鈹?
-鈹溾攢 NPU 鍐呴儴鍥哄畾鍙傛暟 (axis, scale, offset) 鈫?tc_input_count = N (瀹夊叏)
-鈹溾攢 骞挎挱鎿嶄綔鏁?(鏈夋椂鏈?鏈夋椂娌℃湁) 鈫?涓嶈 tc_input_count (璁╁畠 MISS)
-鈹斺攢 涓嶇‘瀹?鈫?涓嶈,淇濆畧璁?MISS,浜ょ粰 analytic fallback
+# Add.csv 中的混合模式:
+(16, 7168;)              BF16   5.2 us   ← 标量广播 (1 tensor read)
+(16, 7168; 7168)         BF16   6.8 us   ← 向量广播 (2 tensor reads)
+(16, 7168; 16, 7168)     BF16   7.1 us   ← 逐元素 (2 tensor reads, same shape)
 ```
 
-## 宸茶В鍐? 閫愬厓绱犵畻瀛愪娇鐢?`query_mode: elementwise`
+设置 `tc_input_count=1` 后:
+- TC 的 `add(x=(16,7168), y=(16,7168))` 会匹配第一行 (5.2 us)
+- 正确应匹配第三行 (7.1 us)
+- **~30% 延迟低估**
 
-瀵逛簬閫愬厓绱犵畻瀛?(Add, Mul, Div), 涓嶉渶瑕?`tc_input_count`銆傝繖浜涚畻瀛愪娇鐢?`query_mode: elementwise`,
-鎸?*杈撳嚭褰㈢姸**鍖归厤,瀹屽叏缁曡繃杈撳叆褰㈢姸姣旇緝銆?
+**影响的算子**: `aten.add.Tensor`, `aten.mul.Tensor`, `aten.div.Tensor`, `aten.sub.Tensor`
 
-**瑙勫垯**: `query_mode: elementwise` 涓?`tc_input_count` **浜掓枼**銆傝缃簡 `query_mode: elementwise`
-鐨勬潯鐩笉寰楄缃?`tc_input_count`銆?
+## 决策流程
 
-## 闀挎湡瑙ｅ喅鏂规
+```
+Q: CSV 多出的输入是什么?
+│
+├─ NPU 内部固定参数 (axis, scale, offset) → tc_input_count = N (安全)
+├─ 广播操作数 (有时有,有时没有) → 不设 tc_input_count (让它 MISS)
+└─ 不确定 → 不设,保守让 MISS,交给 analytic fallback
+```
 
-瀵归€愬厓绱犵畻瀛?鎺ㄨ崘浣跨敤 **杈撳嚭褰㈢姸鍖归厤** (`query_mode: elementwise`):
-- 杈撳嚭褰㈢姸 = 骞挎挱鍚庣殑褰㈢姸,鏃犺杈撳叆鏄爣閲?鍚戦噺/鐩稿悓褰㈢姸,杈撳嚭纭畾
-- 鑷劧鏀寔鎻掑€?娌胯緭鍑虹淮搴︽彃鍊兼湁鐗╃悊鎰忎箟)
-- 闇€瑕佸湪 `profiling_data_source.py` 涓柊澧?`_lookup_elementwise()` 鏂规硶
+## 已解决: 逐元素算子使用 `query_mode: elementwise`
 
-## 鍙傝€?
+对于逐元素算子 (Add, Mul, Div), 不需要 `tc_input_count`。这些算子使用 `query_mode: elementwise`,
+按**输出形状**匹配,完全绕过输入形状比较。
 
-- `profiling_data_source.py` `_inputs_match()` 绗?942-951 琛? tc_input_count 鎴柇閫昏緫
-- `profiling_data_source.py` `_lookup_compute()` 绗?830-834 琛? TC 杈撳叆鎴柇
-- 璁捐鏂囨。 S4.2: 鏌ヨ璋冨害閫昏緫
+**规则**: `query_mode: elementwise` 与 `tc_input_count` **互斥**。设置了 `query_mode: elementwise`
+的条目不得设置 `tc_input_count`。
 
+## 长期解决方案
+
+对逐元素算子,推荐使用 **输出形状匹配** (`query_mode: elementwise`):
+- 输出形状 = 广播后的形状,无论输入是标量/向量/相同形状,输出确定
+- 自然支持插值(沿输出维度插值有物理意义)
+- 需要在 `profiling_data_source.py` 中新增 `_lookup_elementwise()` 方法
+
+## 参考
+
+- `profiling_data_source.py` `_inputs_match()` 第 942-951 行: tc_input_count 截断逻辑
+- `profiling_data_source.py` `_lookup_compute()` 第 830-834 行: TC 输入截断
+- 设计文档 S4.2: 查询调度逻辑

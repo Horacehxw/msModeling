@@ -1,4 +1,4 @@
-﻿---
+---
 name: op-mapping-generator
 description: Use when creating or updating op_mapping.yaml to map TensorCast simulation ops to NPU profiling kernel types, given a model, device, profiling data, and software stack versions
 ---
@@ -9,17 +9,17 @@ description: Use when creating or updating op_mapping.yaml to map TensorCast sim
 
 Generate a complete `op_mapping.yaml` that maps TensorCast (TC) virtual runtime operators to real NPU profiling kernel types. The mapping bridges TC simulation and profiling-based performance estimation by matching each TC op to its corresponding NPU kernel (identified by the Profiling Type column in `kernel_details.csv`).
 
-**Core approach:** Dispatch parallel sub-agent teams 鈥?one agent per operator 鈥?each independently traces the full vLLM鈫扖ANN call chain using grep/read/web search. This avoids context contamination between operators.
+**Core approach:** Dispatch parallel sub-agent teams — one agent per operator — each independently traces the full vLLM→CANN call chain using grep/read/web search. This avoids context contamination between operators.
 
 ## Required Inputs
 
 Collect ALL of these from the user before proceeding:
 
-- [ ] **Target model** 鈥?HuggingFace ID (e.g., `Qwen/Qwen3-32B`)
-- [ ] **Device profile** 鈥?(e.g., `ATLAS_800_A3_752T_128G_DIE`)
-- [ ] **Parallelism config** 鈥?world-size, tp-size, dp-size, ep flag
-- [ ] **Quantization** 鈥?none, W8A8_STATIC, W4A8_STATIC, FP8, MXFP4
-- [ ] **Profiling CSV path** 鈥?`kernel_details.csv` from an NPU profiling run
+- [ ] **Target model** — HuggingFace ID (e.g., `Qwen/Qwen3-32B`)
+- [ ] **Device profile** — (e.g., `ATLAS_800_A3_752T_128G_DIE`)
+- [ ] **Parallelism config** — world-size, tp-size, dp-size, ep flag
+- [ ] **Quantization** — none, W8A8_STATIC, W4A8_STATIC, FP8, MXFP4
+- [ ] **Profiling CSV path** — `kernel_details.csv` from an NPU profiling run
 - [ ] **Software stack versions + repo sources** (ask user for each):
 
 | Repo | Default URL | Version/Tag |
@@ -33,20 +33,20 @@ Collect ALL of these from the user before proceeding:
 | CANN ops-math | `gitee.com/ascend/cann-ops-math` | (ask user) |
 | CANN ATB | `gitee.com/ascend/ascend-transformer-boost` | (ask user) |
 
-- [ ] **Local repo paths** (optional) 鈥?if repos are already cloned locally
-- [ ] **msmodeling project root** 鈥?path to this repo
-- [ ] **Python path** 鈥?Python 3.10 executable with torch installed
-- [ ] **Existing op_mapping.yaml** (optional) 鈥?for update mode; skip already-mapped ops
+- [ ] **Local repo paths** (optional) — if repos are already cloned locally
+- [ ] **msmodeling project root** — path to this repo
+- [ ] **Python path** — Python 3.10 executable with torch installed
+- [ ] **Existing op_mapping.yaml** (optional) — for update mode; skip already-mapped ops
 
 ## Key Principles
 
 Teach these to all sub-agents:
 
-1. **Profiling Name 3-part structure**: `aclnnAPI_DispatchFunc_L0OpType` 鈥?the 3rd segment = Profiling Type = our lookup key
+1. **Profiling Name 3-part structure**: `aclnnAPI_DispatchFunc_L0OpType` — the 3rd segment = Profiling Type = our lookup key
 2. **Type column = OPTYPE** from CANN `op_host/CMakeLists.txt` = CSV filename for database query
-3. **Three paths**: A (aten鈫抩p-plugin鈫抋clnn), B (torch_npu.npu_*鈫抩p-plugin鈫抋clnn), C (vllm-ascend custom/triton)
+3. **Three paths**: A (aten→op-plugin→aclnn), B (torch_npu.npu_*→op-plugin→aclnn), C (vllm-ascend custom/triton)
 4. **10 shape differences** between TC tensors and NPU profiling shapes (see worker prompt + `ref/shape_matching_catalog.md`)
-5. **Mutually exclusive**: `kernel_type` vs `composite` vs `zero_cost` 鈥?exactly one per entry
+5. **Mutually exclusive**: `kernel_type` vs `composite` vs `zero_cost` — exactly one per entry
 6. **Communication ops** use message_bytes + num_devices, NOT shape matching
 7. **tc_input_count safety**: Only safe for truncating NPU-internal params (axis, scale), NOT for elementwise broadcast ops. See `ref/tc_input_count_rules.md`
 8. **zero_cost classification**: Must verify kernel Type never appears in profiling AND latency is captured by a fused kernel. See `ref/zero_cost_classification.md`
@@ -76,13 +76,16 @@ $PYTHON -m tensor_cast.scripts.text_generate $MODEL \
   --chrome-trace /tmp/tc_gather_trace.json 2>&1 | tee /tmp/tc_gather.log
 ```
 
-**IMPORTANT**: `--compile` is REQUIRED 鈥?without it, fused ops decompose to aten primitives that can't match profiling kernels.
+**IMPORTANT**: `--compile` is REQUIRED — without it, fused ops decompose to aten primitives that can't match profiling kernels.
 
 ### 1c: Extract TC Ops
 
-Use the current trace-to-op extraction workflow in this repo to produce
-`/tmp/tc_ops.json` from `/tmp/tc_gather_trace.json`. Do not reference the
-removed legacy helper by filename.
+```bash
+$PYTHON tools/perf_data_collection/extract_tc_ops.py \
+  --chrome-trace /tmp/tc_gather_trace.json \
+  --output /tmp/tc_ops.json \
+  [--op-mapping $EXISTING_OP_MAPPING]
+```
 
 ### 1d: Parse Profiling Data
 
@@ -94,8 +97,8 @@ awk -F',' 'NR>1 {count[$2]++} END {for (t in count) print count[t], t}' \
 
 ### 1e: Compute Work List
 
-- Read `/tmp/tc_ops.json` 鈫?list of TC op names (with `unmapped_ops` if existing mapping provided)
-- Read `/tmp/profiling_types.txt` 鈫?list of profiling Types
+- Read `/tmp/tc_ops.json` → list of TC op names (with `unmapped_ops` if existing mapping provided)
+- Read `/tmp/profiling_types.txt` → list of profiling Types
 - **Forward work**: TC ops not yet mapped (all if from scratch, unmapped_ops if updating)
 - **Reverse work**: profiling Types not covered by any forward mapping
 
@@ -151,7 +154,7 @@ DISPATCH: Agent tool (same pattern as Phase 2)
     ...
 ```
 
-These typically become `profiling.<Type>` placeholder entries 鈥?NPU fusion kernels not modeled in TC.
+These typically become `profiling.<Type>` placeholder entries — NPU fusion kernels not modeled in TC.
 
 ---
 
@@ -176,7 +179,7 @@ interpolation_policy:
   default_method: linear
   kernel_overrides:
     FusedInferAttentionScore:
-      shape_transform: sqrt    # O(seq^2) 鈫?interpolate in sqrt(seq) space
+      shape_transform: sqrt    # O(seq^2) → interpolate in sqrt(seq) space
 ```
 
 ### 4c: Organize by Category
@@ -211,7 +214,7 @@ Save to: `$MSMODELING/tensor_cast/performance_model/perf_database/data/$DEVICE/v
 
 ## Phase 5: VERIFY
 
-Verification requires deriving the correct TensorCast simulation parameters from the profiling data itself. Do NOT guess parameters 鈥?extract them from the CSV shapes.
+Verification requires deriving the correct TensorCast simulation parameters from the profiling data itself. Do NOT guess parameters — extract them from the CSV shapes.
 
 ### 5a: Analyze Profiling Data to Derive TC Parameters
 
@@ -223,17 +226,17 @@ For each profiling dataset, extract these from the per-kernel CSVs:
 awk -F',' 'NR>1 {print $3}' $DATA_DIR/MatMulV2.csv | head -20
 awk -F',' 'NR>1 {print $3}' $DATA_DIR/AddRmsNorm.csv | head -10
 ```
-- Small batch dims (1-50) = **decode** workload 鈫?use `--query-length 1 --context-length X`
-- Large batch dims (100+) = **prefill** workload 鈫?use `--query-length X`
-- Mixed = PandD trace 鈫?verify both separately
+- Small batch dims (1-50) = **decode** workload → use `--query-length 1 --context-length X`
+- Large batch dims (100+) = **prefill** workload → use `--query-length X`
+- Mixed = PandD trace → verify both separately
 
 **Step 2: Determine quantization mode**
 ```bash
 ls $DATA_DIR/*.csv | grep -i -E "quant|int8"
 ```
-- `QuantBatchMatmulV3.csv` exists with INT8 dtypes 鈫?`--quantize-linear-action W8A8_STATIC`
-- `DynamicQuant.csv` exists 鈫?may indicate W8A8_DYNAMIC
-- Only BF16 MatMulV2 shapes 鈫?`--quantize-linear-action DISABLED`
+- `QuantBatchMatmulV3.csv` exists with INT8 dtypes → `--quantize-linear-action W8A8_STATIC`
+- `DynamicQuant.csv` exists → may indicate W8A8_DYNAMIC
+- Only BF16 MatMulV2 shapes → `--quantize-linear-action DISABLED`
 
 **Step 3: Determine parallelism from hidden dimensions**
 ```bash
@@ -248,8 +251,8 @@ head -5 $DATA_DIR/FusedInferAttentionScore.csv | cut -d',' -f3
   - `intermediate_per_card = model.intermediate_size / TP`
   - `q_heads_per_card = model.num_attention_heads / TP`
   - Match against SwiGlu and FIA shapes to find correct TP
-- Check MoE ops (GroupedMatmul*, MoeGatingTopK) 鈫?EP config
-- Derive DP from: `world_size = TP 脳 DP 脳 EP`
+- Check MoE ops (GroupedMatmul*, MoeGatingTopK) → EP config
+- Derive DP from: `world_size = TP × DP × EP`
 
 **Step 4: Determine batch size**
 ```bash
@@ -281,8 +284,8 @@ From the output, classify every MISS into one of these categories:
 |---|---|---|
 | **Op mapping error** | Op has wrong kernel_type or no mapping | Fix op_mapping.yaml entry |
 | **Shape coverage gap** | Op mapped correctly but CSV lacks matching shape | Add profiling data for that shape (re-profile or microbenchmark) |
-| **TC decomposition mismatch** | TC produces different intermediate shapes than real vLLM | Known limitation 鈥?TC compile pass doesn't match vLLM exactly |
-| **Structural miss** | Embedding, KV cache, comm ops differ structurally | Expected 鈥?these ops have fundamentally different TC vs NPU interfaces |
+| **TC decomposition mismatch** | TC produces different intermediate shapes than real vLLM | Known limitation — TC compile pass doesn't match vLLM exactly |
+| **Structural miss** | Embedding, KV cache, comm ops differ structurally | Expected — these ops have fundamentally different TC vs NPU interfaces |
 | **Param mismatch** | Wrong batch/seq/TP caused shape miss | Re-derive params from Step 5a |
 
 **Key distinction:** A shape MISS with correct kernel_type = data coverage gap (not an op_mapping bug). A shape MISS with wrong kernel_type = op_mapping error.
@@ -310,7 +313,7 @@ For each correction in corrections_needed:
 
 | Issue Type | Action |
 |---|---|
-| MISS 鈥?no mapping | Dispatch forward-mapping worker for the op |
+| MISS — no mapping | Dispatch forward-mapping worker for the op |
 | Shape mismatch | Investigate shape transform; may need new flag in profiling_data_source.py |
 | Latency outlier (>2x) | Check if wrong kernel_type or missing alternate_kernel_types |
 | Wrong confidence | Re-verify evidence chain with updated profiling data |
@@ -324,10 +327,10 @@ After all corrections applied, re-run Phase 5. Repeat until verification passes.
 
 Kernel types can change between CANN versions (renames, fusions, removals). The skill handles this naturally:
 
-1. **Always verify against profiling data** 鈥?the `Type` column in `kernel_details.csv` is ground truth for the current CANN version
-2. **Use `alternate_kernel_types`** 鈥?when a kernel has been renamed across versions, list both old and new names so the mapping works with either
-3. **Check for fused kernels** 鈥?newer CANN versions may fuse previously separate ops into a single kernel (use `composite: true` or update `kernel_type`)
-4. **Check for removed kernels** 鈥?Triton kernels may be replaced by native CANN fusions; profiling-only placeholders may no longer appear
+1. **Always verify against profiling data** — the `Type` column in `kernel_details.csv` is ground truth for the current CANN version
+2. **Use `alternate_kernel_types`** — when a kernel has been renamed across versions, list both old and new names so the mapping works with either
+3. **Check for fused kernels** — newer CANN versions may fuse previously separate ops into a single kernel (use `composite: true` or update `kernel_type`)
+4. **Check for removed kernels** — Triton kernels may be replaced by native CANN fusions; profiling-only placeholders may no longer appear
 
 **How to discover version changes:** Compare `profiling_types.txt` from two profiling runs on different CANN versions. Types that appear in one but not the other indicate renames, fusions, or removals. Trace each through the 5-layer pipeline to determine the correct mapping.
 
@@ -339,8 +342,6 @@ Kernel types can change between CANN versions (renames, fusions, removals). The 
 
 - [ ] All TC compute ops have mappings (unmapped_ops = [])
 - [ ] Hit rate > 95% for compute ops
-- [ ] End-to-end latency within 卤30% of profiling (if data available)
+- [ ] End-to-end latency within ±30% of profiling (if data available)
 - [ ] All notes fields have complete evidence chains
 - [ ] torch_npu_reference section covers all unique kernel_types
-
-

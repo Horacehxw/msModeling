@@ -1,4 +1,4 @@
-﻿# Phase 1 E2E Baseline (Before op_mapping Update)
+# Phase 1 E2E Baseline (Before op_mapping Update)
 
 Date: 2026-03-15
 Branch: integration/phase1-e2e-v2 (after C1-C6 code changes, before op_mapping SKILL update)
@@ -31,4 +31,3 @@ Branch: integration/phase1-e2e-v2 (after C1-C6 code changes, before op_mapping S
 - [csv_not_found]: topk(x3), sum(x3), add_rms_norm_quant2, sigmoid, bitwise_not, where, div, permute_tokens, cat, grouped_matmul_quant_swiglu, grouped_matmul_quant
 - [input_count_mismatch]: quantize(x6), add.Tensor(x4), static_quant_linear(x3), index.Tensor(x2), swiglu(x2), embedding, concat_and_cache_mla, scatter, gather, mul.Tensor, copy_
 - [shape_mismatch]: static_quant_linear_all_reduce(x2), all_to_all(x2), rms_norm, mlapo_quant, multihead_latent_attention, add_rms_norm2, mm, clone, add.Tensor, mul.Tensor, all_reduce, all_gather
-

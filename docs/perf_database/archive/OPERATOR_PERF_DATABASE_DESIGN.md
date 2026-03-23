@@ -1,4 +1,4 @@
-﻿# Operator Performance Database for TensorCast: Technical Design Document (UNDER REVIEW !!!!!)
+# Operator Performance Database for TensorCast: Technical Design Document (UNDER REVIEW !!!!!)
 
 **Version**: 1.0
 **Date**: February 2026
@@ -79,7 +79,7 @@ CANN versions also affect kernel efficiency (different compiler optimizations). 
 Key design patterns adapted from `/home/horacehxw/Projects/aiconfigurator`:
 - **Nested dict indexing**: O(1) exact lookup for profiled shapes
 - **scipy.griddata interpolation**: Multi-dimensional shape matching
-- **DatabaseMode fallback**: SILICON 鈫?HYBRID 鈫?EMPIRICAL 鈫?SOL
+- **DatabaseMode fallback**: SILICON → HYBRID → EMPIRICAL → SOL
 - **PerformanceResult(float)**: Backward-compatible result type
 - **CSV storage**: Human-readable, version-controllable
 - **Lazy loading with caching**: Module-level cache avoids reloading
@@ -90,110 +90,110 @@ Key design patterns adapted from `/home/horacehxw/Projects/aiconfigurator`:
 
 ### 2.1 System Architecture
 
-* TensorCast Runtime 閫氳繃 `PerformanceModel` 鎻掍欢鍖栨灦鏋勬帴鍏?Profiling 鏁版嵁搴擄紝閫夋嫨鍝寤烘ā搴旇鏄彲浠ラ厤缃殑锛岄兘蹇呴』鏀寔銆?
+* TensorCast Runtime 通过 `PerformanceModel` 插件化架构接入 Profiling 数据库，选择哪种建模应该是可以配置的，都必须支持。
 
 
 ```
-鈹屸攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?
-鈹?                          TensorCast Runtime                                  鈹?
-鈹?                                                                              鈹?
-鈹? 鈹屸攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?    鈹屸攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹? 鈹?
-鈹? 鈹? Runtime            鈹?    鈹? ProfilingPerformanceModel (NEW)            鈹? 鈹?
-鈹? 鈹? (TorchDispatchMode)鈹傗攢鈹€鈹€鈹€鈻垛攤  鈹屸攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?  鈹? 鈹?
-鈹? 鈹?                    鈹?    鈹? 鈹?1. Match op 鈫?OperatorSchema        鈹?  鈹? 鈹?
-鈹? 鈹? Intercepts all ops 鈹?    鈹? 鈹?2. Extract shape from OpInvokeInfo  鈹?  鈹? 鈹?
-鈹? 鈹? Creates OpInvokeInfo鈹?    鈹? 鈹?3. Query PerfDatabase              鈹?  鈹? 鈹?
-鈹? 鈹斺攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?    鈹? 鈹?4. Fallback to AnalyticModel        鈹?  鈹? 鈹?
-鈹?                             鈹? 鈹斺攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?  鈹? 鈹?
-鈹?                             鈹斺攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹? 鈹?
-鈹?                                        鈹?                                    鈹?
-鈹斺攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹尖攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?
-                                          鈹?
-                    鈹屸攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹尖攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?
-                    鈹?                    鈻?                    鈹?
-                    鈹?             PerfDatabase                 鈹?
-                    鈹? 鈹屸攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?   鈹?
-                    鈹? 鈹? QueryEngine                      鈹?   鈹?
-                    鈹? 鈹? 鈹屸攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?鈹?   鈹?
-                    鈹? 鈹? 鈹?Exact Match 鈫?Interpolate    鈹?鈹?   鈹?
-                    鈹? 鈹? 鈹?鈫?Extrapolate 鈫?Roofline     鈹?鈹?   鈹?
-                    鈹? 鈹? 鈹斺攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?鈹?   鈹?
-                    鈹? 鈹斺攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?   鈹?
-                    鈹?                    鈹?                    鈹?
-                    鈹? 鈹屸攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹粹攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?鈹?
-                    鈹? 鈹?OperatorSchema Registry              鈹?鈹?
-                    鈹? 鈹?鈹屸攢鈹€鈹€鈹€鈹€鈹€鈹?鈹屸攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?鈹屸攢鈹€鈹€鈹?鈹屸攢鈹€鈹€鈹€鈹€鈹?鈹?鈹?
-                    鈹? 鈹?鈹?GEMM 鈹?鈹侫ttention鈹?鈹侻oE鈹?鈹侳used鈹?鈹?鈹?
-                    鈹? 鈹?鈹斺攢鈹€鈹€鈹€鈹€鈹€鈹?鈹斺攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?鈹斺攢鈹€鈹€鈹?鈹斺攢鈹€鈹€鈹€鈹€鈹?鈹?鈹?
-                    鈹? 鈹斺攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?鈹?
-                    鈹?                    鈹?                    鈹?
-                    鈹? 鈹屸攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹粹攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?鈹?
-                    鈹? 鈹?Storage (Parquet/CSV per version)    鈹?鈹?
-                    鈹? 鈹?atlas_a3/vllm_ascend/0.14.0/        鈹?鈹?
-                    鈹? 鈹?  gemm.parquet, attention.parquet    鈹?鈹?
-                    鈹? 鈹斺攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?鈹?
-                    鈹斺攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                           TensorCast Runtime                                  │
+│                                                                               │
+│  ┌────────────────────┐     ┌─────────────────────────────────────────────┐  │
+│  │  Runtime            │     │  ProfilingPerformanceModel (NEW)            │  │
+│  │  (TorchDispatchMode)│────▶│  ┌─────────────────────────────────────┐   │  │
+│  │                     │     │  │ 1. Match op → OperatorSchema        │   │  │
+│  │  Intercepts all ops │     │  │ 2. Extract shape from OpInvokeInfo  │   │  │
+│  │  Creates OpInvokeInfo│     │  │ 3. Query PerfDatabase              │   │  │
+│  └────────────────────┘     │  │ 4. Fallback to AnalyticModel        │   │  │
+│                              │  └─────────────────────────────────────┘   │  │
+│                              └─────────────────────────────────────────────┘  │
+│                                         │                                     │
+└─────────────────────────────────────────┼─────────────────────────────────────┘
+                                          │
+                    ┌─────────────────────┼─────────────────────┐
+                    │                     ▼                     │
+                    │              PerfDatabase                 │
+                    │  ┌──────────────────────────────────┐    │
+                    │  │  QueryEngine                      │    │
+                    │  │  ┌──────────────────────────────┐ │    │
+                    │  │  │ Exact Match → Interpolate    │ │    │
+                    │  │  │ → Extrapolate → Roofline     │ │    │
+                    │  │  └──────────────────────────────┘ │    │
+                    │  └──────────────────────────────────┘    │
+                    │                     │                     │
+                    │  ┌──────────────────┴──────────────────┐ │
+                    │  │ OperatorSchema Registry              │ │
+                    │  │ ┌──────┐ ┌─────────┐ ┌───┐ ┌─────┐ │ │
+                    │  │ │ GEMM │ │Attention│ │MoE│ │Fused│ │ │
+                    │  │ └──────┘ └─────────┘ └───┘ └─────┘ │ │
+                    │  └─────────────────────────────────────┘ │
+                    │                     │                     │
+                    │  ┌──────────────────┴──────────────────┐ │
+                    │  │ Storage (Parquet/CSV per version)    │ │
+                    │  │ atlas_a3/vllm_ascend/0.14.0/        │ │
+                    │  │   gemm.parquet, attention.parquet    │ │
+                    │  └─────────────────────────────────────┘ │
+                    └──────────────────────────────────────────┘
 
 Data Collection Pipeline (Offline)
-鈹屸攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?
-鈹? Level 1: Full-Model Profiling                                鈹?
-鈹? VLLM serve + bench 鈫?kernel_details.csv 鈫?parse 鈫?database  鈹?
-鈹溾攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?
-鈹? Level 2: Isolated Microbenchmarks                            鈹?
-鈹? torch_npu scripts 鈫?direct measurement 鈫?database           鈹?
-鈹溾攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?
-鈹? Calibration: Level 1 ground truth validates Level 2 data     鈹?
-鈹斺攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?
+┌──────────────────────────────────────────────────────────────┐
+│  Level 1: Full-Model Profiling                                │
+│  VLLM serve + bench → kernel_details.csv → parse → database  │
+├──────────────────────────────────────────────────────────────┤
+│  Level 2: Isolated Microbenchmarks                            │
+│  torch_npu scripts → direct measurement → database           │
+├──────────────────────────────────────────────────────────────┤
+│  Calibration: Level 1 ground truth validates Level 2 data     │
+└──────────────────────────────────────────────────────────────┘
 ```
 
 ### 2.2 Module Structure
 
 ```
 tensor_cast/perf_database/              # NEW package
-鈹溾攢鈹€ __init__.py
-鈹溾攢鈹€ core/
-鈹?  鈹溾攢鈹€ database.py                     # PerfDatabase main class
-鈹?  鈹溾攢鈹€ query.py                        # QueryEngine with interpolation
-鈹?  鈹溾攢鈹€ storage.py                      # Parquet/CSV IO backend
-鈹?  鈹斺攢鈹€ versioning.py                   # Version resolution
-鈹溾攢鈹€ operators/
-鈹?  鈹溾攢鈹€ __init__.py                     # Auto-discovery via importlib
-鈹?  鈹溾攢鈹€ base.py                         # OperatorSchema ABC + registry
-鈹?  鈹溾攢鈹€ gemm.py                         # GEMM/MatMul schema
-鈹?  鈹溾攢鈹€ attention.py                    # MHA, GQA, MLA schema
-鈹?  鈹溾攢鈹€ moe.py                          # MoE routing + expert compute
-鈹?  鈹溾攢鈹€ communication.py                # allreduce, allgather, alltoall
-鈹?  鈹溾攢鈹€ normalization.py                # RMSNorm, AddRmsNorm
-鈹?  鈹溾攢鈹€ fused.py                        # DequantSwigluQuant, etc.
-鈹?  鈹斺攢鈹€ elementwise.py                  # Cast, activation, arithmetic
-鈹溾攢鈹€ shape_generators/
-鈹?  鈹溾攢鈹€ base.py                         # ShapeGridGenerator ABC
-鈹?  鈹溾攢鈹€ model_driven.py                 # Extract from HuggingFace configs
-鈹?  鈹斺攢鈹€ universal.py                    # Power-of-2 + common patterns
-鈹溾攢鈹€ interpolation/
-鈹?  鈹溾攢鈹€ base.py                         # InterpolationStrategy ABC
-鈹?  鈹斺攢鈹€ linear.py                       # scipy LinearNDInterpolator
-鈹溾攢鈹€ mappings/vllm_ascend/
-鈹?  鈹溾攢鈹€ v0.10.yaml                      # VLLM kernel 鈫?schema mappings
-鈹?  鈹溾攢鈹€ v0.12.yaml
-鈹?  鈹斺攢鈹€ v0.14.yaml
-鈹溾攢鈹€ data/systems/                       # Profiling data (gitignored)
-鈹?  鈹斺攢鈹€ ATLAS_800_A3_752T_128G_DIE/
-鈹?      鈹斺攢鈹€ vllm_ascend/{version}/
-鈹?          鈹溾攢鈹€ metadata.yaml
-鈹?          鈹溾攢鈹€ gemm.parquet
-鈹?          鈹溾攢鈹€ attention.parquet
-鈹?          鈹斺攢鈹€ ...
-鈹斺攢鈹€ scripts/
-    鈹溾攢鈹€ collect_full_model.py           # Level 1: VLLM-based profiling
-    鈹溾攢鈹€ collect_microbench.py           # Level 2: torch_npu benchmarks
-    鈹溾攢鈹€ parse_ascend_output.py          # Parse kernel_details.csv
-    鈹溾攢鈹€ generate_shape_grid.py          # Generate shape grids from models
-    鈹溾攢鈹€ calibrate.py                    # Calibrate L2 against L1
-    鈹斺攢鈹€ database validation tool                     # Validate database accuracy
+├── __init__.py
+├── core/
+│   ├── database.py                     # PerfDatabase main class
+│   ├── query.py                        # QueryEngine with interpolation
+│   ├── storage.py                      # Parquet/CSV IO backend
+│   └── versioning.py                   # Version resolution
+├── operators/
+│   ├── __init__.py                     # Auto-discovery via importlib
+│   ├── base.py                         # OperatorSchema ABC + registry
+│   ├── gemm.py                         # GEMM/MatMul schema
+│   ├── attention.py                    # MHA, GQA, MLA schema
+│   ├── moe.py                          # MoE routing + expert compute
+│   ├── communication.py                # allreduce, allgather, alltoall
+│   ├── normalization.py                # RMSNorm, AddRmsNorm
+│   ├── fused.py                        # DequantSwigluQuant, etc.
+│   └── elementwise.py                  # Cast, activation, arithmetic
+├── shape_generators/
+│   ├── base.py                         # ShapeGridGenerator ABC
+│   ├── model_driven.py                 # Extract from HuggingFace configs
+│   └── universal.py                    # Power-of-2 + common patterns
+├── interpolation/
+│   ├── base.py                         # InterpolationStrategy ABC
+│   └── linear.py                       # scipy LinearNDInterpolator
+├── mappings/vllm_ascend/
+│   ├── v0.10.yaml                      # VLLM kernel → schema mappings
+│   ├── v0.12.yaml
+│   └── v0.14.yaml
+├── data/systems/                       # Profiling data (gitignored)
+│   └── ATLAS_800_A3_752T_128G_DIE/
+│       └── vllm_ascend/{version}/
+│           ├── metadata.yaml
+│           ├── gemm.parquet
+│           ├── attention.parquet
+│           └── ...
+└── scripts/
+    ├── collect_full_model.py           # Level 1: VLLM-based profiling
+    ├── collect_microbench.py           # Level 2: torch_npu benchmarks
+    ├── parse_ascend_output.py          # Parse kernel_details.csv
+    ├── generate_shape_grid.py          # Generate shape grids from models
+    ├── calibrate.py                    # Calibrate L2 against L1
+    └── validate.py                     # Validate database accuracy
 
 tensor_cast/performance_model/
-鈹斺攢鈹€ profiling.py                        # ProfilingPerformanceModel (NEW)
+└── profiling.py                        # ProfilingPerformanceModel (NEW)
 ```
 
 ---
@@ -322,7 +322,7 @@ class PerfDatabase:
 class QueryMode(Enum):
     EXACT = auto()
     INTERPOLATE = auto()
-    HYBRID = auto()       # Exact 鈫?Interpolate 鈫?Roofline
+    HYBRID = auto()       # Exact → Interpolate → Roofline
     ROOFLINE = auto()
 
 class QuerySource(Enum):
@@ -330,7 +330,7 @@ class QuerySource(Enum):
     INTERPOLATED = auto()      # scipy interpolation (confidence: 0.7-0.95)
     EXTRAPOLATED = auto()      # Outside convex hull (confidence: 0.3-0.6)
     ROOFLINE = auto()          # Analytical model (confidence: 0.4)
-    ROOFLINE_CALIBRATED = auto()  # Roofline 脳 efficiency factor (confidence: 0.6)
+    ROOFLINE_CALIBRATED = auto()  # Roofline × efficiency factor (confidence: 0.6)
 
 @dataclass
 class QueryResult:
@@ -346,7 +346,7 @@ class QueryEngine:
         schema = OperatorSchema.get_schema(schema_name)
 
         if mode == QueryMode.HYBRID:
-            # Try in order: exact 鈫?interpolate 鈫?roofline
+            # Try in order: exact → interpolate → roofline
             result = self._try_exact(schema, shape)
             if result: return result
 
@@ -439,7 +439,7 @@ class ProfilingPerformanceModel(PerformanceModel):
 
     Integration with TensorCast:
     - Extends PerformanceModel (tensor_cast/performance_model/__init__.py:169)
-    - Implements process_op(OpInvokeInfo) 鈫?PerformanceModel.Result
+    - Implements process_op(OpInvokeInfo) → PerformanceModel.Result
     - Plugs into Runtime (tensor_cast/runtime.py:41) via perf_models list
     - Wrapped in CachingPerformanceModel automatically by Runtime
     - Supports get_classifiers() for bound classification
@@ -538,38 +538,38 @@ parser.add_argument("--database-version", type=str, default="latest",
 
 ```
 User CLI                    TensorCast                    Database
-鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€                   鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€                    鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+─────────                   ──────────                    ────────
 text_generate.py
   --performance-model profiling
   --database-version 0.14.0
-       鈹?
-       鈻?
+       │
+       ▼
   ModelRunner creates
   ProfilingPerformanceModel
-       鈹?
-       鈻?
+       │
+       ▼
   Runtime.__torch_dispatch__
   intercepts each op
-       鈹?
-       鈻?
+       │
+       ▼
   OpInvokeInfo(func, args, kwargs, out)
-       鈹?
-       鈻?
+       │
+       ▼
   ProfilingPerformanceModel.process_op()
-       鈹?
-       鈹溾攢鈹€鈻?Match func to OperatorSchema
-       鈹?   (e.g., aten.mm 鈫?GEMMSchema)
-       鈹?
-       鈹溾攢鈹€鈻?schema.extract_shape_from_op()
-       鈹?   鈫?{m: 136, n: 4096, k: 5120, quant: "int8"}
-       鈹?
-       鈹溾攢鈹€鈻?db.query("gemm", shape, mode=HYBRID)
-       鈹?        鈹?
-       鈹?        鈹溾攢鈹€鈻?Exact match in gemm.parquet? 鈫?Return
-       鈹?        鈹溾攢鈹€鈻?Interpolate from nearby points? 鈫?Return
-       鈹?        鈹斺攢鈹€鈻?Roofline fallback 鈫?Return
-       鈹?
-       鈹斺攢鈹€鈻?Return PerformanceModel.Result(execution_time_s=...)
+       │
+       ├──▶ Match func to OperatorSchema
+       │    (e.g., aten.mm → GEMMSchema)
+       │
+       ├──▶ schema.extract_shape_from_op()
+       │    → {m: 136, n: 4096, k: 5120, quant: "int8"}
+       │
+       ├──▶ db.query("gemm", shape, mode=HYBRID)
+       │         │
+       │         ├──▶ Exact match in gemm.parquet? → Return
+       │         ├──▶ Interpolate from nearby points? → Return
+       │         └──▶ Roofline fallback → Return
+       │
+       └──▶ Return PerformanceModel.Result(execution_time_s=...)
 ```
 
 ---
@@ -677,7 +677,7 @@ def benchmark_matmul(m, n, k, dtype, warmup=5, runs=20):
 
 class AscendProfilerParser:
     def parse_kernel_details(self, csv_path: Path) -> pd.DataFrame:
-        """Parse kernel_details.csv 鈫?structured DataFrame"""
+        """Parse kernel_details.csv → structured DataFrame"""
         # Handles flexible column names, missing fields
         # Returns: name, duration_us, input_shapes, data_types,
         #          aicore_time_us, aiv_time_us, cube_utilization_pct
@@ -687,15 +687,15 @@ class AscendProfilerParser:
         # Reuses logic from profiling_compare: kernel_details_parser.py
 
     def map_to_schema(self, kernel_name: str, input_shapes: str) -> Tuple[str, Dict]:
-        """Map VLLM kernel 鈫?(schema_name, shape_dict)"""
-        # "MatMulV2" + "136,4096; 4096,4096" 鈫?("gemm", {m:136, k:4096, n:4096})
+        """Map VLLM kernel → (schema_name, shape_dict)"""
+        # "MatMulV2" + "136,4096; 4096,4096" → ("gemm", {m:136, k:4096, n:4096})
         # Uses version-specific YAML mappings
 ```
 
 ### 5.3 Operator Discovery for New Models
 
 ```python
-# scripts/operator coverage check tool
+# scripts/discover_operators.py
 
 def discover_operators(profiling_output: Path, mapping_yaml: Path) -> Dict:
     """Discover operators in profiling that aren't in current mappings"""
@@ -809,10 +809,10 @@ PRIORITY_MODELS = [
 | Time coverage | >90% of VLLM execution |
 
 ### Test Cases
-1. Qwen3-32B Prefill: 136 queries 脳 4096 tokens, TP=16
-2. Qwen3-32B Decode: 136 queries 脳 1 token, context=4096, TP=16
-3. DeepSeek-V3 Prefill: 18 queries 脳 4096 tokens, TP=4, DP=8, EP
-4. DeepSeek-V3 Decode: 18 queries 脳 1 token, context=4096, TP=4, DP=8, EP
+1. Qwen3-32B Prefill: 136 queries × 4096 tokens, TP=16
+2. Qwen3-32B Decode: 136 queries × 1 token, context=4096, TP=16
+3. DeepSeek-V3 Prefill: 18 queries × 4096 tokens, TP=4, DP=8, EP
+4. DeepSeek-V3 Decode: 18 queries × 1 token, context=4096, TP=4, DP=8, EP
 5. PD Aggregation/Disaggregation: Both modes
 
 ---
@@ -833,4 +833,3 @@ PRIORITY_MODELS = [
 - [Intel NPU Cost Model](https://github.com/intel/npu-nn-cost-model)
 - NVIDIA AI Configurator (internal reference at `/home/horacehxw/Projects/aiconfigurator`)
 - Existing profiling comparison: `tensor_cast/scripts/profiling_comparison/`
-

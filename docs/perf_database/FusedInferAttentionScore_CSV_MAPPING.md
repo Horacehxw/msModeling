@@ -1,89 +1,89 @@
-﻿# FusedInferAttentionScore CSV 鍙傛暟鏄犲皠璇存槑
+# FusedInferAttentionScore CSV 参数映射说明
 
-鏈枃妗ｆ暣鐞?`FusedInferAttentionScore.csv` 涓?`Input Shapes / Input Data Types / Input Formats` 涓?
-`torch_npu.npu_fused_infer_attention_score` 鎺ュ彛鍙傛暟鐨勫搴斿叧绯伙紝骞惰ˉ鍏呰繖浠?CSV 鐨勫疄闄?case 鍒嗙被銆?
+本文档整理 `FusedInferAttentionScore.csv` 中 `Input Shapes / Input Data Types / Input Formats` 与
+`torch_npu.npu_fused_infer_attention_score` 接口参数的对应关系，并补充这份 CSV 的实际 case 分类。
 
-閫傜敤瀵硅薄锛?
+适用对象：
 - `tensor_cast/performance_model/perf_database/data/.../FusedInferAttentionScore.csv`
 - `tools/perf_data_collection/op_replay/FusedInferAttentionScore_run.py`
 
-## 1. 缁撹姒傝
+## 1. 结论概览
 
-`FusedInferAttentionScore.csv` 閲岀殑杈撳叆涓嶆槸鈥滃彧璁板綍浜嗗疄闄呭嚭鐜扮殑鍙傛暟鈥濓紝鑰屾槸鎸?
-`torch_npu.npu_fused_infer_attention_score` 鐨?tensor 鍙傛暟椤哄簭灞曞紑鎴愬浐瀹氭Ы浣嶃€?
+`FusedInferAttentionScore.csv` 里的输入不是“只记录了实际出现的参数”，而是按
+`torch_npu.npu_fused_infer_attention_score` 的 tensor 参数顺序展开成固定槽位。
 
-- 鍏?31 涓?tensor 杈撳叆妲戒綅
-- 绌哄瓧绗︿覆琛ㄧず璇ュ弬鏁板湪璇ヨ鏈紶鍏?
-- 闈?tensor 鏍囬噺鍙傛暟涓嶅湪杩?31 涓Ы浣嶄腑锛岄渶瑕佽剼鏈澶栨帹鏂垨鏄惧紡浼犲叆
+- 共 31 个 tensor 输入槽位
+- 空字符串表示该参数在该行未传入
+- 非 tensor 标量参数不在这 31 个槽位中，需要脚本额外推断或显式传入
 
-褰撳墠鍒嗘瀽涓昏渚濇嵁鍥涢儴鍒嗕氦鍙夌‘璁わ細
-- `torch_npu.npu_fused_infer_attention_score` 瀹樻柟鏂囨。绛惧悕
-- `FusedInferAttentionScore.csv` 鍚勮闈炵┖妲戒綅鍒嗗竷
-- shape/dtype/format 鐨勮涔夌壒寰?
-- 浠撳唴 attention / paged attention / MLA 鐩稿叧浠ｇ爜
+当前分析主要依据四部分交叉确认：
+- `torch_npu.npu_fused_infer_attention_score` 官方文档签名
+- `FusedInferAttentionScore.csv` 各行非空槽位分布
+- shape/dtype/format 的语义特征
+- 仓内 attention / paged attention / MLA 相关代码
 
-## 2. CSV 31 涓緭鍏ユЫ浣嶄笌鎺ュ彛鍙傛暟鐨勫搴斿叧绯?
+## 2. CSV 31 个输入槽位与接口参数的对应关系
 
-| Index | 鍙傛暟鍚?| 褰撳墠 CSV 鏄惁鍑虹幇 | 鍏稿瀷 Shape | 璇存槑 |
+| Index | 参数名 | 当前 CSV 是否出现 | 典型 Shape | 说明 |
 |---|---|---:|---|---|
-| 0 | `query` | 鏄?| `3072,4,128` / `16,4,128` / `4,16,1,512` | 涓昏緭鍏?Q |
-| 1 | `key` | 鏄?| `12235,128,128` / `892,1,128,512` / `41040,1,128` | 涓昏緭鍏?K锛宲aged 鍦烘櫙涓嬫槸 KV cache 褰㈡€?|
-| 2 | `value` | 鏄?| `12235,128,128` / `892,1,128,512` / `41040,1,128` | 涓昏緭鍏?V |
-| 3 | `pse_shift` | 鍚?| - | 褰撳墠搴撻噷鏈嚭鐜?|
-| 4 | `atten_mask` | 鏄?| `2048,2048` | attention mask |
-| 5 | `actual_seq_lengths` | 鏄?| `2` / `11` / `16` | 瀹為檯 Q 闀垮害鍒楄〃锛屽 TND 甯告寜绱闀垮害鐞嗚В |
-| 6 | `actual_seq_lengths_kv` | 鏄?| `2` / `11` / `4` / `5` | 瀹為檯 KV 闀垮害鍒楄〃 |
-| 7 | `dequant_scale1` | 鍚?| - | 鏈嚭鐜?|
-| 8 | `quant_scale1` | 鍚?| - | 鏈嚭鐜?|
-| 9 | `dequant_scale2` | 鍚?| - | 鏈嚭鐜?|
-| 10 | `quant_scale2` | 鍚?| - | 鏈嚭鐜?|
-| 11 | `quant_offset2` | 鍚?| - | 鏈嚭鐜?|
-| 12 | `antiquant_scale` | 鍚?| - | 鏈嚭鐜?|
-| 13 | `antiquant_offset` | 鍚?| - | 鏈嚭鐜?|
-| 14 | `block_table` | 鏄?| `2,512` / `129,512` / `4,512` / `5,512` | page attention 鐨?block 鏄犲皠琛?|
-| 15 | `query_padding_size` | 鍚?| - | 鏈嚭鐜?|
-| 16 | `kv_padding_size` | 鍚?| - | 鏈嚭鐜?|
-| 17 | `key_antiquant_scale` | 鍚?| - | 鏈嚭鐜?|
-| 18 | `key_antiquant_offset` | 鍚?| - | 鏈嚭鐜?|
-| 19 | `value_antiquant_scale` | 鍚?| - | 鏈嚭鐜?|
-| 20 | `value_antiquant_offset` | 鍚?| - | 鏈嚭鐜?|
-| 21 | `key_shared_prefix` | 鍚?| - | 鏈嚭鐜?|
-| 22 | `value_shared_prefix` | 鍚?| - | 鏈嚭鐜?|
-| 23 | `actual_shared_prefix_len` | 鍚?| - | 鏈嚭鐜?|
-| 24 | `query_rope` | 鏄?| `4,16,1,64` / `5,16,1,64` | MLA/rope 鍦烘櫙涓嬬殑 query rope |
-| 25 | `key_rope` | 鏄?| `892,1,128,64` | MLA/rope 鍦烘櫙涓嬬殑 key rope |
-| 26 | `key_rope_antiquant_scale` | 鍚?| - | 鏈嚭鐜?|
+| 0 | `query` | 是 | `3072,4,128` / `16,4,128` / `4,16,1,512` | 主输入 Q |
+| 1 | `key` | 是 | `12235,128,128` / `892,1,128,512` / `41040,1,128` | 主输入 K，paged 场景下是 KV cache 形态 |
+| 2 | `value` | 是 | `12235,128,128` / `892,1,128,512` / `41040,1,128` | 主输入 V |
+| 3 | `pse_shift` | 否 | - | 当前库里未出现 |
+| 4 | `atten_mask` | 是 | `2048,2048` | attention mask |
+| 5 | `actual_seq_lengths` | 是 | `2` / `11` / `16` | 实际 Q 长度列表，对 TND 常按累计长度理解 |
+| 6 | `actual_seq_lengths_kv` | 是 | `2` / `11` / `4` / `5` | 实际 KV 长度列表 |
+| 7 | `dequant_scale1` | 否 | - | 未出现 |
+| 8 | `quant_scale1` | 否 | - | 未出现 |
+| 9 | `dequant_scale2` | 否 | - | 未出现 |
+| 10 | `quant_scale2` | 否 | - | 未出现 |
+| 11 | `quant_offset2` | 否 | - | 未出现 |
+| 12 | `antiquant_scale` | 否 | - | 未出现 |
+| 13 | `antiquant_offset` | 否 | - | 未出现 |
+| 14 | `block_table` | 是 | `2,512` / `129,512` / `4,512` / `5,512` | page attention 的 block 映射表 |
+| 15 | `query_padding_size` | 否 | - | 未出现 |
+| 16 | `kv_padding_size` | 否 | - | 未出现 |
+| 17 | `key_antiquant_scale` | 否 | - | 未出现 |
+| 18 | `key_antiquant_offset` | 否 | - | 未出现 |
+| 19 | `value_antiquant_scale` | 否 | - | 未出现 |
+| 20 | `value_antiquant_offset` | 否 | - | 未出现 |
+| 21 | `key_shared_prefix` | 否 | - | 未出现 |
+| 22 | `value_shared_prefix` | 否 | - | 未出现 |
+| 23 | `actual_shared_prefix_len` | 否 | - | 未出现 |
+| 24 | `query_rope` | 是 | `4,16,1,64` / `5,16,1,64` | MLA/rope 场景下的 query rope |
+| 25 | `key_rope` | 是 | `892,1,128,64` | MLA/rope 场景下的 key rope |
+| 26 | `key_rope_antiquant_scale` | 否 | - | 未出现 |
 
-璇存槑锛?
-- 鏂囨。绛惧悕閲?`*` 涔嬪悗鐨勫弬鏁板潎涓?keyword 鍙傛暟锛屼絾 CSV 浠嶆寜鍥哄畾浣嶇疆灞曞紑
-- 褰撳墠搴撲腑鍙嚭鐜颁簡鍓?27 涓?tensor 鍙傛暟涓殑閮ㄥ垎妲戒綅
-- 鏍囬噺鍙傛暟濡?`num_heads`銆乣scale`銆乣input_layout`銆乣sparse_mode` 涓嶄細鍑虹幇鍦ㄨ繖寮犺〃閲?
+说明：
+- 文档签名里 `*` 之后的参数均为 keyword 参数，但 CSV 仍按固定位置展开
+- 当前库中只出现了前 27 个 tensor 参数中的部分槽位
+- 标量参数如 `num_heads`、`scale`、`input_layout`、`sparse_mode` 不会出现在这张表里
 
-## 3. 涓嶅湪 31 涓Ы浣嶄腑鐨勬爣閲忓弬鏁?
+## 3. 不在 31 个槽位中的标量参数
 
-杩欎簺鍙傛暟涓嶅湪 CSV 鐨?`Input Shapes / Input Data Types / Input Formats` 31 妲戒綅涓紝闇€瑕佽剼鏈澶栨帹鏂垨鏄惧紡浼犲叆銆?
+这些参数不在 CSV 的 `Input Shapes / Input Data Types / Input Formats` 31 槽位中，需要脚本额外推断或显式传入。
 
-| 鍙傛暟鍚?| 鏄惁鍦?CSV 鐨?31 涓緭鍏ユЫ浣嶄腑 | 褰撳墠鑴氭湰濡備綍纭畾 |
+| 参数名 | 是否在 CSV 的 31 个输入槽位中 | 当前脚本如何确定 |
 |---|---:|---|
-| `num_heads` | 鍚?| 浠?`query` shape 鎺ㄦ柇 |
-| `scale` | 鍚?| 閫氬父鎸?`1 / sqrt(head_dim)` 鎺ㄦ柇 |
-| `pre_tokens` | 鍚?| 鑴氭湰鍥哄畾浼犺緝澶у€?|
-| `next_tokens` | 鍚?| 鑴氭湰鍥哄畾浼犺緝澶у€?|
-| `input_layout` | 鍚?| 鏍规嵁 `query / key / query_rope` shape 妯″紡鎺ㄦ柇 |
-| `num_key_value_heads` | 鍚?| 鏍规嵁 `key` shape 鍜屽満鏅帹鏂?|
-| `sparse_mode` | 鍚?| 鏍规嵁 `atten_mask` 鏄惁瀛樺湪鍙婂舰鐘舵帹鏂?|
-| `inner_precise` | 鍚?| 褰撳墠鑴氭湰鏈壒鍒墦寮€ |
-| `block_size` | 鍚?| paged 鍦烘櫙涓嬬敱 `key` shape 鎺ㄦ柇 |
-| `antiquant_mode` | 鍚?| 褰撳墠鏈娇鐢?|
-| `softmax_lse_flag` | 鍚?| 鎸?`Output Shapes` 鏄惁瀛樺湪绗簩杈撳嚭鍒ゆ柇 |
-| `key_antiquant_mode` | 鍚?| 褰撳墠鏈娇鐢?|
-| `value_antiquant_mode` | 鍚?| 褰撳墠鏈娇鐢?|
+| `num_heads` | 否 | 从 `query` shape 推断 |
+| `scale` | 否 | 通常按 `1 / sqrt(head_dim)` 推断 |
+| `pre_tokens` | 否 | 脚本固定传较大值 |
+| `next_tokens` | 否 | 脚本固定传较大值 |
+| `input_layout` | 否 | 根据 `query / key / query_rope` shape 模式推断 |
+| `num_key_value_heads` | 否 | 根据 `key` shape 和场景推断 |
+| `sparse_mode` | 否 | 根据 `atten_mask` 是否存在及形状推断 |
+| `inner_precise` | 否 | 当前脚本未特别打开 |
+| `block_size` | 否 | paged 场景下由 `key` shape 推断 |
+| `antiquant_mode` | 否 | 当前未使用 |
+| `softmax_lse_flag` | 否 | 按 `Output Shapes` 是否存在第二输出判断 |
+| `key_antiquant_mode` | 否 | 当前未使用 |
+| `value_antiquant_mode` | 否 | 当前未使用 |
 
-## 4. 鎴戜滑鏄浣曠‘璁よ繖浜涙Ы浣嶆槧灏勭殑
+## 4. 我们是如何确认这些槽位映射的
 
-### 4.1 鎸夋帴鍙ｇ鍚嶉『搴忓榻?
+### 4.1 按接口签名顺序对齐
 
-鏂囨。缁欏嚭鐨勭鍚嶅涓嬶細
+文档给出的签名如下：
 
 ```python
 torch_npu.npu_fused_infer_attention_score(
@@ -131,187 +131,186 @@ torch_npu.npu_fused_infer_attention_score(
 )
 ```
 
-CSV 閲岀殑 31 涓?tensor 妲戒綅灏辨槸鎸夎繖閲岀殑 tensor 鍙傛暟椤哄簭灞曞紑鐨勩€?
+CSV 里的 31 个 tensor 槽位就是按这里的 tensor 参数顺序展开的。
 
-### 4.2 鐢ㄩ潪绌?index 鍙嶆帹鍏蜂綋鍙傛暟
+### 4.2 用非空 index 反推具体参数
 
-褰撳墠搴撲腑锛屽父瑙佽鐨勯潪绌?index 寰堢ǔ瀹氾紝渚嬪锛?
+当前库中，常见行的非空 index 很稳定，例如：
 
-- `0,1,2` 鎭掗潪绌猴紝瀵瑰簲 `query/key/value`
-- `4` 甯镐负 `2048,2048` 涓?dtype 鏄?`INT8`锛屾槑鏄剧鍚?`atten_mask`
-- `5,6` 鏄崟鏁板瓧 shape 涓?dtype 鏄?`INT64`锛岀鍚?`actual_seq_lengths / actual_seq_lengths_kv`
-- `14` 鏄簩缁?`INT32`锛屽 `129,512`锛岀鍚?`block_table`
-- `24,25` 浠呭湪 MLA 鏍锋湰涓嚭鐜帮紝涓?dtype 鏄?`BF16`锛岀鍚?`query_rope / key_rope`
+- `0,1,2` 恒非空，对应 `query/key/value`
+- `4` 常为 `2048,2048` 且 dtype 是 `INT8`，明显符合 `atten_mask`
+- `5,6` 是单数字 shape 且 dtype 是 `INT64`，符合 `actual_seq_lengths / actual_seq_lengths_kv`
+- `14` 是二维 `INT32`，如 `129,512`，符合 `block_table`
+- `24,25` 仅在 MLA 样本中出现，且 dtype 是 `BF16`，符合 `query_rope / key_rope`
 
-### 4.3 鐢?shape 璇箟鍋氫簩娆℃牎楠?
+### 4.3 用 shape 语义做二次校验
 
-- 鏅€氳锛歚query` 甯镐负 `(T, N, D)`锛宍key/value` 甯镐负 `(block_num, block_size, D)` 鎴栬繎浼?page cache 甯冨眬锛岃鏄庢槸 TND + page attention 璺緞
-- MLA 琛岋細`query` 涓?`(B, N, S, D)`锛屽悓鏃舵湁 `query_rope/key_rope`锛岃鏄庢槸 MLA rope 褰㈡€?
-- `block_table` 绗簩缁村浐瀹氬儚 `max_blocks_per_seq`锛屽拰 page attention 鏂囨。涓€鑷?
+- 普通行：`query` 常为 `(T, N, D)`，`key/value` 常为 `(block_num, block_size, D)` 或近似 page cache 布局，说明是 TND + page attention 路径
+- MLA 行：`query` 为 `(B, N, S, D)`，同时有 `query_rope/key_rope`，说明是 MLA rope 形态
+- `block_table` 第二维固定像 `max_blocks_per_seq`，和 page attention 文档一致
 
-### 4.4 鐢ㄤ粨鍐呬唬鐮佷氦鍙夐獙璇?
+### 4.4 用仓内代码交叉验证
 
-涓昏鍙傝€冿細
+主要参考：
 - `tensor_cast/ops/attention.py`
 - `tensor_cast/ops/mla.py`
 - `tensor_cast/core/input_generator.py`
 - `tensor_cast/performance_model/__init__.py`
 
-杩欎簺鏂囦欢甯姪纭浜嗭細
-- `block_table` 鐨勮涔?
-- `query_lens / seq_lens` 涓?TND/paged attention 鐨勫叧绯?
-- rope 涓?MLA 鐩稿叧 shape 鐨勮涔?
+这些文件帮助确认了：
+- `block_table` 的语义
+- `query_lens / seq_lens` 与 TND/paged attention 的关系
+- rope 与 MLA 相关 shape 的语义
 
-## 5. 閽堝杩欎唤 CSV 鐨勫疄闄呬笁绉?case 鍒嗙被
+## 5. 针对这份 CSV 的实际三种 case 分类
 
-褰撳墠杩欎唤 `FusedInferAttentionScore.csv` 瀹為檯鍙垎涓轰笁绫汇€?
+当前这份 `FusedInferAttentionScore.csv` 实际可分为三类。
 
-### Case A: 鏅€?paged TND
+### Case A: 普通 paged TND
 
-杩欐槸褰撳墠搴撻噷鏁伴噺鏈€澶氱殑涓€绫汇€?
+这是当前库里数量最多的一类。
 
-鍏稿瀷鐗瑰緛锛?
-- `query`: 3D锛屽舰濡?`(T, N, D)`锛屼緥濡?`3072,4,128`
-- `key/value`: 3D锛屽舰濡?`(block_num, block_size, D)`锛屼緥濡?`12235,128,128`
-- `atten_mask`: 瀛樺湪锛岄€氬父鏄?`2048,2048`
-- `actual_seq_lengths`: 瀛樺湪
-- `actual_seq_lengths_kv`: 瀛樺湪
-- `block_table`: 瀛樺湪
-- `query_rope/key_rope`: 涓嶅瓨鍦?
+典型特征：
+- `query`: 3D，形如 `(T, N, D)`，例如 `3072,4,128`
+- `key/value`: 3D，形如 `(block_num, block_size, D)`，例如 `12235,128,128`
+- `atten_mask`: 存在，通常是 `2048,2048`
+- `actual_seq_lengths`: 存在
+- `actual_seq_lengths_kv`: 存在
+- `block_table`: 存在
+- `query_rope/key_rope`: 不存在
 
-瀵瑰簲妲戒綅锛?
-- 蹇呭～锛歚0,1,2`
-- 甯歌闈炵┖锛歚4,5,6,14`
+对应槽位：
+- 必填：`0,1,2`
+- 常见非空：`4,5,6,14`
 
-鑴氭湰渚ф帹鏂細
+脚本侧推断：
 - `input_layout = "TND"`
 - `num_heads = query.shape[1]`
 - `num_key_value_heads = 1`
 - `block_size = key.shape[1]`
-- `sparse_mode` 渚濇嵁 `atten_mask` 褰㈡€佹帹鏂?
+- `sparse_mode` 依据 `atten_mask` 形态推断
 
-澶囨敞锛?
-- 杩欑被琛岀殑 `key/value` 棣栫淮鏇村儚鏁翠釜 KV cache 姹犲閲忥紝鑰屼笉鏄綋鍓?batch 鐨勭湡瀹炰笂涓嬫枃 block 鏁?
-- 浠呭嚟 CSV 鐨?shape 鏃犳硶鎭㈠鐪熷疄 `block_table` 鍐呭鍜岀湡瀹?`actual_seq_lengths_kv` 鏁板€?
+备注：
+- 这类行的 `key/value` 首维更像整个 KV cache 池容量，而不是当前 batch 的真实上下文 block 数
+- 仅凭 CSV 的 shape 无法恢复真实 `block_table` 内容和真实 `actual_seq_lengths_kv` 数值
 
-### Case B: 闈?paged TND
+### Case B: 非 paged TND
 
-杩欑被琛屾暟閲忚緝灏戯紝浣嗕粛鏄櫘閫?attention锛屼笉甯?rope銆?
+这类行数量较少，但仍是普通 attention，不带 rope。
 
-鍏稿瀷鐗瑰緛锛?
-- `query`: 3D锛屽舰濡?`(T, N, D)`锛屼緥濡?`41040,4,128`
-- `key/value`: 3D锛屽舰濡?`(T_kv, KV_N, D)`锛屼緥濡?`41040,1,128`
-- `atten_mask`: 瀛樺湪
-- `actual_seq_lengths`: 瀛樺湪
-- `actual_seq_lengths_kv`: 瀛樺湪
-- `block_table`: 涓嶅瓨鍦?
-- `query_rope/key_rope`: 涓嶅瓨鍦?
+典型特征：
+- `query`: 3D，形如 `(T, N, D)`，例如 `41040,4,128`
+- `key/value`: 3D，形如 `(T_kv, KV_N, D)`，例如 `41040,1,128`
+- `atten_mask`: 存在
+- `actual_seq_lengths`: 存在
+- `actual_seq_lengths_kv`: 存在
+- `block_table`: 不存在
+- `query_rope/key_rope`: 不存在
 
-瀵瑰簲妲戒綅锛?
-- 蹇呭～锛歚0,1,2`
-- 甯歌闈炵┖锛歚4,5,6`
+对应槽位：
+- 必填：`0,1,2`
+- 常见非空：`4,5,6`
 
-鑴氭湰渚ф帹鏂細
+脚本侧推断：
 - `input_layout = "TND"`
 - `num_heads = query.shape[1]`
 - `num_key_value_heads = key.shape[1]`
 - `block_size = 0`
 
-涓?Case A 鐨勫叧閿尯鍒細
-- 娌℃湁 `block_table`
-- `key/value` 鐨?shape 鐩存帴琛ㄨ揪鐪熷疄 KV 闀垮害
-- 涓嶆槸 page attention
+与 Case A 的关键区别：
+- 没有 `block_table`
+- `key/value` 的 shape 直接表达真实 KV 长度
+- 不是 page attention
 
 ### Case C: MLA rope
 
-杩欑被琛屽彧鍑虹幇灏戦噺鏍锋湰锛屼絾缁撴瀯鏈€鐗规畩銆?
+这类行只出现少量样本，但结构最特殊。
 
-鍏稿瀷鐗瑰緛锛?
-- `query`: 4D锛屽舰濡?`(B, N, S, D)`锛屼緥濡?`4,16,1,512`
-- `key/value`: 4D锛屽舰濡?`(block_num, KV_N, block_size, D)`锛屼緥濡?`892,1,128,512`
-- `actual_seq_lengths`: 閫氬父涓虹┖
-- `actual_seq_lengths_kv`: 瀛樺湪
-- `block_table`: 瀛樺湪
-- `query_rope`: 瀛樺湪锛屼緥濡?`4,16,1,64`
-- `key_rope`: 瀛樺湪锛屼緥濡?`892,1,128,64`
+典型特征：
+- `query`: 4D，形如 `(B, N, S, D)`，例如 `4,16,1,512`
+- `key/value`: 4D，形如 `(block_num, KV_N, block_size, D)`，例如 `892,1,128,512`
+- `actual_seq_lengths`: 通常为空
+- `actual_seq_lengths_kv`: 存在
+- `block_table`: 存在
+- `query_rope`: 存在，例如 `4,16,1,64`
+- `key_rope`: 存在，例如 `892,1,128,64`
 
-瀵瑰簲妲戒綅锛?
-- 蹇呭～锛歚0,1,2`
-- 甯歌闈炵┖锛歚6,14,24,25`
+对应槽位：
+- 必填：`0,1,2`
+- 常见非空：`6,14,24,25`
 
-鑴氭湰渚ф帹鏂細
+脚本侧推断：
 - `input_layout = "BNSD_NBSD"`
 - `num_heads = query.shape[1]`
 - `num_key_value_heads = 1`
 - `block_size = key.shape[2]`
-- `scale` 闇€缁撳悎 `query` 涓?`query_rope` 鐨勬渶鍚庝竴缁寸悊瑙?
+- `scale` 需结合 `query` 与 `query_rope` 的最后一维理解
 
-涓庡墠涓ょ被鐨勫叧閿尯鍒細
-- `query` 鏄?4D 鑰屼笉鏄?3D
-- 甯?`query_rope / key_rope`
-- 鏄庢樉鏄?MLA 鐩稿叧璺緞锛岃€屼笉鏄櫘閫?TND attention
+与前两类的关键区别：
+- `query` 是 4D 而不是 3D
+- 带 `query_rope / key_rope`
+- 明显是 MLA 相关路径，而不是普通 TND attention
 
-## 6. 涓轰粈涔堚€滃悓鏍?shape鈥濅笉绛変簬鈥滃悓鏍疯緭鍏モ€?
+## 6. 为什么“同样 shape”不等于“同样输入”
 
-浠?replay 瑙掑害锛孋SV 鍙畬鏁磋褰曚簡锛?
+从 replay 角度，CSV 只完整记录了：
 - shape
 - dtype
 - format
 
-浣嗘病鏈夎褰曠湡瀹炶繍琛屾椂鐨勶細
-- `query/key/value` 瀹為檯鏁板€?
-- `actual_seq_lengths` 瀹為檯鍒楄〃鍊?
-- `actual_seq_lengths_kv` 瀹為檯鍒楄〃鍊?
-- `block_table` 瀹為檯鏄犲皠鍐呭
-- `atten_mask` 瀹為檯鍐呭
-- 閮ㄥ垎鏍囬噺鍙傛暟鐨勭湡瀹炲彇鍊?
+但没有记录真实运行时的：
+- `query/key/value` 实际数值
+- `actual_seq_lengths` 实际列表值
+- `actual_seq_lengths_kv` 实际列表值
+- `block_table` 实际映射内容
+- `atten_mask` 实际内容
+- 部分标量参数的真实取值
 
-鍥犳锛屽嵆浣?shape/dtype/format 涓€鏍凤紝涔熶笉浠ｈ〃鏄€滃悓鏍疯緭鍏モ€濄€?
+因此，即使 shape/dtype/format 一样，也不代表是“同样输入”。
 
-杩欎篃鏄负浠€涔?replay 鑴氭湰鍙兘鍋氬埌锛?
-- 涓ユ牸澶嶅師杈撳叆缁撴瀯
-- 杩戜技澶嶅師閮ㄥ垎鏍囬噺鍙傛暟
-- 鍚堟硶鏋勯€犵己澶辩殑鍔ㄦ€佸唴瀹?
+这也是为什么 replay 脚本只能做到：
+- 严格复原输入结构
+- 近似复原部分标量参数
+- 合法构造缺失的动态内容
 
-浣嗕笉鑳戒繚璇佷笌鍘?profiling 瀹屽叏涓€鑷淬€?
+但不能保证与原 profiling 完全一致。
 
-## 7. 褰撳墠鑴氭湰涓笌 CSV 瀵归綈鏃剁殑鐗瑰埆娉ㄦ剰鐐?
+## 7. 当前脚本中与 CSV 对齐时的特别注意点
 
 ### 7.1 `softmax_lse_flag`
 
-涓嶈兘鏍规嵁 `Output Data Types` 鏄惁鏈夌浜岄」鏉ュ垽鏂€?
+不能根据 `Output Data Types` 是否有第二项来判断。
 
-鍘熷洜锛?
-- 鏌愪簺 CSV 琛岄噷 `Output Data Types` 浼氬啓鎴?`DT_BF16;FLOAT`
-- 浣?`Output Shapes` 瀹為檯鍙湁涓€涓緭鍑?shape
+原因：
+- 某些 CSV 行里 `Output Data Types` 会写成 `DT_BF16;FLOAT`
+- 但 `Output Shapes` 实际只有一个输出 shape
 
-鍥犳鏇村悎鐞嗙殑鍒ゆ柇鏂瑰紡鏄細
-- 鍙湁褰?`Output Shapes` 涓‘瀹炲瓨鍦ㄧ浜屼釜 shape 鏃讹紝鎵嶈涓?`softmax_lse_flag=True`
+因此更合理的判断方式是：
+- 只有当 `Output Shapes` 中确实存在第二个 shape 时，才认为 `softmax_lse_flag=True`
 
-### 7.2 paged attention 鐨?`actual_seq_lengths_kv`
+### 7.2 paged attention 的 `actual_seq_lengths_kv`
 
-瀵?paged 鍦烘櫙锛?
-- `key/value` 鐨勯缁存洿鍍?cache 姹犲ぇ灏?
-- 涓嶈兘鐩存帴鎷挎潵褰撶湡瀹炰笂涓嬫枃 block 鏁?
+对 paged 场景：
+- `key/value` 的首维更像 cache 池大小
+- 不能直接拿来当真实上下文 block 数
 
-鍚﹀垯寰堝鏄撴瀯閫犲嚭杩滃ぇ浜?`block_table` 瀹藉害鐨勯潪娉?`actual_seq_lengths_kv`銆?
+否则很容易构造出远大于 `block_table` 宽度的非法 `actual_seq_lengths_kv`。
 
-### 7.3 `atten_mask` 涓?`sparse_mode`
+### 7.3 `atten_mask` 与 `sparse_mode`
 
-鏍规嵁瀹樻柟绾︽潫锛?
-- 浼犲叆 `atten_mask` 鏃讹紝`sparse_mode` 闇€瑕佷笌 mask 褰㈡€佸尮閰?
-- 瀵?`2048x2048` 浼樺寲 mask锛岄€氬父闇€瑕佽蛋鐗瑰畾 sparse 璺緞
+根据官方约束：
+- 传入 `atten_mask` 时，`sparse_mode` 需要与 mask 形态匹配
+- 对 `2048x2048` 优化 mask，通常需要走特定 sparse 路径
 
-鍥犳 `atten_mask` 鏄惁瀛樺湪銆乻hape 鏄粈涔堬紝浼氱洿鎺ュ奖鍝?`sparse_mode` 鐨勬帹鏂€?
+因此 `atten_mask` 是否存在、shape 是什么，会直接影响 `sparse_mode` 的推断。
 
-## 8. 鎺ㄨ崘浣跨敤鏂瑰紡
+## 8. 推荐使用方式
 
-濡傛灉闇€瑕佺户缁垎鏋?`FusedInferAttentionScore.csv`锛屽缓璁寜浠ヤ笅椤哄簭鐪嬶細
+如果需要继续分析 `FusedInferAttentionScore.csv`，建议按以下顺序看：
 
-1. 鍏堢湅鏌愪竴琛岄潪绌烘Ы浣嶅垎甯?
-2. 鍐嶅垽鏂畠灞炰簬 Case A / B / C 鍝竴绫?
-3. 鍐嶇粨鍚堣绫诲搴旂殑 `input_layout / block_table / rope` 璇箟鐞嗚В鍙傛暟
-4. 鏈€鍚庡啀鐪?replay 鑴氭湰閲屽浣曡ˉ榻愭爣閲忓弬鏁板拰鍔ㄦ€佽緭鍏?
+1. 先看某一行非空槽位分布
+2. 再判断它属于 Case A / B / C 哪一类
+3. 再结合该类对应的 `input_layout / block_table / rope` 语义理解参数
+4. 最后再看 replay 脚本里如何补齐标量参数和动态输入
 
-杩欐牱浼氭瘮鐩存帴浠?31 涓Ы浣嶇‖璇绘洿娓呮櫚銆?
-
+这样会比直接从 31 个槽位硬读更清晰。

@@ -1,40 +1,40 @@
-﻿# `generate_shape_grid.py` 浣跨敤璇存槑
+# `generate_shape_grid.py` 使用说明
 
-鏈枃妗ｈ鏄?[`tools/perf_data_collection/generate_shape_grid.py`](G:\浠跨湡寮€鍙慭msmodeling\tools\perf_data_collection\generate_shape_grid.py) 鐨勭敤閫斻€佸弬鏁般€佽緭鍏ヨ緭鍑恒€佷富瑕佺畻瀛愯鍒欙紝浠ュ強瀹冨拰 [`tools/perf_data_collection/op_replay`](G:\浠跨湡寮€鍙慭msmodeling\tools\perf_data_collection\op_replay) 鐨勫吋瀹瑰叧绯汇€?
+本文档说明 [`tools/perf_data_collection/generate_shape_grid.py`](G:\仿真开发\msmodeling\tools\perf_data_collection\generate_shape_grid.py) 的用途、参数、输入输出、主要算子规则，以及它和 [`tools/perf_data_collection/op_replay`](G:\仿真开发\msmodeling\tools\perf_data_collection\op_replay) 的兼容关系。
 
-## 1. 鑴氭湰瀹氫綅
+## 1. 脚本定位
 
-`generate_shape_grid.py` 鐨勪綔鐢ㄤ笉鏄粠闆惰璁?shape锛岃€屾槸鍩轰簬宸叉湁 perf database CSV 妯℃澘杩藉姞鏂扮殑鍚堟垚鏍锋湰锛?
+`generate_shape_grid.py` 的作用不是从零设计 shape，而是基于已有 perf database CSV 模板追加新的合成样本：
 
-1. 閫掑綊鎵弿 perf database 鐩綍涓嬬殑 CSV銆?
-2. 浠庢瘡涓?CSV 鐨勫凡鏈夎璇诲彇 `Input Shapes`銆乣Output Shapes`銆乣Input Formats`銆?
-3. 鎸夌畻瀛愮被鍨嬬敓鎴愮害鏉熸劅鐭ョ殑鏂?shape銆?
-4. 杩藉姞鍒板師 CSV锛屼繚鐣欏凡鏈夌湡瀹炴暟鎹€?
+1. 递归扫描 perf database 目录下的 CSV。
+2. 从每个 CSV 的已有行读取 `Input Shapes`、`Output Shapes`、`Input Formats`。
+3. 按算子类型生成约束感知的新 shape。
+4. 追加到原 CSV，保留已有真实数据。
 
-杩欎釜鑴氭湰褰撳墠鏈変笁涓洰鏍囷細
+这个脚本当前有三个目标：
 
-1. 璁╂柊澧炴牱鏈敖閲忔帴杩戞暣缃?profiling 涓湡瀹炲嚭鐜拌繃鐨?shape 瀹舵棌銆?
-2. 淇濇寔鍏抽敭缁村害鍏崇郴涓嶈鐮村潖锛屼緥濡?matmul contract 缁淬€乶orm hidden 缁淬€乧ache 缁撴瀯銆乺ope 缁撴瀯銆?
-3. 璁╅噸鐐圭畻瀛愮殑 CSV 鍙互琚?`op_replay/*_run.py` 鐩存帴璇诲彇骞舵墽琛岋紝鍑忓皯 replay 鎶ラ敊銆?
+1. 让新增样本尽量接近整网 profiling 中真实出现过的 shape 家族。
+2. 保持关键维度关系不被破坏，例如 matmul contract 维、norm hidden 维、cache 结构、rope 结构。
+3. 让重点算子的 CSV 可以被 `op_replay/*_run.py` 直接读取并执行，减少 replay 报错。
 
-## 2. 鍏ュ彛鏂囦欢
+## 2. 入口文件
 
-- 鑴氭湰鍏ュ彛锛?
-  - [`generate_shape_grid.py`](G:\浠跨湡寮€鍙慭msmodeling\tools\perf_data_collection\generate_shape_grid.py)
-- replay 鐩綍锛?
-  - [`op_replay`](G:\浠跨湡寮€鍙慭msmodeling\tools\perf_data_collection\op_replay)
-- attention CSV 缁撴瀯鍙傝€冿細
-  - [`FusedInferAttentionScore_CSV_MAPPING.md`](G:\浠跨湡寮€鍙慭msmodeling\docs\perf_database\FusedInferAttentionScore_CSV_MAPPING.md)
+- 脚本入口：
+  - [`generate_shape_grid.py`](G:\仿真开发\msmodeling\tools\perf_data_collection\generate_shape_grid.py)
+- replay 目录：
+  - [`op_replay`](G:\仿真开发\msmodeling\tools\perf_data_collection\op_replay)
+- attention CSV 结构参考：
+  - [`FusedInferAttentionScore_CSV_MAPPING.md`](G:\仿真开发\msmodeling\docs\perf_database\FusedInferAttentionScore_CSV_MAPPING.md)
 
-## 3. 鍩烘湰鐢ㄦ硶
+## 3. 基本用法
 
-鐩存帴瀵归粯璁ゆ牴鐩綍鎵ц锛?
+直接对默认根目录执行：
 
 ```powershell
 python .\tools\perf_data_collection\generate_shape_grid.py
 ```
 
-鎸夎澶囧拰鐗堟湰鐩綍鎵ц锛?
+按设备和版本目录执行：
 
 ```powershell
 python .\tools\perf_data_collection\generate_shape_grid.py `
@@ -46,7 +46,7 @@ python .\tools\perf_data_collection\generate_shape_grid.py `
   --seed 123
 ```
 
-鏄惧紡鎸囧畾鐩綍鎵ц锛?
+显式指定目录执行：
 
 ```powershell
 python .\tools\perf_data_collection\generate_shape_grid.py `
@@ -57,57 +57,57 @@ python .\tools\perf_data_collection\generate_shape_grid.py `
   --seed 123
 ```
 
-## 4. 鍙傛暟璇存槑
+## 4. 参数说明
 
 - `--data-dir`
-  - 鏄惧紡鎸囧畾 CSV 鏍圭洰褰曘€?
-  - 濡傛灉浼犱簡璇ュ弬鏁帮紝浼樺厛浣跨敤瀹冦€?
+  - 显式指定 CSV 根目录。
+  - 如果传了该参数，优先使用它。
 - `--device`
-  - 璁惧鍚嶃€?
-  - 瑙勫垯涓?[`parse_kernel_details.py`](G:\浠跨湡寮€鍙慭msmodeling\tools\perf_data_collection\parse_kernel_details.py) 涓€鑷淬€?
-  - 蹇呴』鍜?`--vllm-ascend-version` 涓€璧蜂娇鐢ㄣ€?
+  - 设备名。
+  - 规则与 [`parse_kernel_details.py`](G:\仿真开发\msmodeling\tools\perf_data_collection\parse_kernel_details.py) 一致。
+  - 必须和 `--vllm-ascend-version` 一起使用。
 - `--vllm-ascend-version`
-  - vLLM-Ascend 鐗堟湰銆?
-  - 瑙勫垯涓?[`parse_kernel_details.py`](G:\浠跨湡寮€鍙慭msmodeling\tools\perf_data_collection\parse_kernel_details.py) 涓€鑷淬€?
-  - 濡傛灉涓嶄互 `v` 寮€澶达紝鑴氭湰浼氳嚜鍔ㄨˉ `v`銆?
-  - 蹇呴』鍜?`--device` 涓€璧蜂娇鐢ㄣ€?
+  - vLLM-Ascend 版本。
+  - 规则与 [`parse_kernel_details.py`](G:\仿真开发\msmodeling\tools\perf_data_collection\parse_kernel_details.py) 一致。
+  - 如果不以 `v` 开头，脚本会自动补 `v`。
+  - 必须和 `--device` 一起使用。
 - `--rows`
-  - 姣忎釜 CSV 杩藉姞鐨勮鏁般€?
+  - 每个 CSV 追加的行数。
 - `--min-value`
-  - 闅忔満缁村害鏈€灏忓€笺€?
+  - 随机维度最小值。
 - `--max-value`
-  - 闅忔満缁村害鏈€澶у€笺€?
+  - 随机维度最大值。
 - `--seed`
-  - 鍙€夐殢鏈虹瀛愶紝鏂逛究澶嶇幇銆?
+  - 可选随机种子，方便复现。
 
-## 5. 鐩綍瑙ｆ瀽瑙勫垯
+## 5. 目录解析规则
 
-- 濡傛灉浼犱簡 `--data-dir`锛岀洿鎺ヤ娇鐢ㄨ鐩綍銆?
-- 濡傛灉娌℃湁浼?`--data-dir`锛屼絾浼犱簡 `--device` 鍜?`--vllm-ascend-version`锛屽垯浣跨敤锛?
+- 如果传了 `--data-dir`，直接使用该目录。
+- 如果没有传 `--data-dir`，但传了 `--device` 和 `--vllm-ascend-version`，则使用：
   - `tensor_cast/performance_model/perf_database/data/{device}/vllm_ascend/{version}/`
-- 濡傛灉涓夎€呴兘娌′紶锛屽垯鍥為€€鍒伴粯璁ゆ牴鐩綍锛?
+- 如果三者都没传，则回退到默认根目录：
   - `tensor_cast/performance_model/perf_database/data`
 
-## 6. 杩愯鏃惰涓?
+## 6. 运行时行为
 
-### 6.1 杩涘害鏉?
+### 6.1 进度条
 
-鑴氭湰浼氭樉绀轰袱绾ц繘搴︼細
+脚本会显示两级进度：
 
-- 鎬绘枃浠惰繘搴︼細`Files [####----] x/y`
-- 褰撳墠鏂囦欢鍐呰繘搴︼細`Rows [####----] x/y`
+- 总文件进度：`Files [####----] x/y`
+- 当前文件内进度：`Rows [####----] x/y`
 
-### 6.2 璺宠繃绛栫暐
+### 6.2 跳过策略
 
-涓嬪垪鏂囦欢浼氳璺宠繃锛?
+下列文件会被跳过：
 
-- 娌℃湁 `Input Shapes` 鍒楃殑 CSV銆?
-- 鏈?`Input Shapes` 鍒楋紝浣嗘病鏈夊彲鐢ㄦā鏉跨殑 CSV銆?
-- 鐗逛緥锛歚Range` 鍙互浠呬緷璧?`Output Shapes` 妯℃澘鐢熸垚銆?
+- 没有 `Input Shapes` 列的 CSV。
+- 有 `Input Shapes` 列，但没有可用模板的 CSV。
+- 特例：`Range` 可以仅依赖 `Output Shapes` 模板生成。
 
-### 6.3 杈撳嚭鍒楀鐞?
+### 6.3 输出列处理
 
-鑴氭湰浼氫繚鐣欎互涓嬪垪锛?
+脚本会保留以下列：
 
 - `OP State`
 - `Accelerator Core`
@@ -116,7 +116,7 @@ python .\tools\perf_data_collection\generate_shape_grid.py `
 - `Output Data Types`
 - `Output Formats`
 
-鎬ц兘鎸囨爣绫诲垪濡傛灉鍒楀悕鍖呭惈浠ヤ笅鍏抽敭璇嶏紝浼氳濉垚 `0`锛?
+性能指标类列如果列名包含以下关键词，会被填成 `0`：
 
 - `duration`
 - `latency`
@@ -126,43 +126,43 @@ python .\tools\perf_data_collection\generate_shape_grid.py `
 - `miss`
 - `utilization`
 
-## 7. 閫氱敤 shape 鐢熸垚瑙勫垯
+## 7. 通用 shape 生成规则
 
-### 7.1 妯℃澘瑙ｆ瀽
+### 7.1 模板解析
 
-鑴氭湰鎶?`Input Shapes` / `Output Shapes` 瑙ｆ瀽鎴愬垎鍙峰垎闅旂殑 shape 妲戒綅鍒楄〃銆?
+脚本把 `Input Shapes` / `Output Shapes` 解析成分号分隔的 shape 槽位列表。
 
-渚嬪锛?
+例如：
 
 ```text
 "16,5120;320,48,16,16"
 ```
 
-浼氳В鏋愭垚锛?
+会解析成：
 
 - `(16, 5120)`
 - `(320, 48, 16, 16)`
 
-绌烘Ы浣嶄繚鐣欎负 `()`銆?
+空槽位保留为 `()`。
 
-### 7.2 闅忔満缁村害瑙勫垯
+### 7.2 随机维度规则
 
-- 妯℃澘缁村害绛変簬 `1` 鏃讹紝鐢熸垚鍚庝粛淇濇寔 `1`銆?
-- 鏅€氱淮搴︿紭鍏堝湪妯℃澘缁村害闄勮繎娉㈠姩锛岄€氬父绾﹀湪 `[1/2, 2x]` 鑼冨洿鍐呫€?
-- 鏌愪簺缁村害浼氭寜 `8` 鎴?`16` 瀵归綈銆?
-- 瀵瑰悓涓€涓ā鏉挎暟瀛楋紝鑴氭湰浼氬敖閲忓湪杈撳叆鍜岃緭鍑洪棿淇濇寔涓€鑷存槧灏勫叧绯汇€?
+- 模板维度等于 `1` 时，生成后仍保持 `1`。
+- 普通维度优先在模板维度附近波动，通常约在 `[1/2, 2x]` 范围内。
+- 某些维度会按 `8` 或 `16` 对齐。
+- 对同一个模板数字，脚本会尽量在输入和输出间保持一致映射关系。
 
-## 8. 宸叉敮鎸佺殑绠楀瓙绫诲埆
+## 8. 已支持的算子类别
 
 ### 8.1 Binary Elementwise
 
-缁熶竴瑙勫垯锛?
+统一规则：
 
-- 杈撳叆 0 浣滀负涓?shape銆?
-- 杈撳叆 1 淇濇寔妯℃澘涓殑鍚屽舰鎴栧箍鎾叧绯汇€?
-- 杈撳嚭 shape 绛変簬杈撳叆 0銆?
+- 输入 0 作为主 shape。
+- 输入 1 保持模板中的同形或广播关系。
+- 输出 shape 等于输入 0。
 
-瑕嗙洊绠楀瓙锛?
+覆盖算子：
 
 - `Add`
 - `Equal`
@@ -184,12 +184,12 @@ python .\tools\perf_data_collection\generate_shape_grid.py `
 
 ### 8.2 Unary / Same-shape
 
-缁熶竴瑙勫垯锛?
+统一规则：
 
-- 杈撳叆 shape 鎵板姩銆?
-- 杈撳嚭 shape 涓庤緭鍏ヤ竴鑷淬€?
+- 输入 shape 扰动。
+- 输出 shape 与输入一致。
 
-瑕嗙洊绠楀瓙锛?
+覆盖算子：
 
 - `Cast`
 - `CastAiCore`
@@ -205,13 +205,13 @@ python .\tools\perf_data_collection\generate_shape_grid.py `
 
 ### 8.3 MatMul / Quant MatMul
 
-缁熶竴鍘熷垯锛?
+统一原则：
 
-- 淇濇寔 matmul contract 缁村悎娉曘€?
-- 淇濇寔 `ND` / `FRACTAL_NZ` 缁撴瀯涓嶄贡銆?
-- 甯歌缁村害鎸?`8` / `16` 瀵归綈銆?
+- 保持 matmul contract 维合法。
+- 保持 `ND` / `FRACTAL_NZ` 结构不乱。
+- 常见维度按 `8` / `16` 对齐。
 
-瑕嗙洊绠楀瓙锛?
+覆盖算子：
 
 - `MatMul`
 - `MatMulCommon`
@@ -223,15 +223,15 @@ python .\tools\perf_data_collection\generate_shape_grid.py `
 - `GroupedMatmul`
 - `GroupedMatmulSwigluQuant`
 
-鐩稿叧 replay锛?
+相关 replay：
 
-- [`MatMulV2_run.py`](G:\浠跨湡寮€鍙慭msmodeling\tools\perf_data_collection\op_replay\MatMulV2_run.py)
-- [`MatMulV3_run.py`](G:\浠跨湡寮€鍙慭msmodeling\tools\perf_data_collection\op_replay\MatMulV3_run.py)
-- [`QuantBatchMatmulV3_run.py`](G:\浠跨湡寮€鍙慭msmodeling\tools\perf_data_collection\op_replay\QuantBatchMatmulV3_run.py)
+- [`MatMulV2_run.py`](G:\仿真开发\msmodeling\tools\perf_data_collection\op_replay\MatMulV2_run.py)
+- [`MatMulV3_run.py`](G:\仿真开发\msmodeling\tools\perf_data_collection\op_replay\MatMulV3_run.py)
+- [`QuantBatchMatmulV3_run.py`](G:\仿真开发\msmodeling\tools\perf_data_collection\op_replay\QuantBatchMatmulV3_run.py)
 
 ### 8.4 Norm / Quant / Fused FFN
 
-瑕嗙洊绠楀瓙锛?
+覆盖算子：
 
 - `RmsNorm`
 - `AddRmsNorm`
@@ -241,29 +241,29 @@ python .\tools\perf_data_collection\generate_shape_grid.py `
 - `DynamicQuant`
 - `SwiGlu`
 
-閲嶇偣瑙勫垯锛?
+重点规则：
 
 - `RmsNorm`
-  - `gamma` 蹇呴』鏄?`(hidden,)`
+  - `gamma` 必须是 `(hidden,)`
 - `AddRmsNormBias`
-  - `x1` / `x2` 蹇呴』鍚屽舰
-  - `gamma` / `beta` 蹇呴』鏄竴缁?hidden 鍚戦噺
+  - `x1` / `x2` 必须同形
+  - `gamma` / `beta` 必须是一维 hidden 向量
 - `DynamicQuant`
-  - 褰撳墠 replay 鍙帴鍙楀崟杈撳叆
+  - 当前 replay 只接受单输入
 - `AscendQuantV2`
-  - 缁存寔 `x + scale (+ zero_points)` 鐨勭粨鏋?
+  - 维持 `x + scale (+ zero_points)` 的结构
 
-鐩稿叧 replay锛?
+相关 replay：
 
-- [`AddRmsNormBias_run.py`](G:\浠跨湡寮€鍙慭msmodeling\tools\perf_data_collection\op_replay\AddRmsNormBias_run.py)
-- [`RmsNorm_run.py`](G:\浠跨湡寮€鍙慭msmodeling\tools\perf_data_collection\op_replay\RmsNorm_run.py)
-- [`AscendQuantV2_run.py`](G:\浠跨湡寮€鍙慭msmodeling\tools\perf_data_collection\op_replay\AscendQuantV2_run.py)
-- [`DynamicQuant_run.py`](G:\浠跨湡寮€鍙慭msmodeling\tools\perf_data_collection\op_replay\DynamicQuant_run.py)
-- [`SwiGlu_run.py`](G:\浠跨湡寮€鍙慭msmodeling\tools\perf_data_collection\op_replay\SwiGlu_run.py)
+- [`AddRmsNormBias_run.py`](G:\仿真开发\msmodeling\tools\perf_data_collection\op_replay\AddRmsNormBias_run.py)
+- [`RmsNorm_run.py`](G:\仿真开发\msmodeling\tools\perf_data_collection\op_replay\RmsNorm_run.py)
+- [`AscendQuantV2_run.py`](G:\仿真开发\msmodeling\tools\perf_data_collection\op_replay\AscendQuantV2_run.py)
+- [`DynamicQuant_run.py`](G:\仿真开发\msmodeling\tools\perf_data_collection\op_replay\DynamicQuant_run.py)
+- [`SwiGlu_run.py`](G:\仿真开发\msmodeling\tools\perf_data_collection\op_replay\SwiGlu_run.py)
 
 ### 8.5 Rope / Attention / Cache
 
-瑕嗙洊绠楀瓙锛?
+覆盖算子：
 
 - `ApplyRotaryPosEmb`
 - `InterleaveRope`
@@ -278,42 +278,42 @@ python .\tools\perf_data_collection\generate_shape_grid.py `
 - `PagedCacheLoadNdKernel`
 - `RINGMLAPrefillBF16Kernel`
 
-閲嶇偣瑙勫垯锛?
+重点规则：
 
 - `InterleaveRope`
-  - 鐢熸垚涓変釜 4D 杈撳叆
-  - `x=(B,N,S,D)`锛宍cos=(B,1,1,D)`锛宍sin=(B,1,1,D)`
+  - 生成三个 4D 输入
+  - `x=(B,N,S,D)`，`cos=(B,1,1,D)`，`sin=(B,1,1,D)`
 - `split_qkv_rmsnorm_rope_kernel`
-  - 鐢熸垚锛?
+  - 生成：
     - `qkv=(tokens, q_hidden + 2 * kv_hidden)`
     - `cos_sin_cache=(max_position_embeddings, rope_dim)`
     - `positions=(tokens,)`
 - `ReshapeAndCacheNdKernel`
-  - 鐢熸垚锛?
+  - 生成：
     - `key=(tokens, kv_heads, head_dim)`
     - `value=(tokens, kv_heads, head_dim)`
     - `key_cache=(num_blocks, block_size, kv_heads, head_dim)`
     - `value_cache=(num_blocks, block_size, kv_heads, head_dim)`
     - `slot_mapping=(tokens,)`
 - `KvRmsNormRopeCache`
-  - 鎸?replay 闇€瑕佺殑 12 妲戒綅瀹舵棌鐢熸垚
+  - 按 replay 需要的 12 槽位家族生成
 - `FusedInferAttentionScore`
-  - 鎸夋ā鏉垮尯鍒嗭細
+  - 按模板区分：
     - TND 3D attention
-    - 甯?`query_rope/key_rope` 鐨?4D MLA attention
-  - 淇濇寔 31 涓緭鍏ユЫ浣?
+    - 带 `query_rope/key_rope` 的 4D MLA attention
+  - 保持 31 个输入槽位
 
-鐩稿叧 replay锛?
+相关 replay：
 
-- [`InterleaveRope_run.py`](G:\浠跨湡寮€鍙慭msmodeling\tools\perf_data_collection\op_replay\InterleaveRope_run.py)
-- [`split_qkv_rmsnorm_rope_kernel_run.py`](G:\浠跨湡寮€鍙慭msmodeling\tools\perf_data_collection\op_replay\split_qkv_rmsnorm_rope_kernel_run.py)
-- [`FusedInferAttentionScore_run.py`](G:\浠跨湡寮€鍙慭msmodeling\tools\perf_data_collection\op_replay\FusedInferAttentionScore_run.py)
-- [`ReshapeAndCacheNdKernel_run.py`](G:\浠跨湡寮€鍙慭msmodeling\tools\perf_data_collection\op_replay\ReshapeAndCacheNdKernel_run.py)
-- [`KvRmsNormRopeCache_run.py`](G:\浠跨湡寮€鍙慭msmodeling\tools\perf_data_collection\op_replay\KvRmsNormRopeCache_run.py)
+- [`InterleaveRope_run.py`](G:\仿真开发\msmodeling\tools\perf_data_collection\op_replay\InterleaveRope_run.py)
+- [`split_qkv_rmsnorm_rope_kernel_run.py`](G:\仿真开发\msmodeling\tools\perf_data_collection\op_replay\split_qkv_rmsnorm_rope_kernel_run.py)
+- [`FusedInferAttentionScore_run.py`](G:\仿真开发\msmodeling\tools\perf_data_collection\op_replay\FusedInferAttentionScore_run.py)
+- [`ReshapeAndCacheNdKernel_run.py`](G:\仿真开发\msmodeling\tools\perf_data_collection\op_replay\ReshapeAndCacheNdKernel_run.py)
+- [`KvRmsNormRopeCache_run.py`](G:\仿真开发\msmodeling\tools\perf_data_collection\op_replay\KvRmsNormRopeCache_run.py)
 
 ### 8.6 Gather / Index / Scatter / Shape Transform
 
-瑕嗙洊绠楀瓙锛?
+覆盖算子：
 
 - `GatherV2`
 - `GatherV2AiCore`
@@ -337,9 +337,9 @@ python .\tools\perf_data_collection\generate_shape_grid.py `
 - `RepeatInterleave`
 - `expand_kernel`
 
-### 8.7 MoE 鐩稿叧
+### 8.7 MoE 相关
 
-瑕嗙洊绠楀瓙锛?
+覆盖算子：
 
 - `MoeGatingTopK`
 - `DispatchFFNCombine`
@@ -348,11 +348,11 @@ python .\tools\perf_data_collection\generate_shape_grid.py `
 - `MoeTokenPermute`
 - `MoeTokenUnpermute`
 
-杩欎簺瑙勫垯浼氬敖閲忎繚鎸?`tokens`銆乣topk`銆乣experts`銆乣hidden`銆乣intermediate`銆乺outed token 鏁颁箣闂寸殑缁撴瀯鍏崇郴銆?
+这些规则会尽量保持 `tokens`、`topk`、`experts`、`hidden`、`intermediate`、routed token 数之间的结构关系。
 
-## 9. 涓?`op_replay` 鐨勫吋瀹规€х害鏉?
+## 9. 与 `op_replay` 的兼容性约束
 
-褰撳墠鑴氭湰宸查拡瀵逛笅鍒?replay 閲嶇偣绠楀瓙鍋氬吋瀹逛慨姝ｏ細
+当前脚本已针对下列 replay 重点算子做兼容修正：
 
 - `Add`
 - `AddRmsNormBias`
@@ -372,50 +372,50 @@ python .\tools\perf_data_collection\generate_shape_grid.py `
 - `TensorMove`
 - `split_qkv_rmsnorm_rope_kernel`
 
-鍏煎鍘熷垯锛?
+兼容原则：
 
-- 杈撳叆妲戒綅鏁板繀椤讳笌 replay 鑴氭湰涓€鑷淬€?
-- 杈撳叆 rank 蹇呴』婊¤冻 replay 涓殑鏄惧紡妫€鏌ャ€?
-- 鍙€夎緭鍏ヤ綅蹇呴』淇濈暀绌烘Ы浣嶄綅缃€?
-- 瀵?`FRACTAL_NZ`銆乧ache銆乺ope銆乸aged attention 绛夌壒娈婃牸寮忎笉鑳藉彧鍋?generic 鎵板姩銆?
+- 输入槽位数必须与 replay 脚本一致。
+- 输入 rank 必须满足 replay 中的显式检查。
+- 可选输入位必须保留空槽位位置。
+- 对 `FRACTAL_NZ`、cache、rope、paged attention 等特殊格式不能只做 generic 扰动。
 
-## 10. profiling 渚濊禆鏉ユ簮
+## 10. profiling 依赖来源
 
-鏈疆瑙勫垯澧炲己涓昏鍙傝€冿細
+本轮规则增强主要参考：
 
-- `G:\浠跨湡寮€鍙慭profiling\鏈€鏂皃rofiling_0317`
-- [`tools/perf_data_collection/op_replay`](G:\浠跨湡寮€鍙慭msmodeling\tools\perf_data_collection\op_replay)
+- `G:\仿真开发\profiling\最新profiling_0317`
+- [`tools/perf_data_collection/op_replay`](G:\仿真开发\msmodeling\tools\perf_data_collection\op_replay)
 
-鍏朵腑锛?
+其中：
 
-- profiling 鐢ㄦ潵瀛︿範鐪熷疄 shape 瀹舵棌銆?
-- replay 鑴氭湰鐢ㄦ潵绾︽潫鍝簺 shape 瀹舵棌鐪熺殑鑳借窇璧锋潵銆?
+- profiling 用来学习真实 shape 家族。
+- replay 脚本用来约束哪些 shape 家族真的能跑起来。
 
-## 11. 褰撳墠闄愬埗
+## 11. 当前限制
 
-鐩墠浠嶆湭寮哄缓妯℃垨鍙兘淇濆畧澶勭悊鐨勪富瑕佹槸锛?
+目前仍未强建模或只能保守处理的主要是：
 
-- 绾€氫俊绫伙細
+- 纯通信类：
   - `hcom_allReduce_`
   - `hcom_allGather_`
   - `hcom_alltoallv_`
   - `hcom_reduceScatter_`
-- 涓€浜涗綆棰戞垨妯℃澘璐ㄩ噺涓嶇ǔ瀹氱殑绠楀瓙
-- 鏌愪簺绠楀瓙铏界劧宸叉湁瑙勫垯锛屼絾杩樻病鏈夊仛鐪熷疄璁惧渚х殑鍏ㄩ噺 replay 鍥炲綊
+- 一些低频或模板质量不稳定的算子
+- 某些算子虽然已有规则，但还没有做真实设备侧的全量 replay 回归
 
-## 12. 缁存姢寤鸿
+## 12. 维护建议
 
-鍚庣画鏂板鎴栦慨鏀圭畻瀛愯鍒欐椂锛屽缓璁寜涓嬮潰椤哄簭鍋氾細
+后续新增或修改算子规则时，建议按下面顺序做：
 
-1. 鍏堢湅鐩爣绠楀瓙鐨?perf CSV 妯℃澘銆?
-2. 鍐嶇湅瀵瑰簲鐨?`op_replay/*_run.py` 鏄惁瀵规Ы浣嶆暟銆乺ank銆乨type銆佹牸寮忔湁纭害鏉熴€?
-3. 濡傛灉 replay 鏈夋樉寮忔鏌ワ紝浼樺厛婊¤冻 replay 濂戠害銆?
-4. 濡傛灉 profiling 涓瓨鍦ㄥ绉?shape 瀹舵棌锛屼笉瑕佺敤涓€涓鍒欑‖鍚堝苟銆?
-5. 淇敼鍚庤嚦灏戞墽琛岋細
+1. 先看目标算子的 perf CSV 模板。
+2. 再看对应的 `op_replay/*_run.py` 是否对槽位数、rank、dtype、格式有硬约束。
+3. 如果 replay 有显式检查，优先满足 replay 契约。
+4. 如果 profiling 中存在多种 shape 家族，不要用一个规则硬合并。
+5. 修改后至少执行：
    - `py -3 -m py_compile tools/perf_data_collection/generate_shape_grid.py`
-   - 瀵圭洰鏍?CSV 鍋?`--rows 1` 鎴?`--rows 2` 灏忚妯¤瘯璺?
+   - 对目标 CSV 做 `--rows 1` 或 `--rows 2` 小规模试跑
 
-## 13. 鎺ㄨ崘宸ヤ綔娴?
+## 13. 推荐工作流
 
 ```powershell
 py -3 -m py_compile .\tools\perf_data_collection\generate_shape_grid.py
@@ -427,12 +427,11 @@ python .\tools\perf_data_collection\generate_shape_grid.py `
   --seed 123
 ```
 
-濡傛灉鍚庣画闇€瑕侀獙璇?replay锛?
+如果后续需要验证 replay：
 
 ```powershell
 py -3 .\tools\perf_data_collection\op_replay\MatMulV2_run.py `
   --device ATLAS_800_A3_752T_128G_DIE `
   --vllm-ascend-version 0.15.0
 ```
-
 

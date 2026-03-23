@@ -6,7 +6,7 @@ Purpose:
   the same --device and --vllm-ascend-version arguments.
 
 Usage:
-  python tools/perf_data_collection/op_replay/run_all_op.py ^
+  python tensor_cast/performance_model/perf_database/op_run/run_all_op.py ^
     --device ATLAS_800_A3_752T_128G_DIE --vllm-ascend-version 0.13.0
 
 Arguments:
@@ -40,9 +40,9 @@ def build_argparser() -> argparse.ArgumentParser:
         ),
         epilog=(
             "Usage examples:\n"
-            "  py -3 tools/perf_data_collection/op_replay/run_all_op.py "
+            "  py -3 tensor_cast/performance_model/perf_database/op_run/run_all_op.py "
             "--device ATLAS_800_A3_752T_128G_DIE --vllm-ascend-version 0.13.0\n"
-            "  python tools/perf_data_collection/op_replay/run_all_op.py "
+            "  python tensor_cast/performance_model/perf_database/op_run/run_all_op.py "
             "--device TEST_DEVICE --vllm-ascend-version 0.9.2\n"
             "  msprof python tools/perf_data_collection/op_replay/run_all_op.py "
             "--device ATLAS_800_A3_752T_128G_DIE --vllm-ascend-version 0.15.0\n\n"

@@ -1,4 +1,4 @@
-﻿# Qwen3-32B Profiling Alignment Report (v5)
+# Qwen3-32B Profiling Alignment Report (v5)
 
 **Date:** 2026-03-05
 **Model:** Qwen/Qwen3-32B (BF16 Prefill)
@@ -17,7 +17,7 @@ PYTHONPATH=<worktree>:$PYTHONPATH python3.10 -m tensor_cast.scripts.text_generat
   --perf-database .../v0.14.0 --log-level debug
 ```
 
-## Summary 鈥?Iteration History
+## Summary — Iteration History
 
 | Metric | v1 | v2 | v3 | v4 | v5 |
 |--------|----|----|----|----|-----|
@@ -28,13 +28,13 @@ PYTHONPATH=<worktree>:$PYTHONPATH python3.10 -m tensor_cast.scripts.text_generat
 ## 1. All Solutions Applied
 
 ### S1: `--compile` Flag (v1)
-Enables `torch.compile()` pattern matching for fused ops. 86 鈫?46 ops.
+Enables `torch.compile()` pattern matching for fused ops. 86 → 46 ops.
 
 ### S2: Batch-Dim Stripping (v2)
 `_strip_batch_dim()` strips leading dim=1 from TC shapes. +6 HITs.
 
 ### S3: SwiGlu Input Concatenation (v2)
-TC 2 inputs 鈫?CSV 1 fused input, concat along last dim. +1 HIT.
+TC 2 inputs → CSV 1 fused input, concat along last dim. +1 HIT.
 
 ### S4: Zero-Cost Op Registry (v3)
 `zero_cost: true` in op_mapping.yaml for shape-only ops (14 types). +28 HITs.
@@ -43,14 +43,14 @@ TC 2 inputs 鈫?CSV 1 fused input, concat along last dim. +1 HIT.
 Fallback kernel type lookup. Enabled RoPE matching with ApplyRotaryPosEmb.
 
 ### S6: RoPE Shape Normalization (v4)
-`_normalize_rope_inputs()`: reorder Q/K, transpose `(B,H,S,D)鈫?B,S,H,D)`, insert head dim in cos/sin. +1 HIT.
+`_normalize_rope_inputs()`: reorder Q/K, transpose `(B,H,S,D)→(B,S,H,D)`, insert head dim in cos/sin. +1 HIT.
 
 ### S7: Symmetric Batch-Dim Stripping (v4)
 Strip both TC and CSV leading dim=1 for consistent comparison.
 
-### S8: Composite Op Decomposition (v5 鈥?NEW)
-**Problem**: `matmul_all_reduce` marked `composite: true` 鈫?returned None immediately, losing 2 HITs.
-**Fix**: `_lookup_composite()` extracts compute sub-kernels from `sub_kernels` list, skips `hcom_*` communication kernels, looks up remaining against CSV. Returns with `confidence=0.8` (partial match 鈥?comm portion handled by analytic model).
+### S8: Composite Op Decomposition (v5 — NEW)
+**Problem**: `matmul_all_reduce` marked `composite: true` → returned None immediately, losing 2 HITs.
+**Fix**: `_lookup_composite()` extracts compute sub-kernels from `sub_kernels` list, skips `hcom_*` communication kernels, looks up remaining against CSV. Returns with `confidence=0.8` (partial match — comm portion handled by analytic model).
 **Impact**: +2 HITs (MatMulV2 14.2 us + 25.1 us).
 
 ## 2. HITs (40 matched ops)
@@ -79,12 +79,12 @@ view(16), permute(4), split_with_sizes(2), select(2), split(1), slice(1), alias(
 
 ## 3. Remaining MISSes (6 ops)
 
-### 3.1 ReshapeAndCacheNdKernel 鈥?Structural Mismatch
-TC: 4 inputs `(144,128), (144,128), (2,2,128,1,128), (136,)` 鈥?missing head dim, different cache shape.
+### 3.1 ReshapeAndCacheNdKernel — Structural Mismatch
+TC: 4 inputs `(144,128), (144,128), (2,2,128,1,128), (136,)` — missing head dim, different cache shape.
 CSV: 5 inputs `(136,1,128), (136,1,128), (10873,128,1,128), (10873,128,1,128), (136)`.
 **Status**: Requires TC reshape_and_cache op to match NPU kernel interface. Not fixable at matching level.
 
-### 3.2 Embedding (GatherV2) 鈥?Vocab Sharding
+### 3.2 Embedding (GatherV2) — Vocab Sharding
 TC: `(151936, 5120)` full vocab. CSV: `(9496, 5120)` = 151936/16 TP-sharded.
 **Status**: Requires TP-aware embedding lookup or dividing vocab by world_size before matching.
 
@@ -120,18 +120,18 @@ TC: `(151936, 5120)` full vocab. CSV: `(9496, 5120)` = 151936/16 TP-sharded.
 
 ### Shape Matching Pipeline in `_inputs_match()`
 ```
-TC inputs 鈫?RoPE normalization 鈫?SwiGlu normalization 鈫?per-tensor:
-  鈫?exact match? 鈫?batch-strip (both TC+CSV)? 鈫?FRACTAL_NZ restore?
-  鈫?ND weight transpose? 鈫?block-padding tolerance?
+TC inputs → RoPE normalization → SwiGlu normalization → per-tensor:
+  → exact match? → batch-strip (both TC+CSV)? → FRACTAL_NZ restore?
+  → ND weight transpose? → block-padding tolerance?
 ```
 
 ### Dispatch Logic in `lookup()`
 ```
-func 鈫?op_mapping.yaml 鈫?composite? 鈫?_lookup_composite(sub_kernels)
-                        鈫?communication? 鈫?None (analytic)
-                        鈫?attention_special? 鈫?None (analytic)
-                        鈫?zero_cost? 鈫?QueryResult(0.0)
-                        鈫?default 鈫?_lookup_compute(kernel_types)
+func → op_mapping.yaml → composite? → _lookup_composite(sub_kernels)
+                        → communication? → None (analytic)
+                        → attention_special? → None (analytic)
+                        → zero_cost? → QueryResult(0.0)
+                        → default → _lookup_compute(kernel_types)
 ```
 
 ### Key Schema Extensions to op_mapping.yaml
@@ -169,5 +169,4 @@ sub_kernels: [MatMulV2, hcom_allReduce_]
 - Batch-dim stripping (4 tests)
 - SwiGlu input concatenation (2 tests)
 - RoPE shape normalization (2 tests)
-- **Composite decomposition (2 tests)** 鈥?NEW
-
+- **Composite decomposition (2 tests)** — NEW

@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """Analyze NPU profiling kernel_details.csv for Phase 1 e2e test scenarios."""
 
 import sys
@@ -81,10 +81,10 @@ def analyze_scenario(name: str, profiler_dir: Path, out):
     p(f"\n  Total kernel rows: {total_rows}")
     p(f"  Columns: {list(df.columns[:10])}...")
 
-    # 鈹€鈹€ Step 2: Stream ID analysis 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-    p(f"\n  {'鈹€'*60}")
+    # ── Step 2: Stream ID analysis ───────────────────────────────────────
+    p(f"\n  {'─'*60}")
     p("  STREAM ID ANALYSIS")
-    p(f"  {'鈹€'*60}")
+    p(f"  {'─'*60}")
 
     nan_stream = df["Stream ID"].isna()
     p(f"  Rows with NaN Stream ID: {nan_stream.sum()}")
@@ -108,10 +108,10 @@ def analyze_scenario(name: str, profiler_dir: Path, out):
         for n in sample_names:
             p(f"      - {n}")
 
-    # 鈹€鈹€ Step 3: Classify kernels 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-    p(f"\n  {'鈹€'*60}")
+    # ── Step 3: Classify kernels ─────────────────────────────────────────
+    p(f"\n  {'─'*60}")
     p("  KERNEL CLASSIFICATION")
-    p(f"  {'鈹€'*60}")
+    p(f"  {'─'*60}")
 
     fused_mask = df["Name"].apply(lambda x: is_fused_compute_comm(x) if isinstance(x, str) else False)
     comm_mask = df.apply(lambda r: is_comm_kernel(r["Name"], r["Stream ID"]), axis=1) & ~fused_mask
@@ -121,10 +121,10 @@ def analyze_scenario(name: str, profiler_dir: Path, out):
     p(f"  Communication kernels:    {comm_mask.sum()}")
     p(f"  Fused compute+comm:       {fused_mask.sum()}")
 
-    # 鈹€鈹€ Step 4: Compute kernel analysis (top 20) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-    p(f"\n  {'鈹€'*60}")
+    # ── Step 4: Compute kernel analysis (top 20) ─────────────────────────
+    p(f"\n  {'─'*60}")
     p("  TOP 20 COMPUTE OPERATORS (by total duration)")
-    p(f"  {'鈹€'*60}")
+    p(f"  {'─'*60}")
 
     df_compute = df[compute_mask].copy()
     if len(df_compute) > 0:
@@ -141,7 +141,7 @@ def analyze_scenario(name: str, profiler_dir: Path, out):
 
         top20 = grp.head(20)
         p(f"\n  {'Rank':<5} {'Name':<55} {'Total(us)':>12} {'Count':>7} {'Mean(us)':>10} {'CV':>6} {'Cum%':>7}")
-        p(f"  {'鈹€'*5} {'鈹€'*55} {'鈹€'*12} {'鈹€'*7} {'鈹€'*10} {'鈹€'*6} {'鈹€'*7}")
+        p(f"  {'─'*5} {'─'*55} {'─'*12} {'─'*7} {'─'*10} {'─'*6} {'─'*7}")
         for i, (op_name, row) in enumerate(top20.iterrows(), 1):
             cv_str = f"{row['CV']:.2f}" if not pd.isna(row["CV"]) else "N/A"
             p(
@@ -151,10 +151,10 @@ def analyze_scenario(name: str, profiler_dir: Path, out):
 
         p(f"\n  Total unique compute op types: {len(grp)}")
 
-    # 鈹€鈹€ Step 5: Communication kernel analysis (deduped) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-    p(f"\n  {'鈹€'*60}")
+    # ── Step 5: Communication kernel analysis (deduped) ──────────────────
+    p(f"\n  {'─'*60}")
     p("  COMMUNICATION KERNELS (deduped: exclude NaN Stream ID rows)")
-    p(f"  {'鈹€'*60}")
+    p(f"  {'─'*60}")
 
     df_comm = df[comm_mask].copy()
     # Dedup: remove NaN stream ID rows (they are duplicates of valid stream rows for hcom_*)
@@ -172,7 +172,7 @@ def analyze_scenario(name: str, profiler_dir: Path, out):
         grp_comm = grp_comm.sort_values("Total(us)", ascending=False)
 
         p(f"\n  {'Name':<55} {'Total(us)':>12} {'Count':>7} {'Mean(us)':>10}")
-        p(f"  {'鈹€'*55} {'鈹€'*12} {'鈹€'*7} {'鈹€'*10}")
+        p(f"  {'─'*55} {'─'*12} {'─'*7} {'─'*10}")
         for op_name, row in grp_comm.iterrows():
             p(f"  {op_name[:55]:<55} {row['Total(us)']:>12,.1f} {int(row['Count']):>7} {row['Mean(us)']:>10,.1f}")
     else:
@@ -183,11 +183,11 @@ def analyze_scenario(name: str, profiler_dir: Path, out):
         total_comm_nan_dur = df_comm_nan["Duration(us)"].sum()
         p(f"\n  NaN-stream comm duration: {total_comm_nan_dur:,.1f} us ({total_comm_nan_dur/1e6:.3f} s)")
 
-    # 鈹€鈹€ Step 5b: Fused compute+comm kernels 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+    # ── Step 5b: Fused compute+comm kernels ──────────────────────────────
     if fused_mask.sum() > 0:
-        p(f"\n  {'鈹€'*60}")
+        p(f"\n  {'─'*60}")
         p("  FUSED COMPUTE+COMM KERNELS")
-        p(f"  {'鈹€'*60}")
+        p(f"  {'─'*60}")
         df_fused = df[fused_mask].copy()
         total_fused_dur = df_fused["Duration(us)"].sum()
         p(f"  Total fused duration: {total_fused_dur:,.1f} us ({total_fused_dur/1e6:.3f} s)")
@@ -197,10 +197,10 @@ def analyze_scenario(name: str, profiler_dir: Path, out):
         for op_name, row in grp_fused.iterrows():
             p(f"  {op_name[:55]:<55} {row['Total(us)']:>12,.1f} {int(row['Count']):>7} {row['Mean(us)']:>10,.1f}")
 
-    # 鈹€鈹€ Step 6: Per-stream duration sums 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-    p(f"\n  {'鈹€'*60}")
+    # ── Step 6: Per-stream duration sums ─────────────────────────────────
+    p(f"\n  {'─'*60}")
     p("  PER-STREAM DURATION SUMS (deduped: valid Stream ID only)")
-    p(f"  {'鈹€'*60}")
+    p(f"  {'─'*60}")
 
     # Only use rows with valid stream IDs
     df_valid = df[df["Stream ID"].notna()].copy()
@@ -262,10 +262,10 @@ def analyze_scenario(name: str, profiler_dir: Path, out):
             p(f"    Stage (e2e):                 {stage:>14,.1f} us ({stage/1e6:.3f} s)")
             p(f"    Derived e2e = Computing + Comm(NotOverlap) + Free = {computing + comm_not_overlap + free:,.1f} us")
 
-    # 鈹€鈹€ Step 7: HCCL double-counting check 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-    p(f"\n  {'鈹€'*60}")
+    # ── Step 7: HCCL double-counting check ───────────────────────────────
+    p(f"\n  {'─'*60}")
     p("  HCCL DOUBLE-COUNTING CHECK")
-    p(f"  {'鈹€'*60}")
+    p(f"  {'─'*60}")
 
     hcom_mask = df["Name"].str.startswith("hcom_", na=False)
     hcom_df = df[hcom_mask].copy()
@@ -280,13 +280,13 @@ def analyze_scenario(name: str, profiler_dir: Path, out):
         dur_valid = hcom_df[hcom_df["Stream ID"].notna()]["Duration(us)"].sum()
         p(f"    - NaN Stream duration:   {dur_nan:>14,.1f} us")
         p(f"    - Valid Stream duration:  {dur_valid:>14,.1f} us")
-        p(f"    鈿?DOUBLE-COUNTED if both are summed! Ratio NaN/Valid = {dur_nan/dur_valid:.2f}")
+        p(f"    ⚠ DOUBLE-COUNTED if both are summed! Ratio NaN/Valid = {dur_nan/dur_valid:.2f}")
     elif hcom_nan > 0 and hcom_valid == 0:
-        p("    鈫?hcom_* only on NaN streams (no valid stream rows)")
+        p("    → hcom_* only on NaN streams (no valid stream rows)")
     elif hcom_valid > 0 and hcom_nan == 0:
-        p("    鈫?hcom_* only on valid streams (no NaN stream duplicates)")
+        p("    → hcom_* only on valid streams (no NaN stream duplicates)")
     else:
-        p("    鈫?No hcom_* kernels found")
+        p("    → No hcom_* kernels found")
 
     p("")
 
@@ -316,4 +316,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

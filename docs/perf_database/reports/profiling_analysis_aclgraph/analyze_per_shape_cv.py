@@ -1,4 +1,4 @@
-﻿"""Per-shape stability analysis on Phase 1 profiling data.
+"""Per-shape stability analysis on Phase 1 profiling data.
 
 For each scenario (DSv3 prefill/decode, Qwen3 prefill/decode):
 1. Filter to compute kernels only
@@ -13,7 +13,7 @@ import io
 import pandas as pd
 import numpy as np
 
-# 鈹€鈹€ Data paths 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+# ── Data paths ──────────────────────────────────────────────────────────────
 SCENARIOS = {
     "DSv3 Prefill (input4096, output1)": {
         "path": "/mnt/d/Data/Profiling/Profiling-0313-phase1-e2e-test/profilier_prefill_dsv3-input4096-output1/e57aa6f6d21d_746902_20260313152307903_ascend_pt/ASCEND_PROFILER_OUTPUT/kernel_details.csv",
@@ -109,13 +109,13 @@ def analyze_scenario(name: str, cfg: dict, out: io.StringIO):
         out.write("No groups with count >= 5 found.\n")
         return
 
-    # 鈹€鈹€ Top 15 operators by total duration 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+    # ── Top 15 operators by total duration ──────────────────────────────
     op_total = stats_df.groupby("Name")["Total(us)"].sum().sort_values(ascending=False)
     top15_ops = op_total.head(15).index.tolist()
 
-    out.write(f"{'鈹€'*100}\n")
-    out.write(f"  TOP 15 OPERATORS BY TOTAL DURATION 鈥?Per-Shape CV Breakdown\n")
-    out.write(f"{'鈹€'*100}\n\n")
+    out.write(f"{'─'*100}\n")
+    out.write(f"  TOP 15 OPERATORS BY TOTAL DURATION — Per-Shape CV Breakdown\n")
+    out.write(f"{'─'*100}\n\n")
 
     for rank, op in enumerate(top15_ops, 1):
         op_rows = stats_df[stats_df["Name"] == op].sort_values(
@@ -138,10 +138,10 @@ def analyze_scenario(name: str, cfg: dict, out: io.StringIO):
             )
         out.write("\n")
 
-    # 鈹€鈹€ Summary table: per-operator CV statistics 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-    out.write(f"{'鈹€'*100}\n")
+    # ── Summary table: per-operator CV statistics ───────────────────────
+    out.write(f"{'─'*100}\n")
     out.write(f"  OPERATOR CV SUMMARY (all operators with count>=5 shape groups)\n")
-    out.write(f"{'鈹€'*100}\n\n")
+    out.write(f"{'─'*100}\n\n")
 
     op_cv_summary = (
         stats_df.groupby("Name")
@@ -158,7 +158,7 @@ def analyze_scenario(name: str, cfg: dict, out: io.StringIO):
     out.write(
         f"  {'Operator':<60s} {'#Shapes':>7s} {'MinCV':>8s} {'MedCV':>8s} {'MaxCV':>8s} {'Total(us)':>14s}\n"
     )
-    out.write(f"  {'鈹€'*60} {'鈹€'*7} {'鈹€'*8} {'鈹€'*8} {'鈹€'*8} {'鈹€'*14}\n")
+    out.write(f"  {'─'*60} {'─'*7} {'─'*8} {'─'*8} {'─'*8} {'─'*14}\n")
     for op, row in op_cv_summary.iterrows():
         op_display = op if len(op) <= 60 else op[:57] + "..."
         flag = " ***" if row["max_CV"] > 0.1 else ""
@@ -168,19 +168,19 @@ def analyze_scenario(name: str, cfg: dict, out: io.StringIO):
 
     out.write("\n")
 
-    # 鈹€鈹€ High CV flagged groups 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+    # ── High CV flagged groups ──────────────────────────────────────────
     high_cv = stats_df[stats_df["CV"] > 0.1].sort_values("Total(us)", ascending=False)
-    out.write(f"{'鈹€'*100}\n")
+    out.write(f"{'─'*100}\n")
     out.write(
         f"  HIGH CV GROUPS (CV > 0.1): {len(high_cv)} of {len(stats_df)} total shape groups\n"
     )
-    out.write(f"{'鈹€'*100}\n\n")
+    out.write(f"{'─'*100}\n\n")
 
     if not high_cv.empty:
         out.write(
             f"  {'Name':<50s} {'Count':>6s} {'Mean(us)':>12s} {'CV':>8s} {'Total(us)':>14s}  Input Shapes\n"
         )
-        out.write(f"  {'鈹€'*50} {'鈹€'*6} {'鈹€'*12} {'鈹€'*8} {'鈹€'*14}  {'鈹€'*40}\n")
+        out.write(f"  {'─'*50} {'─'*6} {'─'*12} {'─'*8} {'─'*14}  {'─'*40}\n")
         for _, row in high_cv.head(30).iterrows():
             op_display = (
                 row["Name"] if len(row["Name"]) <= 50 else row["Name"][:47] + "..."
@@ -197,7 +197,7 @@ def analyze_scenario(name: str, cfg: dict, out: io.StringIO):
 def main():
     buf = io.StringIO()
     buf.write("=" * 100 + "\n")
-    buf.write("  PER-SHAPE STABILITY ANALYSIS 鈥?Phase 1 Profiling Data\n")
+    buf.write("  PER-SHAPE STABILITY ANALYSIS — Phase 1 Profiling Data\n")
     buf.write("  Groups: (Name, Input Shapes), min count = 5\n")
     buf.write("=" * 100 + "\n")
 
@@ -215,4 +215,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

@@ -1,85 +1,84 @@
-﻿# CHANGELOG 2026-03-12
+# CHANGELOG 2026-03-12
 
-璁捐鏂囨。 v1.3 鈫?v1.3.1 + 宸ヤ綔璁″垝 v3 鈫?v3.1
-
----
-
-## 璁捐鏂囨。鍙樻洿 (v1.3 鈫?v1.3.1)
-
-### 鏂板
-
-- **搂2.2**: CANN 8.5 DispatchFFNCombine 瓒呯骇铻嶅悎璇存槑锛?5.3% DSV3 Decode锛?
-- **搂3.3**: 瀹屾暣鐗堟湰瀛楃涓茬洰褰曞懡鍚嶇害瀹氾紙`vllm{ver}_torch{ver}_cann{ver}`锛?
-- **搂4.2**: Input 鏁伴噺涓嶅尮閰嶅鐞嗚鍒欙紙QuantBatchMatmulV3 2鈫?, ReshapeAndCacheNdKernel 4鈫?, TensorMove 2鈫?锛?
-- **搂4.7**: HCCL v8.5 鏁版嵁璐ㄩ噺娉ㄦ剰浜嬮」锛圝IT 鍒濆鍖栭棶棰?+ 鍗?session 淇鏂规锛?
-- **搂9.1**: DispatchFFNCombine gap 椤癸紙CANN 8.5 鏂板锛?5.3% DSV3锛?
-- **搂9.1**: TP Padding bug 宸蹭慨澶嶈褰曪紙59cf184锛?
-- **搂9.1**: MC2 宸查獙璇佽褰曪紙3f82c2b锛孊F16 + W8A8锛?
-
-### 鍙樻洿
-
-- **搂1.4**: 鐩爣鍚庣 vllm-ascend 0.13.0 鈫?0.15.0锛圕ANN 8.5锛宼orch 2.9.0锛?
-- **搂3.3**: 鏁版嵁瀛樺偍璺緞鏇存柊锛堝惈 CANN 8.3 legacy + CANN 8.5 production target锛?
-- **搂4.2**: ProfilingDataSource 鏋勯€犲弬鏁?`comm_grid` 鈫?`device_profile`锛堢粺涓€纭欢鍙傛暟璁块棶锛?
-- **搂4.5**: op_mapping.yaml cann_version 鏇存柊涓?8.5锛宑ommunication_data_ref 鏇存柊
-- **搂9.1**: KvRmsNormRopeCache 鐘舵€?"浠嶅紑鏀? 鈫?"宸插叧闂?锛坢lapo 宸茶鐩栵級
-- **搂9.1**: MC2 铻嶅悎鐘舵€?"浠嶅紑鏀? 鈫?"宸查獙璇?
-- **搂9.2**: MLA 鍒嗚В鐘舵€佹洿鏂帮紙composite 鏌ヨ宸插疄鐜帮級
-
-### 鏋舵瀯鍐崇瓥
-
-1. **ProfilingDataSource 鎺ュ彛缁熶竴**锛氭墍鏈夋煡璇㈣矾寰勶紙璁＄畻 CSV + 閫氫俊 HCCL锛夐€氳繃 `device_profile` 瀵硅薄璁块棶锛屾浛浠ｅ垎鏁ｇ殑 `comm_grid` 鍙傛暟
-2. **ModelRunnerMetrics 澶氭ā鍨嬫敮鎸?*锛歚execution_time_s: float` 鈫?`Dict[str, float]`锛涙柊澧?`tps_per_model: Dict[str, float]`
-3. **Input 鏁伴噺涓嶅尮閰?*锛氶噰鐢?kernel_type 绾ц繃婊よ鍒欙紙闈為€氱敤鎴柇锛夛紝鍥?NPU kernel 瀹為檯鎺ユ敹鐨?input 鍙兘鍖呭惈 TC 灞備笉鍙鐨勫唴閮ㄥ弬鏁?
+设计文档 v1.3 → v1.3.1 + 工作计划 v3 → v3.1
 
 ---
 
-## 宸ヤ綔璁″垝鍙樻洿 (v3 鈫?v3.1)
+## 设计文档变更 (v1.3 → v1.3.1)
 
-### 浜哄憳鍙樺姩
+### 新增
 
-- **XJT 鈫?LJW**锛歑JT 宸ヤ綔浜ゆ帴缁?LJW锛孡JW 3.17 璧峰叏鑱屾姇鍏?
-- **XJT 宸插畬鎴愪氦浠?*锛欰1/A2/A3 + MC2 楠岃瘉 + KvRmsNormRopeCache 纭
+- **§2.2**: CANN 8.5 DispatchFFNCombine 超级融合说明（35.3% DSV3 Decode）
+- **§3.3**: 完整版本字符串目录命名约定（`vllm{ver}_torch{ver}_cann{ver}`）
+- **§4.2**: Input 数量不匹配处理规则（QuantBatchMatmulV3 2→4, ReshapeAndCacheNdKernel 4→5, TensorMove 2→1）
+- **§4.7**: HCCL v8.5 数据质量注意事项（JIT 初始化问题 + 单 session 修复方案）
+- **§9.1**: DispatchFFNCombine gap 项（CANN 8.5 新增，35.3% DSV3）
+- **§9.1**: TP Padding bug 已修复记录（59cf184）
+- **§9.1**: MC2 已验证记录（3f82c2b，BF16 + W8A8）
 
-### 鐩爣璋冩暣
+### 变更
 
-- **E2E 楠岃瘉鐗堟湰**锛欳ANN 8.3 鈫?**CANN 8.5**锛坴llm 0.15.0 + torch 2.9.0锛?
-- **鏁版嵁鐩綍**锛歚vllm0.15.0_torch2.9.0_cann8.5/`
-- **鏁版嵁閲囬泦宸ュ叿閾?*锛? 涓?鈫?9 涓?
+- **§1.4**: 目标后端 vllm-ascend 0.13.0 → 0.15.0（CANN 8.5，torch 2.9.0）
+- **§3.3**: 数据存储路径更新（含 CANN 8.3 legacy + CANN 8.5 production target）
+- **§4.2**: ProfilingDataSource 构造参数 `comm_grid` → `device_profile`（统一硬件参数访问）
+- **§4.5**: op_mapping.yaml cann_version 更新为 8.5，communication_data_ref 更新
+- **§9.1**: KvRmsNormRopeCache 状态 "仍开放" → "已关闭"（mlapo 已覆盖）
+- **§9.1**: MC2 融合状态 "仍开放" → "已验证"
+- **§9.2**: MLA 分解状态更新（composite 查询已实现）
 
-### Phase 1 杩涘睍锛堟埅鑷?3.12锛?
+### 架构决策
 
-| 鐘舵€?| 浠诲姟 |
+1. **ProfilingDataSource 接口统一**：所有查询路径（计算 CSV + 通信 HCCL）通过 `device_profile` 对象访问，替代分散的 `comm_grid` 参数
+2. **ModelRunnerMetrics 多模型支持**：`execution_time_s: float` → `Dict[str, float]`；新增 `tps_per_model: Dict[str, float]`
+3. **Input 数量不匹配**：采用 kernel_type 级过滤规则（非通用截断），因 NPU kernel 实际接收的 input 可能包含 TC 层不可见的内部参数
+
+---
+
+## 工作计划变更 (v3 → v3.1)
+
+### 人员变动
+
+- **XJT → LJW**：XJT 工作交接给 LJW，LJW 3.17 起全职投入
+- **XJT 已完成交付**：A1/A2/A3 + MC2 验证 + KvRmsNormRopeCache 确认
+
+### 目标调整
+
+- **E2E 验证版本**：CANN 8.3 → **CANN 8.5**（vllm 0.15.0 + torch 2.9.0）
+- **数据目录**：`vllm0.15.0_torch2.9.0_cann8.5/`
+- **数据采集工具链**：7 个 → 9 个
+
+### Phase 1 进展（截至 3.12）
+
+| 状态 | 任务 |
 |------|------|
-| 鉁?宸插畬鎴?| A1, A2, A3, B1, C1, C2, C3, C6, C7, C8, C9, D1 |
-| 馃攧 閮ㄥ垎瀹屾垚 | B2(draft), C10(CSV 浜у嚭锛宼ier=0 缂哄け) |
-| 馃攧 杩涜涓?| C4, D2, D3, D4 |
+| ✅ 已完成 | A1, A2, A3, B1, C1, C2, C3, C6, C7, C8, C9, D1 |
+| 🔄 部分完成 | B2(draft), C10(CSV 产出，tier=0 缺失) |
+| 🔄 进行中 | C4, D2, D3, D4 |
 
-**鍏抽敭鍙戠幇**锛?
-- TC compile 璺緞涓嶅彲琛岀敤浜?op_mapping 楠岃瘉锛圸ZY锛夛紝鏀圭敤 AI/skill 鏂规
-- KvRmsNormRopeCache 琚?mlapo 瑕嗙洊锛孎1 scope 缂╁噺
-- TP Padding bug 宸蹭慨澶嶏紙鍏ㄥ眬 input 鈫?MoE layer-local锛屾秷闄?DSV3 Decode 8x 楂樹及锛?
-- Qwen3 BF16 楠岃瘉瑕嗙洊 97.01%锛孌SV3 W8A8 瑕嗙洊 98.02%
+**关键发现**：
+- TC compile 路径不可行用于 op_mapping 验证（ZZY），改用 AI/skill 方案
+- KvRmsNormRopeCache 被 mlapo 覆盖，F1 scope 缩减
+- TP Padding bug 已修复（全局 input → MoE layer-local，消除 DSV3 Decode 8x 高估）
+- Qwen3 BF16 验证覆盖 97.01%，DSV3 W8A8 覆盖 98.02%
 
-### 鏂板浠诲姟
+### 新增任务
 
-- **C11**: DispatchFFNCombine 瀛愬唴鏍告暟鎹噰闆嗭紙HDY, C11-1 鎴 3.13, C11-2 鎴 3.18, C11-3 鎴 3.19锛?
-- **F1 scope 鍙樻洿**: ~~KvRmsNormRopeCache pass~~ 鈫?DispatchFFNCombine 鍙鎬ц瘎浼帮紙LJW锛?
-- **F2**: 鏉′欢鎬?DispatchFFNCombine pass 瀹炵幇
+- **C11**: DispatchFFNCombine 子内核数据采集（HDY, C11-1 截止 3.13, C11-2 截止 3.18, C11-3 截止 3.19）
+- **F1 scope 变更**: ~~KvRmsNormRopeCache pass~~ → DispatchFFNCombine 可行性评估（LJW）
+- **F2**: 条件性 DispatchFFNCombine pass 实现
 
-### 鏂板椋庨櫓
+### 新增风险
 
-| # | 椋庨櫓 | 姒傜巼 |
+| # | 风险 | 概率 |
 |---|------|------|
-| R10 | 鍗曠畻瀛愪笌鏁寸綉绠楀瓙鑰楁椂 gap锛圱CX 3.12 鎻愬嚭锛?| 楂?|
-| R11 | CANN 8.5 DispatchFFNCombine 瑕嗙洊涓嶈冻锛?5.3% DSV3锛?| 楂?|
-| R12 | LJW 涓婃墜鍛ㄦ湡锛?-3 澶╋級 | 涓?|
+| R10 | 单算子与整网算子耗时 gap（TCX 3.12 提出） | 高 |
+| R11 | CANN 8.5 DispatchFFNCombine 覆盖不足（35.3% DSV3） | 高 |
+| R12 | LJW 上手周期（2-3 天） | 中 |
 
-### 宸插叧闂闄?
+### 已关闭风险
 
-- **R9**锛圶JT琚叾浠栭」鐩嫋浣忥級锛欰1/A2/A3 宸插畬鎴愶紝XJT鈫扡JW 浜ゆ帴
+- **R9**（XJT被其他项目拖住）：A1/A2/A3 已完成，XJT→LJW 交接
 
-### 鏍稿績鍋囪鏂板
+### 核心假设新增
 
-- CANN 8.5 DispatchFFNCombine 鍙€氳繃 composite 鍒嗚В鏌ヨ瑕嗙洊锛堥獙璇侊細C11 + Phase 2锛?
-
+- CANN 8.5 DispatchFFNCombine 可通过 composite 分解查询覆盖（验证：C11 + Phase 2）

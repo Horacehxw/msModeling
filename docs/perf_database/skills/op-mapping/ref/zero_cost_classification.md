@@ -1,15 +1,15 @@
-﻿# zero_cost 鍒嗙被瑙勫垯
+# zero_cost 分类规则
 
-## 姒傝堪
+## 概述
 
-`zero_cost: true` 琛ㄧず璇ョ畻瀛愬湪 NPU 涓婃棤 kernel 鎵ц,杩斿洖 0.0 us銆傚垎涓轰袱绫?
+`zero_cost: true` 表示该算子在 NPU 上无 kernel 执行,返回 0.0 us。分为两类:
 
-1. **褰㈢姸绠楀瓙**: view, permute, reshape 绛?鈥?TC 鍜?NPU 閮戒笉鎵ц
-2. **TC 鍒嗚В浼奖**: TC 灏嗚瀺鍚堢畻瀛愭媶涓哄瓙姝ラ,浣?NPU 宸插皢瀛愭楠よ瀺鍚堝埌鍏朵粬 kernel
+1. **形状算子**: view, permute, reshape 等 — TC 和 NPU 都不执行
+2. **TC 分解伪影**: TC 将融合算子拆为子步骤,但 NPU 已将子步骤融合到其他 kernel
 
-## 绫诲埆 1: 褰㈢姸绠楀瓙 (Shape-only ops)
+## 类别 1: 形状算子 (Shape-only ops)
 
-NPU 鏃犳暟鎹Щ鍔?绾厓鏁版嵁鎿嶄綔:
+NPU 无数据移动,纯元数据操作:
 
 ```yaml
 aten.view.default:           zero_cost: true
@@ -27,70 +27,69 @@ aten.alias.default:          zero_cost: true
 aten.expand.default:         zero_cost: true
 ```
 
-**鍒ゆ柇鏍囧噯**: Profiling 涓案杩滀笉鍑虹幇瀵瑰簲 kernel Type 鈫?zero_cost銆?
+**判断标准**: Profiling 中永远不出现对应 kernel Type → zero_cost。
 
-## 绫诲埆 2: TC 鍒嗚В浼奖 (Decomposition artifacts)
+## 类别 2: TC 分解伪影 (Decomposition artifacts)
 
-TC 灏?NPU 铻嶅悎绠楀瓙鍒嗚В涓哄涓瓙姝ラ銆傚瓙姝ラ鐨勫欢杩熷凡鍖呭惈鍦ㄨ瀺鍚堢畻瀛愪腑,閲嶅璁＄畻浼氬鑷撮珮浼般€?
+TC 将 NPU 融合算子分解为多个子步骤。子步骤的延迟已包含在融合算子中,重复计算会导致高估。
 
-### MoE 璺敱鍒嗚В 鈫?MoeGatingTopK 铻嶅悎
+### MoE 路由分解 → MoeGatingTopK 融合
 
-NPU 鐨?`MoeGatingTopK` 铻嶅悎浜?
-- softmax + top-k + weight normalization + mask 鎿嶄綔
+NPU 的 `MoeGatingTopK` 融合了:
+- softmax + top-k + weight normalization + mask 操作
 
-TC 灏嗗叾鍒嗚В涓?
+TC 将其分解为:
 ```
-moe_gating_topk(logits, bias, k)  鈫?鏈夋槧灏?鎹曡幏铻嶅悎寤惰繜
-  鈫?鐒跺悗 TC 缁х画鍒嗚В璺敱閫昏緫:
-aten.topk()           鈫?宸茶 MoeGatingTopK 鍖呭惈 鈫?zero_cost
-aten.sum.dim_IntList() 鈫?宸茶 MoeGatingTopK 鍖呭惈 鈫?zero_cost
-aten.sigmoid()        鈫?shared expert gate,negligible 鈫?zero_cost
-aten.where.self()     鈫?鏉′欢閫夋嫨,宸茶瀺鍚?鈫?zero_cost
-aten.bitwise_not()    鈫?mask 鍙嶈浆,TC 鍐呴儴 鈫?zero_cost
+moe_gating_topk(logits, bias, k)  ← 有映射,捕获融合延迟
+  ↓ 然后 TC 继续分解路由逻辑:
+aten.topk()           ← 已被 MoeGatingTopK 包含 → zero_cost
+aten.sum.dim_IntList() ← 已被 MoeGatingTopK 包含 → zero_cost
+aten.sigmoid()        ← shared expert gate,negligible → zero_cost
+aten.where.self()     ← 条件选择,已融合 → zero_cost
+aten.bitwise_not()    ← mask 反转,TC 内部 → zero_cost
 ```
 
-### MoE FFN 鍒嗚В 鈫?DispatchFFNCombine 铻嶅悎
+### MoE FFN 分解 → DispatchFFNCombine 融合
 
-NPU 鐨?`DispatchFFNCombine` 铻嶅悎浜?
-- InitRouting + Dispatch + 2脳MatMul + SwiGlu + Combine + Unpermute
+NPU 的 `DispatchFFNCombine` 融合了:
+- InitRouting + Dispatch + 2×MatMul + SwiGlu + Combine + Unpermute
 
-TC 灏嗗叾鍒嗚В涓虹嫭绔嬬畻瀛?褰?DFC pass 涓嶇敓鏁堟椂):
+TC 将其分解为独立算子(当 DFC pass 不生效时):
 ```
-permute_tokens     鈫?鏈夋槧灏?(MoeDistributeDispatchV2, alternate: DFC)
-grouped_matmul脳N   鈫?鏈夋槧灏?(GroupedMatmul, alternate: DFC)
-swiglu             鈫?鏈夋槧灏?(SwiGlu)
-unpermute_tokens   鈫?鏈夋槧灏?(MoeDistributeCombineV2, alternate: DFC)
+permute_tokens     → 有映射 (MoeDistributeDispatchV2, alternate: DFC)
+grouped_matmul×N   → 有映射 (GroupedMatmul, alternate: DFC)
+swiglu             → 有映射 (SwiGlu)
+unpermute_tokens   → 有映射 (MoeDistributeCombineV2, alternate: DFC)
 ```
-娉ㄦ剰: 杩欎簺瀛愮畻瀛愪繚鎸佺嫭绔嬫槧灏?涓嶆槸 zero_cost),鍥犱负:
-- DFC pass 鐢熸晥鏃?瀹冧滑涓嶅嚭鐜?鈫?鏃犲奖鍝?
-- DFC pass 涓嶇敓鏁堟椂(褰撳墠 TC 瀹炵幇),闇€瑕佺嫭绔嬫煡璇?
+注意: 这些子算子保持独立映射(不是 zero_cost),因为:
+- DFC pass 生效时,它们不出现 → 无影响
+- DFC pass 不生效时(当前 TC 实现),需要独立查询
 
-### NPU 闆舵嫹璐?concat
+### NPU 零拷贝 concat
 
 ```yaml
 aten.cat.default:          zero_cost: true
 tensor_cast.cat.default:   zero_cost: true
 ```
 
-ConcatD 鍦?CANN 8.5 profiling 涓粠鏈嚭鐜般€侼PU concat 閫氬父鏄浂鎷疯礉 view 鎿嶄綔銆?
+ConcatD 在 CANN 8.5 profiling 中从未出现。NPU concat 通常是零拷贝 view 操作。
 
-## 鍐崇瓥娴佺▼
+## 决策流程
 
 ```
-Q: 璇ョ畻瀛愮殑 kernel Type 鍦?profiling 涓嚭鐜拌繃鍚?
-鈹?
-鈹溾攢 浠庢湭鍑虹幇
-鈹?  鈹溾攢 鏄舰鐘?view 鎿嶄綔? 鈫?zero_cost (绫诲埆 1)
-鈹?  鈹溾攢 寤惰繜宸插寘鍚湪鍙︿竴涓瀺鍚堢畻瀛愪腑? 鈫?zero_cost (绫诲埆 2)
-鈹?  鈹斺攢 鏄嫭绔嬭绠椾絾缂烘暟鎹? 鈫?淇濇寔 kernel_type 鏄犲皠,绛夋暟鎹噰闆?
-鈹?
-鈹斺攢 鍑虹幇杩?鈫?涓嶆槸 zero_cost,闇€瑕?kernel_type 鏄犲皠
+Q: 该算子的 kernel Type 在 profiling 中出现过吗?
+│
+├─ 从未出现
+│   ├─ 是形状/view 操作? → zero_cost (类别 1)
+│   ├─ 延迟已包含在另一个融合算子中? → zero_cost (类别 2)
+│   └─ 是独立计算但缺数据? → 保持 kernel_type 映射,等数据采集
+│
+└─ 出现过 → 不是 zero_cost,需要 kernel_type 映射
 ```
 
-## 楠岃瘉鏂规硶
+## 验证方法
 
-纭 zero_cost 鍒嗙被鐨勮瘉鎹?
-1. 鍦ㄦ墍鏈?profiling kernel_details.csv 涓悳绱㈣ Type 鈫?纭鏈嚭鐜?
-2. 杩借釜 vllm-ascend 婧愮爜,纭璇ユ搷浣滆鍝釜铻嶅悎 kernel 鍚告敹
-3. 鍦?notes 瀛楁璁板綍: 琚摢涓瀺鍚堢畻瀛愬寘鍚?profiling 鏁版嵁鏉ユ簮
-
+确认 zero_cost 分类的证据:
+1. 在所有 profiling kernel_details.csv 中搜索该 Type → 确认未出现
+2. 追踪 vllm-ascend 源码,确认该操作被哪个融合 kernel 吸收
+3. 在 notes 字段记录: 被哪个融合算子包含,profiling 数据来源

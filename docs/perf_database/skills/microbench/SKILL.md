@@ -1,4 +1,4 @@
-﻿---
+---
 name: microbench-run-script-generator
 description: Use when generating or updating tools/perf_data_collection/op_replay/<KernelType>_run.py from perf database CSV data, op_mapping.yaml torch_npu_reference.microbench_api, and upstream operator docs/tests across vLLM, vLLM-ascend, op-plugin, pytorch-npu, CANN, or ATB repos
 version: 1.0.0
@@ -184,4 +184,3 @@ Do not accidentally add local data directories or unrelated generated CSVs.
 - `py_compile` passes
 - The script replays all current rows in the target CSV with the intended API
 - Any inferred non-tensor args are explained in code comments or module docstring when non-obvious
-

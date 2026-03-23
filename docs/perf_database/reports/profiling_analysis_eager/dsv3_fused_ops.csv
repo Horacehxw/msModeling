@@ -1,3 +1,2 @@
-﻿OP Type,category,total_duration_us,pct_of_total,n_invocations,mean_duration_us,std_duration_us
+OP Type,category,total_duration_us,pct_of_total,n_invocations,mean_duration_us,std_duration_us
 DispatchFFNCombine,comm+compute fused,22512877.394,42.55620328076614,4118,5466.94448615833,6289.960672531642
-

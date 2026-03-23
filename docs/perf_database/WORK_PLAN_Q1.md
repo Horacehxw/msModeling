@@ -1,695 +1,694 @@
-﻿# 绠楀瓙鎬ц兘鏁版嵁搴?Q1 宸ヤ綔璁″垝 (v3.2)
+# 算子性能数据库 Q1 工作计划 (v3.2)
 
-**鐩爣**: 2026.3.23 瀹屾垚绔埌绔泦鎴愶紝DeepSeek-V3 / Qwen3-32B 浠跨湡璇樊 <15%
-**鍩哄噯鏃ユ湡**: 2026.3.5锛堝懆鍥涙櫄鍙戝竷锛?.6 璧锋墽琛岋級
-**鍥㈤槦**: 6 浜猴紙1 SE + 5 寮€鍙戯級
-**鍛ㄦ湡**: 3.6-3.23锛堜笁涓?Phase锛?
-**璁捐鏂囨。**: `OPERATOR_PERF_DATABASE_DESIGN_zh_v1.4.md`锛堝悓鐩綍锛?
-**绌垮埡鎬荤粨**: `reports/spike_executive_summary_zh.md`
-**鐩爣鐗堟湰**: CANN 8.5锛坴llm 0.15.0 + torch 2.9.0锛夛紝鏁版嵁鐩綍 `vllm0.15.0_torch2.9.0_cann8.5/`
-**鍙樻洿鏃ュ織**: `CHANGELOG_20260315.md`锛堝悓鐩綍锛?
-
----
-
-## 鐩綍
-
-- [1. 椤圭洰姒傝](#1-椤圭洰姒傝)
-- [2. 杩涘睍绠＄悊](#2-杩涘睍绠＄悊)
-- [3. 鍥㈤槦涓庤亴璐(#3-鍥㈤槦涓庤亴璐?
-- [4. 浠诲姟渚濊禆鎬昏](#4-浠诲姟渚濊禆鎬昏)
-- [5. Phase 1锛氭牳蹇冮泦鎴?+ Mini 楠岃瘉锛?.6-3.13锛塢(#5-phase-1鏍稿績闆嗘垚--mini-楠岃瘉36-313)
-- [5.5 C10 鍚庣画璁″垝锛欻CCL 鏁版嵁鍏ュ簱涓庨獙璇乚(#55-c10-鍚庣画璁″垝hccl-鏁版嵁鍏ュ簱涓庨獙璇?
-- [5.6 C11锛欴ispatchFFNCombine 瀛愬唴鏍告暟鎹噰闆嗭紙v3.1 鏂板锛塢(#56-c11dispatchffncombine-瀛愬唴鏍告暟鎹噰闆唙31-鏂板)
-- [6. Phase 2锛氭暟鎹墿鍏?+ 铻嶅悎 Pass + DSV3 娣卞害鍖归厤锛?.16-3.20锛塢(#6-phase-2鏁版嵁鎵╁厖--铻嶅悎-pass--dsv3-娣卞害鍖归厤316-320)
-- [7. Phase 3锛氱鍒扮绮惧害楠岃瘉锛?.19-3.23锛塢(#7-phase-3绔埌绔簿搴﹂獙璇?19-323)
-- [8. 椋庨櫓涓庣紦瑙(#8-椋庨櫓涓庣紦瑙?
-- [闄勫綍 A锛氬垎鏀瓥鐣(#闄勫綍-a鍒嗘敮绛栫暐)
-- [闄勫綍 B锛氬弬鑰冪储寮昡(#闄勫綍-b鍙傝€冪储寮?
-- [闄勫綍 C锛氳繘灞曠鐞嗙粏鍒橾(#闄勫綍-c杩涘睍绠＄悊缁嗗垯)
+**目标**: 2026.3.23 完成端到端集成，DeepSeek-V3 / Qwen3-32B 仿真误差 <15%
+**基准日期**: 2026.3.5（周四晚发布，3.6 起执行）
+**团队**: 6 人（1 SE + 5 开发）
+**周期**: 3.6-3.23（三个 Phase）
+**设计文档**: `OPERATOR_PERF_DATABASE_DESIGN_zh_v1.4.md`（同目录）
+**穿刺总结**: `reports/spike_executive_summary_zh.md`
+**目标版本**: CANN 8.5（vllm 0.15.0 + torch 2.9.0），数据目录 `vllm0.15.0_torch2.9.0_cann8.5/`
+**变更日志**: `CHANGELOG_20260315.md`（同目录）
 
 ---
 
-## 1. 椤圭洰姒傝
+## 目录
 
-### 1.1 鐩爣涓庣幇鐘?
+- [1. 项目概览](#1-项目概览)
+- [2. 进展管理](#2-进展管理)
+- [3. 团队与职责](#3-团队与职责)
+- [4. 任务依赖总览](#4-任务依赖总览)
+- [5. Phase 1：核心集成 + Mini 验证（3.6-3.13）](#5-phase-1核心集成--mini-验证36-313)
+- [5.5 C10 后续计划：HCCL 数据入库与验证](#55-c10-后续计划hccl-数据入库与验证)
+- [5.6 C11：DispatchFFNCombine 子内核数据采集（v3.1 新增）](#56-c11dispatchffncombine-子内核数据采集v31-新增)
+- [6. Phase 2：数据扩充 + 融合 Pass + DSV3 深度匹配（3.16-3.20）](#6-phase-2数据扩充--融合-pass--dsv3-深度匹配316-320)
+- [7. Phase 3：端到端精度验证（3.19-3.23）](#7-phase-3端到端精度验证319-323)
+- [8. 风险与缓解](#8-风险与缓解)
+- [附录 A：分支策略](#附录-a分支策略)
+- [附录 B：参考索引](#附录-b参考索引)
+- [附录 C：进展管理细则](#附录-c进展管理细则)
 
-涓?TensorCast 鏋勫缓鍩轰簬瀹炴祴 Profiling 鏁版嵁鐨勭畻瀛愭€ц兘浼扮畻绯荤粺锛坄EmpiricalPerformanceModel + DataSource` 妯″紡锛岃璁℃枃妗?搂1.1锛夈€俤b-spike 绌垮埡宸查獙璇佹灦鏋勫彲琛屾€э細Qwen3-32B BF16 Prefill 鍖归厤鐜?87%锛岃绠楃畻瀛?100%銆傛牳蹇冧唬鐮?production-ready锛岀洿鎺ヤ綔涓轰骇鍝佸垎鏀熀纭€銆?
+---
 
-> **v3.1 鏇存柊**锛氭渶缁?E2E 楠岃瘉鐩爣鐗堟湰璋冩暣涓?CANN 8.5锛坴llm 0.15.0 + torch 2.9.0锛夈€侰ANN 8.3 鏁版嵁淇濈暀浣滀负鍙傝€冨熀绾裤€侰ANN 8.5 寮曞叆 DispatchFFNCombine 瓒呯骇铻嶅悎锛?5.3% DSV3锛夛紝闇€鏂板 C11 浠诲姟瑕嗙洊銆?
+## 1. 项目概览
 
-### 1.2 鏍稿績鍋囪
+### 1.1 目标与现状
 
-| 鍋囪 | 楠岃瘉鏂瑰紡 | 鑻ヤ笉鎴愮珛鐨勫奖鍝?|
+为 TensorCast 构建基于实测 Profiling 数据的算子性能估算系统（`EmpiricalPerformanceModel + DataSource` 模式，设计文档 §1.1）。db-spike 穿刺已验证架构可行性：Qwen3-32B BF16 Prefill 匹配率 87%，计算算子 100%。核心代码 production-ready，直接作为产品分支基础。
+
+> **v3.1 更新**：最终 E2E 验证目标版本调整为 CANN 8.5（vllm 0.15.0 + torch 2.9.0）。CANN 8.3 数据保留作为参考基线。CANN 8.5 引入 DispatchFFNCombine 超级融合（35.3% DSV3），需新增 C11 任务覆盖。
+
+### 1.2 核心假设
+
+| 假设 | 验证方式 | 若不成立的影响 |
 |------|---------|-------------|
-| CommAnalytic 鍦?Qwen3 Prefill 涓婄簿搴﹀彲鎺ュ彈 | Phase 1 mini 绔埌绔獙璇?| 閫氫俊鏌ヨ璺緞浼樺厛绾ч渶鎻愬墠 |
-| DSV3 W8A8 op_mapping 鍙閲忓畬鎴?| C3/C4 鏄犲皠楠岃瘉 | 鏄犲皠宸ヤ綔閲忕炕鍊?|
-| MC2 鍦?compile pass 涓凡姝ｇ‘铻嶅悎 | XJT楠岃瘉 | 闇€璋冩暣 composite fallback |
-| 閫氱敤 shape 绾挎€ф彃鍊?+ FIA sqrt 鍙樻崲鍙弧瓒虫墍鏈夊満鏅紙涓嶉渶瑕?per-operator 缁村害澹版槑锛?| TCX鎻掑€肩簿搴︽祴璇?+ ZZY/HDY override 鏍囨敞 | 闇€鏂板 kernel_overrides |
-| CANN 8.5 DispatchFFNCombine 鍙€氳繃 composite 鍒嗚В鏌ヨ瑕嗙洊 | C11 鏁版嵁閲囬泦 + Phase 2 楠岃瘉 | 闇€鏂板 TC 铻嶅悎 pass锛堜及璁?5+ 澶╋級 |
+| CommAnalytic 在 Qwen3 Prefill 上精度可接受 | Phase 1 mini 端到端验证 | 通信查询路径优先级需提前 |
+| DSV3 W8A8 op_mapping 可增量完成 | C3/C4 映射验证 | 映射工作量翻倍 |
+| MC2 在 compile pass 中已正确融合 | XJT验证 | 需调整 composite fallback |
+| 通用 shape 线性插值 + FIA sqrt 变换可满足所有场景（不需要 per-operator 维度声明） | TCX插值精度测试 + ZZY/HDY override 标注 | 需新增 kernel_overrides |
+| CANN 8.5 DispatchFFNCombine 可通过 composite 分解查询覆盖 | C11 数据采集 + Phase 2 验证 | 需新增 TC 融合 pass（估计 5+ 天） |
 
-### 1.3 浜や粯鏍囧噯
+### 1.3 交付标准
 
-| 鎸囨爣 | 鐩爣鍊?|
+| 指标 | 目标值 |
 |-----|-------|
-| 绔埌绔€楁椂璇樊 | <15%锛堝姣斿疄闄?vLLM Profiling锛?|
-| 鍗曠畻瀛愯宸紙宸插尮閰嶏級 | <20% |
-| 鏃堕棿瑕嗙洊鐜?| >90% |
+| 端到端耗时误差 | <15%（对比实际 vLLM Profiling） |
+| 单算子误差（已匹配） | <20% |
+| 时间覆盖率 | >90% |
 
-### 1.4 鏈€缁堜氦浠樼墿锛?.23锛?
+### 1.4 最终交付物（3.23）
 
-| 浜や粯鐗?| 楠屾敹鏍囧噯 |
+| 交付物 | 验收标准 |
 |-------|---------|
-| CLI `--performance-model profiling --compile` | Qwen3-32B + DSV3 绔埌绔彲杩愯 |
-| 绮惧害鎶ュ憡锛圦wen3-32B + DSV3锛?| 绔埌绔宸?<15% |
-| 瀹屾暣鏁版嵁搴擄紙CSV + YAML锛?| CANN 8.5 鏁版嵁锛岃鐩?Tier 1/2 绠楀瓙锛堣璁℃枃妗?搂7.1锛?|
-| database validation tool | 鍙噸澶嶉獙璇?|
-| 鏁版嵁閲囬泦宸ュ叿閾撅紙9 涓伐鍏凤級 | 鍙噸澶嶆墽琛?|
+| CLI `--performance-model profiling --compile` | Qwen3-32B + DSV3 端到端可运行 |
+| 精度报告（Qwen3-32B + DSV3） | 端到端误差 <15% |
+| 完整数据库（CSV + YAML） | CANN 8.5 数据，覆盖 Tier 1/2 算子（设计文档 §7.1） |
+| validate.py | 可重复验证 |
+| 数据采集工具链（9 个工具） | 可重复执行 |
 
 ---
 
-## 2. 杩涘睍绠＄悊
+## 2. 进展管理
 
-- **椋炰功鏃ユ姤**锛氭瘡浜烘瘡澶╂洿鏂拌繘灞?闃诲/椋庨櫓淇″彿锛堣瑙乕闄勫綍 C](#闄勫綍-c杩涘睍绠＄悊缁嗗垯)锛?
-- **绔欎細**锛氫粎璁ㄨ闃诲椤瑰拰椋庨櫓锛孭hase 1/3 姣忔棩锛孭hase 2 闅旀棩
-- **DIMA 鐪嬫澘**锛氫换鍔″崱鐗囩姸鎬佸悓姝ワ紝瀵?MY 鍚堜綔鏂瑰彲瑙?
-- **Review 鑺傜偣**锛?.13 Phase 1 Review 鈫?3.19 Phase 2 Review 鈫?3.23 浜や粯 Review
+- **飞书日报**：每人每天更新进展/阻塞/风险信号（详见[附录 C](#附录-c进展管理细则)）
+- **站会**：仅讨论阻塞项和风险，Phase 1/3 每日，Phase 2 隔日
+- **DIMA 看板**：任务卡片状态同步，对 MY 合作方可见
+- **Review 节点**：3.13 Phase 1 Review → 3.19 Phase 2 Review → 3.23 交付 Review
 
 ---
 
-## 3. 鍥㈤槦涓庤亴璐?
+## 3. 团队与职责
 
-### 3.1 鍒嗗伐鎬昏〃
+### 3.1 分工总表
 
-| 浜哄憳 | 鎶曞叆 | 鑱岃矗鍩?| 浠ｇ爜 Owner |
+| 人员 | 投入 | 职责域 | 代码 Owner |
 |------|------|--------|-----------|
-| **ZH** | 50% | DataSource 鏌ヨ寮曟搸锛歚_lookup_compute` / `_lookup_comm` / `_lookup_composite` + review 鍏ㄩ儴鏌ヨ浠ｇ爜 PR | `perf_database/*.py` |
-| **TCX** | 100% | 鏁版嵁灞傚叏閾捐矾锛氬伐鍏烽摼 + Microbenchmark + Attention 鏌ヨ涓庢暟鎹?+ 鍩虹鎻掑€硷紱鍗忓姪 SE 杩涘睍绠＄悊锛堟棩鎶ヨ窡韪€佺珯浼氳褰曪級 | `tools/perf_data_collection/`, attention 鏌ヨ, 鎻掑€?|
-| **ZZY** | 100% | Qwen3 op_mapping锛欱F16 鍦烘櫙楠岃瘉 + Decode 鎵╁睍 + 鑷姩鍖栨柟妗?spec | `op_mapping.yaml` (Qwen3), 楠岃瘉鎶ュ憡 |
-| **HDY** | 100% | DSV3 op_mapping + HCCL锛歐8A8 鏄犲皠 + 閫氫俊鏁版嵁閲囬泦 + DSV3 Profiling 鍒嗘瀽 | `op_mapping.yaml` (DSV3), HCCL 鏁版嵁 |
-| **XJT** | ~~70%~~ 宸蹭氦鎺?| 闆嗘垚灞傦細CLI + compile pass 铻嶅悎锛圓1/A2/A3 + MC2 楠岃瘉 宸插畬鎴愶級 | CLI, `compilation/` |
-| **LJW** | 100%锛?.17璧凤級 | 鎺ユ浛 XJT锛氳瀺鍚?Pass锛圖ispatchFFNCombine 鍙鎬ц瘎浼?+ 瀹炵幇锛?| `compilation/` |
-| **HXW** | SE | spec review + 鍐崇瓥 + 杩涘睍绠＄悊锛堜笉 own 浜у搧浠ｇ爜锛?| 鈥?|
+| **ZH** | 50% | DataSource 查询引擎：`_lookup_compute` / `_lookup_comm` / `_lookup_composite` + review 全部查询代码 PR | `perf_database/*.py` |
+| **TCX** | 100% | 数据层全链路：工具链 + Microbenchmark + Attention 查询与数据 + 基础插值；协助 SE 进展管理（日报跟踪、站会记录） | `tools/perf_data_collection/`, attention 查询, 插值 |
+| **ZZY** | 100% | Qwen3 op_mapping：BF16 场景验证 + Decode 扩展 + 自动化方案 spec | `op_mapping.yaml` (Qwen3), 验证报告 |
+| **HDY** | 100% | DSV3 op_mapping + HCCL：W8A8 映射 + 通信数据采集 + DSV3 Profiling 分析 | `op_mapping.yaml` (DSV3), HCCL 数据 |
+| **XJT** | ~~70%~~ 已交接 | 集成层：CLI + compile pass 融合（A1/A2/A3 + MC2 验证 已完成） | CLI, `compilation/` |
+| **LJW** | 100%（3.17起） | 接替 XJT：融合 Pass（DispatchFFNCombine 可行性评估 + 实现） | `compilation/` |
+| **HXW** | SE | spec review + 决策 + 进展管理（不 own 产品代码） | — |
 
-> **浜哄憳鍙樺姩锛?.12锛?*锛歑JT 宸ヤ綔浜ゆ帴缁?LJW锛孡JW 3.17 璧峰叏鑱屾姇鍏ャ€俋JT 宸插畬鎴?A1/A2/A3 + MC2 楠岃瘉 + KvRmsNormRopeCache 纭锛坢lapo 宸茶鐩栵紝鏃犻渶鐙珛 pass锛夈€?
+> **人员变动（3.12）**：XJT 工作交接给 LJW，LJW 3.17 起全职投入。XJT 已完成 A1/A2/A3 + MC2 验证 + KvRmsNormRopeCache 确认（mlapo 已覆盖，无需独立 pass）。
 
-### 3.2 鍗忎綔鍏崇郴涓庢帴鍙?
+### 3.2 协作关系与接口
 
 ```
-XJT鈫扡JW(闆嗘垚灞? ZH(鏌ヨ灞? TCX(鏁版嵁灞? ZZY(Qwen3鏄犲皠) HDY(DSV3鏄犲皠)
- CLI/Pass          lookup寮曟搸   CSV宸ュ叿/鎻掑€?   op_mapping楠岃瘉     op_mapping+HCCL
-    |                |         Attn鏌ヨ              |                    |
+XJT→LJW(集成层) ZH(查询层) TCX(数据层) ZZY(Qwen3映射) HDY(DSV3映射)
+ CLI/Pass          lookup引擎   CSV工具/插值    op_mapping验证     op_mapping+HCCL
+    |                |         Attn查询              |                    |
     |                |              |                |                    |
-    +--- pass 浜у嚭 --+-- 鏌ヨ鍚堝叆 --+-- mapping 鍚屾 -+--------------------+
+    +--- pass 产出 --+-- 查询合入 --+-- mapping 同步 -+--------------------+
 ```
 
-**鎺ュ彛鐐?*锛堥渶 PR review 鍗忚皟鐨勫湴鏂癸級锛?
-- TCX 鈫?ZH锛歚_lookup_attention()` 浠ｇ爜鍚堝叆 `profiling_data_source.py`
-- TCX 鈫?ZH锛欼nterpolatingDataSource 浠ｇ爜鍚堝叆 `perf_database/`
-- ZZY/HDY 鈫?ZH锛歚op_mapping.yaml` 鍙樻洿褰卞搷鏌ヨ閫昏緫鏃堕渶鍚屾
-- XJT 鈫?ZH锛氭柊澧?compile pass 浜х敓鐨?TC op 闇€鍚屾鍒?`op_mapping.yaml`
+**接口点**（需 PR review 协调的地方）：
+- TCX → ZH：`_lookup_attention()` 代码合入 `profiling_data_source.py`
+- TCX → ZH：InterpolatingDataSource 代码合入 `perf_database/`
+- ZZY/HDY → ZH：`op_mapping.yaml` 变更影响查询逻辑时需同步
+- XJT → ZH：新增 compile pass 产生的 TC op 需同步到 `op_mapping.yaml`
 
-HXW锛圫E锛夛細鍐崇瓥 + 杩涘睍绠＄悊锛圱CX鍗忓姪锛夛紱涓?own 浜у搧浠ｇ爜锛屾寜闇€鍙備笌鎶€鏈璁恒€?
+HXW（SE）：决策 + 进展管理（TCX协助）；不 own 产品代码，按需参与技术讨论。
 
-### 3.3 鎶€鏈柟妗堢‘璁?
+### 3.3 技术方案确认
 
-姣忎釜鎶€鏈柟妗堢敱璐熻矗浜鸿嚜琛岃捣鑽夊苟楠岃瘉銆傞獙璇佹柟寮忥細瀵圭収璁捐鏂囨。瀵瑰簲绔犺妭 + 绌垮埡鎶ュ憡宸叉湁缁撹锛屽湪鏃ユ姤涓畝瑕佽鏄庢柟妗堣鐐瑰拰楠岃瘉缁撴灉鍗冲彲銆傛湁鐤戦棶鎴栧垎姝ф椂鍦ㄧ珯浼氭彁鍑鸿璁恒€?
+每个技术方案由负责人自行起草并验证。验证方式：对照设计文档对应章节 + 穿刺报告已有结论，在日报中简要说明方案要点和验证结果即可。有疑问或分歧时在站会提出讨论。
 
-| 鏂规 | 璐熻矗浜?| 楠岃瘉渚濇嵁 | 瀹屾垚鏃堕棿 |
+| 方案 | 负责人 | 验证依据 | 完成时间 |
 |------|--------|---------|---------|
-| 17 椤圭畝鍖栬瘎浼?| HXW | 绌垮埡鎶ュ憡 搂5 | 3.6 |
-| 璁＄畻+閫氫俊铻嶅悎绠楀瓙纭 | HDY | DSV3 Profiling CSV 涓悳绱㈣绠?閫氫俊铻嶅悎绫?kernel Type锛堝惈 MC2 鍙婂叾浠栬瀺鍚堝舰寮忥級 | 3.6锛?h锛?|
-| Attention 鍖归厤瑙勫垯 | TCX | 绌垮埡鎶ュ憡 搂4.1 + 璁捐鏂囨。 搂4.8锛屽啓鍗曞厓娴嬭瘯楠岃瘉 | 3.9 |
-| 閫氫俊鏁版嵁琛ㄦ牸寮?| ZH | 璁捐鏂囨。 搂4.4 + 搂4.7锛屽鐓?`comm_config_example.yaml` | 3.9 |
-| MoE/MLA 鍖归厤瑙勫垯 | ZH | 璁捐鏂囨。 搂4.2 composite 鍒嗚В琛紝鍐欏崟鍏冩祴璇曢獙璇?| 3.12 |
+| 17 项简化评估 | HXW | 穿刺报告 §5 | 3.6 |
+| 计算+通信融合算子确认 | HDY | DSV3 Profiling CSV 中搜索计算+通信融合类 kernel Type（含 MC2 及其他融合形式） | 3.6（1h） |
+| Attention 匹配规则 | TCX | 穿刺报告 §4.1 + 设计文档 §4.8，写单元测试验证 | 3.9 |
+| 通信数据表格式 | ZH | 设计文档 §4.4 + §4.7，对照 `comm_config_example.yaml` | 3.9 |
+| MoE/MLA 匹配规则 | ZH | 设计文档 §4.2 composite 分解表，写单元测试验证 | 3.12 |
 
 ---
 
-## 4. 浠诲姟渚濊禆鎬昏
+## 4. 任务依赖总览
 
-### 4.1 渚濊禆鍥?
+### 4.1 依赖图
 
 ```
-          db-spike 宸叉湁浠ｇ爜 (feat/perf-database 鍩虹)
+          db-spike 已有代码 (feat/perf-database 基础)
                     |
     +---------------+---------------+---------------+
     v               v               v               v
- A1 CLI          B1 閫氫俊鏌ヨ     C1+C2 绠楀瓙娓呭崟   D1 瑙ｆ瀽楠岃瘉
- (XJT)        (ZH)          (寮?鑳?骞惰)     (TCX)
+ A1 CLI          B1 通信查询     C1+C2 算子清单   D1 解析验证
+ (XJT)        (ZH)          (张+胡,并行)     (TCX)
     |               |               |               |
     v               v               v               v
- A2 绔埌绔?      B2 Composite    C3 Qwen3楠岃瘉    D2 Attention
- (XJT)        (ZH)          (ZZY)         鏌ヨ瀹炵幇
-    |               |          C7 DSV3鏄犲皠       (TCX)
+ A2 端到端       B2 Composite    C3 Qwen3验证    D2 Attention
+ (XJT)        (ZH)          (ZZY)         查询实现
+    |               |          C7 DSV3映射       (TCX)
     v               |          (HDY)             |
- A3 铻嶅悎merge       |               |               v
- + MC2楠岃瘉          v               v            D3 鍩虹鎻掑€?
- (XJT)       B1+B2 瀹屾垚     C3+C7+C8瀹屾垚     (TCX)
+ A3 融合merge       |               |               v
+ + MC2验证          v               v            D3 基础插值
+ (XJT)       B1+B2 完成     C3+C7+C8完成     (TCX)
     |               |               |               |
     +-------+-------+-------+-------+-------+-------+
             v                                       v
-   Phase 1 浜や粯 + Mini 绔埌绔獙璇?(3.13)
+   Phase 1 交付 + Mini 端到端验证 (3.13)
             |
     +-------+-------+-------+-------+
     v       v       v       v       v
   E1-E4   F1      G1-G2   H1-H4   E5
-  鏁版嵁    铻嶅悎    MoE/MLA  鍒嗘瀽    Attn鎻掑€?
-  (TCX)(XJT)(ZH) (寮?鑳?  (TCX)
+  数据    融合    MoE/MLA  分析    Attn插值
+  (TCX)(XJT)(ZH) (张+胡)  (TCX)
     |       |       |       |       |
     +-------+-------+-------+-------+
             v
-   Phase 2 浜や粯 + DSV3 Mini 楠岃瘉 (3.19)
+   Phase 2 交付 + DSV3 Mini 验证 (3.19)
             |
     +-------+-------+
     v       v       v
-  J1 Qwen3 J2 DSV3 J3 淇
-  (绁?璁?  (鑳?璁?  (寮犲垎鏋?绁?鍞愪慨澶?
+  J1 Qwen3 J2 DSV3 J3 修复
+  (祝+许)  (胡+许)  (张分析+祝/唐修复)
             v
-   J4 绮惧害鎶ュ憡 (3.23)
+   J4 精度报告 (3.23)
 ```
 
-### 4.2 鍏抽敭璺緞
+### 4.2 关键路径
 
-`A1 鈫?A2 鈫?A3 鈫?Mini 楠岃瘉 鈫?G1 鈫?J2 鈫?J4`
+`A1 → A2 → A3 → Mini 验证 → G1 → J2 → J4`
 
-### 4.3 Phase 鏃堕棿绾?
+### 4.3 Phase 时间线
 
 ```
-3.5(鍙戝竷)  3.6 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ 3.13        3.16 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ 3.19  3.20 鈹€鈹€鈹€鈹€ 3.23
-           鈫愨攢鈹€ Phase 1 鈹€鈹€鈫?Review    鈫愨攢鈹€ Phase 2 鈹€鈹€鈫?Review       浜や粯
-                                                 鈫愨攢鈹€ Phase 3 鈹€鈹€鈹€鈹€鈫?
+3.5(发布)  3.6 ──────── 3.13        3.16 ──────── 3.19  3.20 ──── 3.23
+           ←── Phase 1 ──→ Review    ←── Phase 2 ──→ Review       交付
+                                                 ←── Phase 3 ────→
 ```
 
-**Phase 1 浠诲姟鎺掑竷锛?.6-3.13锛?*锛?
+**Phase 1 任务排布（3.6-3.13）**：
 
 ```
       3.6       3.9       3.10      3.11      3.12      3.13
        |         |         |         |         |         |
-XJT |-- A1 ---|------ A2 ---------|-- A3+MC2楠岃瘉 ------|
+XJT |-- A1 ---|------ A2 ---------|-- A3+MC2验证 ------|
        |         |         |         |         |         |
 ZH   |         |--- B1 ------------|--- B2 ------------|
        |         |         |         |         |         |
-TCX |-- D1 ---|-- D2 Attention ---|-- D3 鎻掑€?--|D4---|
+TCX |-- D1 ---|-- D2 Attention ---|-- D3 插值 --|D4---|
        |         |         |         |         |         |
-ZZY |         |= C1+C2 =|--- C3 Qwen3楠岃瘉 ---|C4+C5--|
+ZZY |         |= C1+C2 =|--- C3 Qwen3验证 ---|C4+C5--|
        |         |         |         |         |         |
-HDY |C6+MC2鏌?|--- C9 --|--- C7 DSV3鏄犲皠 ----|C8+C10-|
+HDY |C6+MC2查 |--- C9 --|--- C7 DSV3映射 ----|C8+C10-|
 ```
 
 ---
 
-## 5. Phase 1锛氭牳蹇冮泦鎴?+ Mini 楠岃瘉锛?.6-3.13锛? 涓伐浣滄棩锛?
+## 5. Phase 1：核心集成 + Mini 验证（3.6-3.13，6 个工作日）
 
-**鐩爣**锛欳LI 绔埌绔彲杩愯 + 璁＄畻/閫氫俊/Attention/Composite 鍥涙潯鏌ヨ璺緞 + op_mapping 鍙屾ā鍨嬮獙璇?+ 鍩虹鎻掑€?+ **Mini 绔埌绔娆¤窇閫?*銆?
-
----
-
-### 浠诲姟 A锛欳LI 闆嗘垚 + Compile Pass锛圶JT锛?0%锛?
-
-**鐩爣**锛氳 `--performance-model profiling --compile` 绔埌绔彲杩愯锛屽苟楠岃瘉宸叉湁铻嶅悎 pass 姝ｇ‘宸ヤ綔銆?
-
-**鑳屾櫙**锛歞b-spike 宸叉湁 `empirical.py`锛?7 琛岋級鍜?CLI 鏀瑰姩鍙傝€冦€俙--compile` 鏄纭娇鐢?profiling 妯″紡鐨勫墠鎻愶紙绌垮埡鎶ュ憡 搂3.3锛夈€侻C2 pass 宸叉湁瀹屾暣瀹炵幇锛坄compilation/freezing_passes/patterns/matmul_allreduce.py`锛?61 琛岋紝5 绉嶉噺鍖栧彉浣擄級锛岄渶楠岃瘉鍏朵笌 profiling 鏁版嵁鐨勫榻愩€?
-
-**淇敼鑼冨洿**锛歚tensor_cast/scripts/text_generate.py`, `tensor_cast/core/model_runner.py`, `tensor_cast/core/config_resolver.py`
-
-**鍙傝€?*锛氳璁℃枃妗?搂5.1-搂5.3锛圕LI 鎺ュ彛锛夈€伮?.1锛堣瀺鍚?Gap 鐘舵€侊級
-
-| # | 妫€鏌ョ偣 | 瀹屾垚鏃ユ湡 | 楠屾敹鏍囧噯 |
-|---|-------|---------|---------|
-| A1 | CLI `--performance-model {analytic,profiling}` + `--perf-database` 璺緞鍙傛暟 | 3.9 鈫?鉁?3.10 | analytic 琛屼负涓嶅彉锛沺rofiling 妯″紡鍒涘缓 EmpiricalPerformanceModel |
-| A2 | 绔埌绔細Qwen3-32B Prefill `--performance-model profiling --compile` | 3.11 鈫?鉁?3.11 | 涓嶆姤閿欙紝log_stats 杈撳嚭鍛戒腑鐜?|
-| A3 | 铻嶅悎 Pass merge + MC2 pass 楠岃瘉 + KvRmsNormRopeCache 纭 | 3.13 鈫?鉁?3.11 | MC2 BF16+W8A8 楠岃瘉閫氳繃锛汯vRmsNormRopeCache 琚?mlapo 瑕嗙洊锛屾棤闇€鐙珛 pass |
-
-**璁＄畻+閫氫俊铻嶅悎绠楀瓙楠岃瘉瑕佺偣**锛?
-- 纭 `--compile` 鍚?dispatch trace 涓嚭鐜?`tensor_cast.matmul_all_reduce`锛堜笉鍐嶆槸鍒嗙鐨?mm + all_reduce锛?
-- HDY 3.6 纭 DSV3 Profiling 涓槸鍚︽湁璁＄畻+閫氫俊铻嶅悎绫?kernel Type锛堝惈 MC2 鍙婂叾浠栬瀺鍚堝舰寮忥級
-- **缁撹锛堝凡纭锛?*锛?
-  - **MC2锛圡atMul+AllReduce 铻嶅悎锛?*锛欴SV3 Profiling 涓棤涓撶敤 kernel Type锛宮atmul锛坄QuantBatchMatmulV3`锛夊拰閫氫俊锛坄hcom_reduceScatter_` / `hcom_allGather_`锛夊垎寮€璁板綍 鈫?淇濈暀 `composite: true` + `sub_kernels: [QuantBatchMatmulV3, hcom_allReduce_]` 鍒嗚В鏌ヨ
-  - **DispatchFFNCombine锛堣绠?閫氫俊铻嶅悎锛?*锛欴SV3 Profiling 涓?*瀛樺湪**姝よ瀺鍚?kernel锛岃瀺鍚堜簡 `all_to_all脳2 + GroupedMatmul脳2 + SwiGlu + MoE routing`锛岃€楁椂鍗犵鍒扮 **35.3%**锛屾槸 DSV3 鏈€閲嶈鐨勫崟涓€ kernel銆俆C 灏嗗叾鍒嗚В涓?`permute_tokens + grouped_matmul脳2 + swiglu + unpermute_tokens + all_to_all脳2`锛宱p_mapping.yaml 宸查厤缃?`composite: true` 澶勭悊锛屾棤闇€鏂板鐩存帴鏄犲皠
+**目标**：CLI 端到端可运行 + 计算/通信/Attention/Composite 四条查询路径 + op_mapping 双模型验证 + 基础插值 + **Mini 端到端首次跑通**。
 
 ---
 
-### 浠诲姟 B锛欴ataSource 鏌ヨ璺緞锛圸H锛?0%锛?
+### 任务 A：CLI 集成 + Compile Pass（XJT，70%）
 
-**鐩爣**锛氬湪宸叉湁 `_lookup_compute()` 鍩虹涓婏紝鏂板閫氫俊鏌ヨ鍜?Composite 鏌ヨ涓ゆ潯璺緞銆?
+**目标**：让 `--performance-model profiling --compile` 端到端可运行，并验证已有融合 pass 正确工作。
 
-**鑳屾櫙**锛氬綋鍓?`profiling_data_source.py` 鐨?`lookup()` 涓紝`communication` 鍜?`composite` 涓や釜鍒嗘敮鐩存帴 return None锛堢┛鍒虹畝鍖栭」 S-11/S-12锛夈€?
+**背景**：db-spike 已有 `empirical.py`（97 行）和 CLI 改动参考。`--compile` 是正确使用 profiling 模式的前提（穿刺报告 §3.3）。MC2 pass 已有完整实现（`compilation/freezing_passes/patterns/matmul_allreduce.py`，261 行，5 种量化变体），需验证其与 profiling 数据的对齐。
 
-**淇敼鑼冨洿**锛歚tensor_cast/performance_model/perf_database/profiling_data_source.py`
+**修改范围**：`tensor_cast/scripts/text_generate.py`, `tensor_cast/core/model_runner.py`, `tensor_cast/core/config_resolver.py`
 
-**鍙傝€?*锛氳璁℃枃妗?搂4.2锛堟煡璇㈠垎娲撅級銆伮?.4锛堥€氫俊鏌ヨ锛夈€伮?.7锛堥€氫俊 CSV 鏍煎紡锛?
+**参考**：设计文档 §5.1-§5.3（CLI 接口）、§9.1（融合 Gap 状态）
 
-**鍓嶇疆渚濊禆**锛氶€氫俊鏁版嵁琛?spec锛圸H鑷繁璧疯崏锛?.9 鍓嶅畬鎴愶紝HXW review锛?
-
-| # | 妫€鏌ョ偣 | 瀹屾垚鏃ユ湡 | 楠屾敹鏍囧噯 |
+| # | 检查点 | 完成日期 | 验收标准 |
 |---|-------|---------|---------|
-| B1 | `_lookup_comm()`锛氫粠 OpInvokeInfo 璁＄畻 message_bytes + topology_tier锛屾煡璇㈤€氫俊 CSV | 3.11 鈫?鉁?3.11 | topology_tier 绮剧‘鍖归厤瀹炵幇锛?fa2da3锛?|
-| B2 | `_lookup_composite()`锛歮atmul_all_reduce 鍒嗚В + MLA 鍒嗚В妗嗘灦 | 3.13 鈫?鉁?3.15 | MC2 compute+comm 鍒嗚В + MoE permute/unpermute 鍒嗚В瀹屾垚; MLA composite 鏌ヨ鎭㈠ |
+| A1 | CLI `--performance-model {analytic,profiling}` + `--perf-database` 路径参数 | 3.9 → ✅ 3.10 | analytic 行为不变；profiling 模式创建 EmpiricalPerformanceModel |
+| A2 | 端到端：Qwen3-32B Prefill `--performance-model profiling --compile` | 3.11 → ✅ 3.11 | 不报错，log_stats 输出命中率 |
+| A3 | 融合 Pass merge + MC2 pass 验证 + KvRmsNormRopeCache 确认 | 3.13 → ✅ 3.11 | MC2 BF16+W8A8 验证通过；KvRmsNormRopeCache 被 mlapo 覆盖，无需独立 pass |
 
-**閫氫俊鏌ヨ瀹炵幇瑕佺偣**锛堣璁℃枃妗?搂4.2锛夛細
-- `args[0]` 鈫?`message_bytes = tensor.nelement() * tensor.element_size()`
-- `rank_group` 浣嶇疆鍥犵畻瀛愯€屽紓锛歛ll_reduce=args[2], all_gather=args[3], all_to_all=args[4]
+**计算+通信融合算子验证要点**：
+- 确认 `--compile` 后 dispatch trace 中出现 `tensor_cast.matmul_all_reduce`（不再是分离的 mm + all_reduce）
+- HDY 3.6 确认 DSV3 Profiling 中是否有计算+通信融合类 kernel Type（含 MC2 及其他融合形式）
+- **结论（已确认）**：
+  - **MC2（MatMul+AllReduce 融合）**：DSV3 Profiling 中无专用 kernel Type，matmul（`QuantBatchMatmulV3`）和通信（`hcom_reduceScatter_` / `hcom_allGather_`）分开记录 → 保留 `composite: true` + `sub_kernels: [QuantBatchMatmulV3, hcom_allReduce_]` 分解查询
+  - **DispatchFFNCombine（计算+通信融合）**：DSV3 Profiling 中**存在**此融合 kernel，融合了 `all_to_all×2 + GroupedMatmul×2 + SwiGlu + MoE routing`，耗时占端到端 **35.3%**，是 DSV3 最重要的单一 kernel。TC 将其分解为 `permute_tokens + grouped_matmul×2 + swiglu + unpermute_tokens + all_to_all×2`，op_mapping.yaml 已配置 `composite: true` 处理，无需新增直接映射
+
+---
+
+### 任务 B：DataSource 查询路径（ZH，50%）
+
+**目标**：在已有 `_lookup_compute()` 基础上，新增通信查询和 Composite 查询两条路径。
+
+**背景**：当前 `profiling_data_source.py` 的 `lookup()` 中，`communication` 和 `composite` 两个分支直接 return None（穿刺简化项 S-11/S-12）。
+
+**修改范围**：`tensor_cast/performance_model/perf_database/profiling_data_source.py`
+
+**参考**：设计文档 §4.2（查询分派）、§4.4（通信查询）、§4.7（通信 CSV 格式）
+
+**前置依赖**：通信数据表 spec（ZH自己起草，3.9 前完成，HXW review）
+
+| # | 检查点 | 完成日期 | 验收标准 |
+|---|-------|---------|---------|
+| B1 | `_lookup_comm()`：从 OpInvokeInfo 计算 message_bytes + topology_tier，查询通信 CSV | 3.11 → ✅ 3.11 | topology_tier 精确匹配实现（8fa2da3） |
+| B2 | `_lookup_composite()`：matmul_all_reduce 分解 + MLA 分解框架 | 3.13 → ✅ 3.15 | MC2 compute+comm 分解 + MoE permute/unpermute 分解完成; MLA composite 查询恢复 |
+
+**通信查询实现要点**（设计文档 §4.2）：
+- `args[0]` → `message_bytes = tensor.nelement() * tensor.element_size()`
+- `rank_group` 位置因算子而异：all_reduce=args[2], all_gather=args[3], all_to_all=args[4]
 - `topology_tier = comm_grid._get_topology_idx_for_group(rank_group)`
-- CSV 鎸?`(num_devices, topology_tier)` 绮剧‘鍖归厤
+- CSV 按 `(num_devices, topology_tier)` 精确匹配
 
-**Composite 鏌ヨ瀹炵幇瑕佺偣**锛堣璁℃枃妗?搂4.2锛夛細
-- `composite: true` 鏃跺垎瑙ｄ负 sub_kernels 閫愪釜鏌ヨ骞舵眰鍜?
-- MLA 鍒嗚В澶嶇敤 `performance_model/__init__.py` 宸叉湁 shape 鎺ㄥ閫昏緫
-- 浠讳竴瀛愬唴鏍告湭鍛戒腑 鈫?鏁翠綋 return None 鈫?fallback analytic
+**Composite 查询实现要点**（设计文档 §4.2）：
+- `composite: true` 时分解为 sub_kernels 逐个查询并求和
+- MLA 分解复用 `performance_model/__init__.py` 已有 shape 推导逻辑
+- 任一子内核未命中 → 整体 return None → fallback analytic
 
-**璇存槑**锛歚_lookup_attention()` 鐢盩CX瀹炵幇锛堜换鍔?D2锛夛紝鎻愪氦 PR 鍚嶼H review 骞跺悎鍏ャ€?
-
----
-
-### 浠诲姟 C锛歰p_mapping 绯荤粺鍖栭獙璇侊紙ZZY + HDY锛屽悇 100%锛?
-
-**鐩爣**锛氱郴缁熸€ч獙璇佸凡鏈?op_mapping 鏄犲皠锛岃ˉ鍏?DSV3 Decode W8A8 鍦烘櫙鏄犲皠銆傝繖鏄鍒扮绮惧害鐨?*鏍稿績鐡堕** 鈥?鏄犲皠閿欒鐩存帴瀵艰嚧绠楀瓙 MISS銆?
-
-**鑳屾櫙**锛氱┛鍒洪樁娈靛缓绔嬩簡 60+ 鏉℃槧灏勶紝浣嗕粎鍦?Qwen3 BF16 Prefill 涓婇獙璇併€侱SV3 Decode 鏈?10+ 涓柊 kernel type 闇€瑕佹槧灏勶紙QuantBatchMatmulV3, GroupedMatmul, DequantSwigluQuant 绛夛級銆?
-
-**鍙傝€?*锛?
-- **鏄犲皠鏂规硶璁?*锛歚tutorial/OP_PLUGIN_MAPPING_TUTORIAL.md`锛堟鍚?鍙嶅悜鏄犲皠鎿嶄綔鎵嬪唽 + 閫熸煡琛級
-- **鏄犲皠鏍煎紡**锛氳璁℃枃妗?搂4.5锛坥p_mapping.yaml 瑙勬牸锛?
-- **鏄犲皠绀轰緥**锛歚examples/op_mapping_example.yaml`
-- **绠楀瓙鍒嗙骇**锛氳璁℃枃妗?搂7.1-搂7.2锛圱ier 1/2/3 + 鍗犳瘮鏁版嵁锛?
-
-**淇敼鑼冨洿**锛歚perf_database/data/ATLAS_800_A3_752T_128G_DIE/vllm_ascend/v0.13.0/op_mapping.yaml`
-
-**楠岃瘉鏂规硶璁?*锛堟瘡鏉℃槧灏勭殑楠岃瘉姝ラ锛夛細
-1. 浠?Profiling 鎻愬彇 kernel Type 鍙婂叾 Input Shapes / Data Types
-2. 鐢?analytic 妯″紡璺?TC锛屽鍑?dispatch trace锛屾壘鍒板搴旂殑 TC op 鍙婂叾 args shapes
-3. 鎸?`tutorial/OP_PLUGIN_MAPPING_TUTORIAL.md` 搂6-7 纭 TC op 鈫?kernel Type 鐨勬槧灏勯摼
-4. 瀵规瘮 TC args shapes 涓?Profiling Input Shapes锛岃褰曞樊寮傦紙batch 缁村害銆丗RACTAL_NZ銆乸adding 绛夛級
-5. 纭宸紓鍙 `profiling_data_source.py` 鐨勯€氱敤瑙勫垯澶勭悊锛堢┛鍒烘姤鍛?搂3.1 鍏被宸紓锛?
-
-#### ZZY锛圦wen3 涓荤嚎锛?
-
-| # | 妫€鏌ョ偣 | 瀹屾垚鏃ユ湡 | 楠屾敹鏍囧噯 |
-|---|-------|---------|---------|
-| C1 | Qwen3 Profiling 绠楀瓙娓呭崟锛歍op-20 (Type, 璋冪敤娆℃暟, 鑰楁椂鍗犳瘮) | 3.9 鈫?鉁?3.10 | 琛ㄦ牸杈撳嚭 |
-| C2 | TC dispatch trace 瀵煎嚭 | 3.9 鈫?鉁?3.10 | **鍙戠幇**锛歍C compile 璺緞涓嶅彲琛岀敤浜?op_mapping 楠岃瘉锛屾敼鐢?AI/skill 鏂规杈呭姪 |
-| C3 | BF16 鍦烘櫙閫愭潯鏄犲皠楠岃瘉 | 3.11 鈫?鉁?3.11 | 楠岃瘉鎶ュ憡瀹屾垚锛?7.01% 瑕嗙洊锛?|
-| C4 | Qwen3 Decode 鍦烘櫙鏄犲皠琛ュ厖 + 楠岃瘉 | 3.12 鈫?鉁?3.15 (E2E 楠岃瘉) | shape 涓嶅尮閰嶉棶棰樺緟瑙ｅ喅 |
-| C5 | op_mapping 鑷姩鍖栨柟妗?spec | 3.13 | **璋冩暣**锛歍C compile 璺緞涓嶅彲琛岋紝鏀逛负 AI/skill 鏂规 + 鏁欑▼澧炶ˉ |
-
-#### HDY锛圖SV3 涓荤嚎 + HCCL锛?
-
-| # | 妫€鏌ョ偣 | 瀹屾垚鏃ユ湡 | 楠屾敹鏍囧噯 |
-|---|-------|---------|---------|
-| C6 | DSV3 Profiling 绠楀瓙娓呭崟锛歍op-20 鎺掑簭琛?| 3.6 鈫?鉁?3.10 | 琛ㄦ牸杈撳嚭 |
-| 璁＄畻+閫氫俊铻嶅悎纭 | 鏌?DSV3 Profiling 璁＄畻+閫氫俊铻嶅悎绫?kernel Type | 3.6 鈫?鉁?3.6 | **缁撹**锛欴ispatchFFNCombine 鍗?35.3%锛堣 A3 缁撹锛?|
-| C9 | HCCL 鏁版嵁閲囬泦鏂规锛歚generate_comm_microbench.py` 瀹炵幇 | 3.10 鈫?鉁?3.11 | 鑴氭湰閲嶆瀯瀹屾垚锛堝崟 session + 鍏ㄥ眬棰勭儹锛?|
-| C7 | DSV3 W8A8 op_mapping 鎵╁睍 | 3.12 鈫?鉁?3.11 | op_mapping 瑕嗙洊 DSV3 Top-15 |
-| C8 | W8A8 閲忓寲鍦烘櫙鏄犲皠楠岃瘉 | 3.13 鈫?鉁?3.11 | 楠岃瘉鎶ュ憡瀹屾垚锛?8.02% 瑕嗙洊锛?|
-| C10 | HCCL 闆嗙兢鏁版嵁閲囬泦锛? 绉嶉€氫俊绠楀瓙 x 鍚?topology_tier锛?| 3.13 鈫?馃攧 閮ㄥ垎瀹屾垚 | CSV 宸蹭骇鍑猴紙tier=1/2锛夛紱tier=0 闇€澶氳妭鐐圭幆澧冿紙瑙?搂C10 鍚庣画璁″垝锛?|
-
-**鎻掑€?override 鏍囨敞**锛氬垎鏋?op_mapping 鏃堕『渚跨‘璁ゅ悇 kernel_type 鏄惁闇€瑕佹彃鍊肩壒娈婂鐞嗭紙`interpolation_policy.kernel_overrides`锛夈€傞鏈熺粨鏋滐細浠?FusedInferAttentionScore 闇€瑕?sqrt 鍙樻崲锛屽叾浣欑畻瀛愬潎閫傜敤榛樿绾挎€ф彃鍊笺€?
-
-**鍙屼汉浜ゅ弶楠岃瘉**锛歓ZY review HDY鐨?DSV3 鏄犲皠锛孒DY review ZZY鐨?Qwen3 鏄犲皠銆?
+**说明**：`_lookup_attention()` 由TCX实现（任务 D2），提交 PR 后ZH review 并合入。
 
 ---
 
-### 浠诲姟 D锛氭暟鎹噰闆嗗伐鍏烽摼 + Attention + 鎻掑€硷紙TCX锛?00%锛?
+### 任务 C：op_mapping 系统化验证（ZZY + HDY，各 100%）
 
-**鐩爣**锛氶獙璇佹暟鎹В鏋愬伐鍏?+ 瀹炵幇 Attention 鏌ヨ + 瀹炵幇鍩虹鎻掑€?+ 绠楀瓙鍙戠幇宸ュ叿銆?
+**目标**：系统性验证已有 op_mapping 映射，补充 DSV3 Decode W8A8 场景映射。这是端到端精度的**核心瓶颈** — 映射错误直接导致算子 MISS。
 
-**鑳屾櫙**锛氬綋鍓?7 涓伐鍏蜂腑鍙湁 `parse_kernel_details.py` 瀹屾暣锛?42 琛岋級锛屽叾浠?6 涓槸 stub銆侫ttention (`FusedInferAttentionScore`) 鏄?Prefill 涓欢杩熸渶楂樼殑鍗曠畻瀛愶紙~100us+锛夛紝瀵圭鍒扮绮惧害褰卞搷鏈€澶э紙绌垮埡鎶ュ憡 搂4.1锛夈€傛彃鍊兼槸瀹炵敤鎬х殑鍏抽敭鐡堕锛堢┛鍒烘姤鍛?S-17锛夈€?
+**背景**：穿刺阶段建立了 60+ 条映射，但仅在 Qwen3 BF16 Prefill 上验证。DSV3 Decode 有 10+ 个新 kernel type 需要映射（QuantBatchMatmulV3, GroupedMatmul, DequantSwigluQuant 等）。
 
-**淇敼鑼冨洿**锛?
-- `tools/perf_data_collection/parse_kernel_details.py`, `operator coverage check tool`
-- `tensor_cast/performance_model/perf_database/profiling_data_source.py`锛坄_lookup_attention()` 鏂规硶锛?
+**参考**：
+- **映射方法论**：`tutorial/OP_PLUGIN_MAPPING_TUTORIAL.md`（正向/反向映射操作手册 + 速查表）
+- **映射格式**：设计文档 §4.5（op_mapping.yaml 规格）
+- **映射示例**：`examples/op_mapping_example.yaml`
+- **算子分级**：设计文档 §7.1-§7.2（Tier 1/2/3 + 占比数据）
+
+**修改范围**：`perf_database/data/ATLAS_800_A3_752T_128G_DIE/vllm_ascend/v0.13.0/op_mapping.yaml`
+
+**验证方法论**（每条映射的验证步骤）：
+1. 从 Profiling 提取 kernel Type 及其 Input Shapes / Data Types
+2. 用 analytic 模式跑 TC，导出 dispatch trace，找到对应的 TC op 及其 args shapes
+3. 按 `tutorial/OP_PLUGIN_MAPPING_TUTORIAL.md` §6-7 确认 TC op → kernel Type 的映射链
+4. 对比 TC args shapes 与 Profiling Input Shapes，记录差异（batch 维度、FRACTAL_NZ、padding 等）
+5. 确认差异可被 `profiling_data_source.py` 的通用规则处理（穿刺报告 §3.1 八类差异）
+
+#### ZZY（Qwen3 主线）
+
+| # | 检查点 | 完成日期 | 验收标准 |
+|---|-------|---------|---------|
+| C1 | Qwen3 Profiling 算子清单：Top-20 (Type, 调用次数, 耗时占比) | 3.9 → ✅ 3.10 | 表格输出 |
+| C2 | TC dispatch trace 导出 | 3.9 → ✅ 3.10 | **发现**：TC compile 路径不可行用于 op_mapping 验证，改用 AI/skill 方案辅助 |
+| C3 | BF16 场景逐条映射验证 | 3.11 → ✅ 3.11 | 验证报告完成（97.01% 覆盖） |
+| C4 | Qwen3 Decode 场景映射补充 + 验证 | 3.12 → ✅ 3.15 (E2E 验证) | shape 不匹配问题待解决 |
+| C5 | op_mapping 自动化方案 spec | 3.13 | **调整**：TC compile 路径不可行，改为 AI/skill 方案 + 教程增补 |
+
+#### HDY（DSV3 主线 + HCCL）
+
+| # | 检查点 | 完成日期 | 验收标准 |
+|---|-------|---------|---------|
+| C6 | DSV3 Profiling 算子清单：Top-20 排序表 | 3.6 → ✅ 3.10 | 表格输出 |
+| 计算+通信融合确认 | 查 DSV3 Profiling 计算+通信融合类 kernel Type | 3.6 → ✅ 3.6 | **结论**：DispatchFFNCombine 占 35.3%（见 A3 结论） |
+| C9 | HCCL 数据采集方案：`generate_comm_microbench.py` 实现 | 3.10 → ✅ 3.11 | 脚本重构完成（单 session + 全局预热） |
+| C7 | DSV3 W8A8 op_mapping 扩展 | 3.12 → ✅ 3.11 | op_mapping 覆盖 DSV3 Top-15 |
+| C8 | W8A8 量化场景映射验证 | 3.13 → ✅ 3.11 | 验证报告完成（98.02% 覆盖） |
+| C10 | HCCL 集群数据采集（4 种通信算子 x 各 topology_tier） | 3.13 → 🔄 部分完成 | CSV 已产出（tier=1/2）；tier=0 需多节点环境（见 §C10 后续计划） |
+
+**插值 override 标注**：分析 op_mapping 时顺便确认各 kernel_type 是否需要插值特殊处理（`interpolation_policy.kernel_overrides`）。预期结果：仅 FusedInferAttentionScore 需要 sqrt 变换，其余算子均适用默认线性插值。
+
+**双人交叉验证**：ZZY review HDY的 DSV3 映射，HDY review ZZY的 Qwen3 映射。
+
+---
+
+### 任务 D：数据采集工具链 + Attention + 插值（TCX，100%）
+
+**目标**：验证数据解析工具 + 实现 Attention 查询 + 实现基础插值 + 算子发现工具。
+
+**背景**：当前 7 个工具中只有 `parse_kernel_details.py` 完整（342 行），其他 6 个是 stub。Attention (`FusedInferAttentionScore`) 是 Prefill 中延迟最高的单算子（~100us+），对端到端精度影响最大（穿刺报告 §4.1）。插值是实用性的关键瓶颈（穿刺报告 S-17）。
+
+**修改范围**：
+- `tools/perf_data_collection/parse_kernel_details.py`, `discover_operators.py`
+- `tensor_cast/performance_model/perf_database/profiling_data_source.py`（`_lookup_attention()` 方法）
 - `tensor_cast/performance_model/perf_database/interpolating_data_source.py`
 
-**鍙傝€?*锛?
-- Attention锛氳璁℃枃妗?搂4.8锛團usedAttention 鐗规畩澶勭悊锛夈€佺┛鍒烘姤鍛?搂4.1
-- 鎻掑€硷細璁捐鏂囨。 搂4.4锛圛nterpolatingDataSource锛夈€丄I Configurator 瀹炵幇锛坄src/aiconfigurator/sdk/perf_database.py` 鎻掑€兼柟娉曪級
+**参考**：
+- Attention：设计文档 §4.8（FusedAttention 特殊处理）、穿刺报告 §4.1
+- 插值：设计文档 §4.4（InterpolatingDataSource）、AI Configurator 实现（`src/aiconfigurator/sdk/perf_database.py` 插值方法）
 
-| # | 妫€鏌ョ偣 | 瀹屾垚鏃ユ湡 | 楠屾敹鏍囧噯 |
+| # | 检查点 | 完成日期 | 验收标准 |
 |---|-------|---------|---------|
-| D1 | `parse_kernel_details.py` 楠岃瘉 | 3.6 鈫?鉁?| 杈撳嚭 CSV 涓?db-spike 宸叉湁鏁版嵁涓€鑷?|
-| D2 | `_lookup_attention()` 瀹炵幇 | 3.10 鈫?鉁?3.13 | 鏀拺 microbench 闂涓?|
-| D3 | InterpolatingDataSource 鍩虹鐗?| 3.12 鈫?鉁?3.13 (鍚?sqrt 鍙樻崲) | |
-| D4 | `operator coverage check tool` | 3.13 | |
+| D1 | `parse_kernel_details.py` 验证 | 3.6 → ✅ | 输出 CSV 与 db-spike 已有数据一致 |
+| D2 | `_lookup_attention()` 实现 | 3.10 → ✅ 3.13 | 支撑 microbench 问题中 |
+| D3 | InterpolatingDataSource 基础版 | 3.12 → ✅ 3.13 (含 sqrt 变换) | |
+| D4 | `discover_operators.py` | 3.13 | |
 
-**D2 Attention 鏌ヨ瀹炵幇瑕佺偣**锛堣璁℃枃妗?搂4.8锛夛細
-- 浠?`OpInvokeInfo.args[6]`锛坰eq_lens锛夎绠?`batch_size = len(seq_lens)` 鍜?`avg_seq_len = mean(seq_lens)`
-- 浠?`OpInvokeInfo.args[0]`锛坬uery tensor锛夋彁鍙?`num_heads`, `head_dim`
-- FIA CSV 绱㈠紩缁村害锛歚(batch_size, avg_seq_len, num_heads, head_dim, dtype)`
-- 鍖哄垎 PA锛圥agedAttention, decode, seq_lens 闀匡級鍜?FA锛團lashAttention, prefill, query_lens 闀匡級
-- 鎻愪氦 PR 鍚庣敱ZH review 骞跺悎鍏?`profiling_data_source.py`
+**D2 Attention 查询实现要点**（设计文档 §4.8）：
+- 从 `OpInvokeInfo.args[6]`（seq_lens）计算 `batch_size = len(seq_lens)` 和 `avg_seq_len = mean(seq_lens)`
+- 从 `OpInvokeInfo.args[0]`（query tensor）提取 `num_heads`, `head_dim`
+- FIA CSV 索引维度：`(batch_size, avg_seq_len, num_heads, head_dim, dtype)`
+- 区分 PA（PagedAttention, decode, seq_lens 长）和 FA（FlashAttention, prefill, query_lens 长）
+- 提交 PR 后由ZH review 并合入 `profiling_data_source.py`
 
-**D3 鎻掑€煎疄鐜拌鐐?*锛堝弬鑰?AI Configurator + 璁捐鏂囨。 搂4.4锛夛細
-- Wrapper 妯″紡鍖呰 ProfilingDataSource锛氱簿纭懡涓?鈫?鐩存帴杩斿洖锛屾湭鍛戒腑 鈫?鎻掑€?
-- **閫氱敤鎻掑€奸€昏緫锛堜笉闇€瑕?per-operator 缁村害澹版槑锛?*锛歞type+format 绮剧‘鍖归厤锛堝凡鍦?ProfilingDataSource 瀹炵幇锛夛紝shape 缁村害鍋氭渶杩戦偦鎼滅储 + 绾挎€ф彃鍊?
-- 璇诲彇 `op_mapping.yaml` 鐨?`interpolation_policy.kernel_overrides` 搴旂敤鐗规畩鍙樻崲锛堝綋鍓嶄粎 FIA 闇€瑕?sqrt锛?
-- 鎻愪氦 PR 鍚庣敱ZH review 骞跺悎鍏?`perf_database/`
+**D3 插值实现要点**（参考 AI Configurator + 设计文档 §4.4）：
+- Wrapper 模式包装 ProfilingDataSource：精确命中 → 直接返回，未命中 → 插值
+- **通用插值逻辑（不需要 per-operator 维度声明）**：dtype+format 精确匹配（已在 ProfilingDataSource 实现），shape 维度做最近邻搜索 + 线性插值
+- 读取 `op_mapping.yaml` 的 `interpolation_policy.kernel_overrides` 应用特殊变换（当前仅 FIA 需要 sqrt）
+- 提交 PR 后由ZH review 并合入 `perf_database/`
 
 ---
 
-### Phase 1 閲岀▼纰戯紙3.13锛?
+### Phase 1 里程碑（3.13）
 
-**蹇呰揪浜や粯鐗?*锛?
+**必达交付物**：
 
-| 浜や粯鐗?| 楠屾敹鏍囧噯 | 璐熻矗浜?|
+| 交付物 | 验收标准 | 负责人 |
 |-------|---------|--------|
-| CLI `--performance-model profiling` | 绔埌绔彲杩愯 | XJT |
-| `_lookup_comm()` | 鍗曞厓娴嬭瘯閫氳繃 | ZH |
-| `_lookup_composite()` | matmul_all_reduce 鍒嗚В閫氳繃 | ZH |
-| `_lookup_attention()` | Qwen3 Prefill FIA 鍛戒腑 | TCX 鈫?ZH review |
-| InterpolatingDataSource 鍩虹鐗?| 绾挎€ф彃鍊煎彲鐢?| TCX 鈫?ZH review |
-| op_mapping 楠岃瘉鎶ュ憡锛圦wen3 BF16锛?| 瑕嗙洊 Top-15 | ZZY |
-| op_mapping 鎵╁睍锛圖SV3 W8A8锛?| 瑕嗙洊 Top-15 | HDY |
-| HCCL 鏁版嵁 | 闆嗙兢閲囬泦瀹屾垚 | HDY |
-| 铻嶅悎 Pass merge + MC2 楠岃瘉 | 鍗曞厓娴嬭瘯閫氳繃 | XJT |
+| CLI `--performance-model profiling` | 端到端可运行 | XJT |
+| `_lookup_comm()` | 单元测试通过 | ZH |
+| `_lookup_composite()` | matmul_all_reduce 分解通过 | ZH |
+| `_lookup_attention()` | Qwen3 Prefill FIA 命中 | TCX → ZH review |
+| InterpolatingDataSource 基础版 | 线性插值可用 | TCX → ZH review |
+| op_mapping 验证报告（Qwen3 BF16） | 覆盖 Top-15 | ZZY |
+| op_mapping 扩展（DSV3 W8A8） | 覆盖 Top-15 | HDY |
+| HCCL 数据 | 集群采集完成 | HDY |
+| 融合 Pass merge + MC2 验证 | 单元测试通过 | XJT |
 
-**Mini 绔埌绔獙璇侊紙3.13锛屽叏鍛橈級**锛?
+**Mini 端到端验证（3.13，全员）**：
 
-鐢ㄥ凡鏈夋暟鎹窇 Qwen3-32B Prefill 绔埌绔紝璁板綍锛?
+用已有数据跑 Qwen3-32B Prefill 端到端，记录：
 
-| 鎸囨爣 | 璁板綍鍐呭 |
+| 指标 | 记录内容 |
 |------|---------|
-| 鍛戒腑鐜?| HIT / MISS / FALLBACK 鍚勫灏?|
-| Fallback 绠楀瓙鑰楁椂鍗犳瘮 | 鍝簺绠楀瓙璧颁簡 analytic fallback锛屽崰绔埌绔櫨鍒嗘瘮 |
-| 宸插尮閰嶇畻瀛愯宸?| 涓?Profiling 瀹炴祴瀵规瘮 |
-| 绔埌绔垵濮嬭宸?| 鍏佽杩滆秴 15%锛岄噸鐐规毚闇茬郴缁熸€ч棶棰?|
+| 命中率 | HIT / MISS / FALLBACK 各多少 |
+| Fallback 算子耗时占比 | 哪些算子走了 analytic fallback，占端到端百分比 |
+| 已匹配算子误差 | 与 Profiling 实测对比 |
+| 端到端初始误差 | 允许远超 15%，重点暴露系统性问题 |
 
-**Go/No-Go**锛氳嫢 >50% 绠楀瓙 MISS 鎴?fallback 鍗犳瘮 >30%锛孭hase 2 浼樺厛绾ч渶閲嶆帓銆?
+**Go/No-Go**：若 >50% 算子 MISS 或 fallback 占比 >30%，Phase 2 优先级需重排。
 
-### Phase 1 E2E 闆嗘垚楠岃瘉缁撴灉锛?.15锛?
+### Phase 1 E2E 集成验证结果（3.15）
 
-Phase 1 E2E v2 闆嗘垚娴嬭瘯瀹屾垚锛孏O/NO-GO: **GO**銆?
+Phase 1 E2E v2 集成测试完成，GO/NO-GO: **GO**。
 
-| 鍦烘櫙 | M2: Fused Op HR (GO/NO-GO) | M3: Fused (涓嶅惈 zc) |
+| 场景 | M2: Fused Op HR (GO/NO-GO) | M3: Fused (不含 zc) |
 |------|---------------------------|---------------------|
 | Qwen3 Prefill (nq=10, ql=4104, tp=16, BF16) | **63.3%** (19/30) | 31.2% (5/16) |
 | Qwen3 Decode (nq=16, ql=1, cl=4096, tp=16, BF16) | **70.0%** (21/30) | 43.8% (7/16) |
 | DSv3 Prefill (nq=1, ql=256, tp=8, dp=2, ep=16, W8A8) | **38.6%** (17/44) | 12.9% (4/31) |
 | DSv3 Decode (nq=16, ql=1, cl=4096, tp=8, dp=2, ep=16, W8A8) | **40.9%** (18/44) | 16.1% (5/31) |
 
-**鍏抽敭鍙戠幇**:
-- DFC 铻嶅悎 gap 鍗?DSv3 ~40% 寤惰繜锛圥0 浼樺厛绾э級
-- FIA CSV 鏍煎紡涓嶅尮閰嶅崰 Qwen3 ~9% 寤惰繜锛圥0 浼樺厛绾э級
-- `_triton_rope` CSV dtype gap (NPU FP32 vs TC BF16) 闃绘 RoPE 鍖归厤
-- TC 涓诲垎鏀渶淇: add_rms_norm2 SP 缁村害 + MLA output quantize shape
+**关键发现**:
+- DFC 融合 gap 占 DSv3 ~40% 延迟（P0 优先级）
+- FIA CSV 格式不匹配占 Qwen3 ~9% 延迟（P0 优先级）
+- `_triton_rope` CSV dtype gap (NPU FP32 vs TC BF16) 阻止 RoPE 匹配
+- TC 主分支需修复: add_rms_norm2 SP 维度 + MLA output quantize shape
 
-璇︾粏鍒嗘瀽瑙?`reports/phase1-e2e-20260314/phase1_e2e_v2_verification_report_zh.md`
+详细分析见 `reports/phase1-e2e-20260314/phase1_e2e_v2_verification_report_zh.md`
 
 ---
 
-## 5.5 C10 鍚庣画璁″垝锛欻CCL 鏁版嵁鍏ュ簱涓庨獙璇?
+## 5.5 C10 后续计划：HCCL 数据入库与验证
 
-> **鑳屾櫙**锛欳10 鍒濇閲囬泦锛?026.3.11锛夊凡浜у嚭 4 涓€氫俊绠楀瓙 CSV锛坅ll_reduce / all_gather / reduce_scatter / all_to_all锛夛紝瑕嗙洊 tier=1锛坕ntra_pod锛?6 鍗★級銆傛暟鎹垎鏋愬彂鐜拌嫢骞茶川閲忛棶棰橈紝闇€鍦?H3 浜ゅ弶楠岃瘉鍓嶅畬鎴愪慨澶嶅拰琛ラ噰銆?
+> **背景**：C10 初次采集（2026.3.11）已产出 4 个通信算子 CSV（all_reduce / all_gather / reduce_scatter / all_to_all），覆盖 tier=1（intra_pod，16 卡）。数据分析发现若干质量问题，需在 H3 交叉验证前完成修复和补采。
 
-### 鏁版嵁璐ㄩ噺鐜扮姸
+### 数据质量现状
 
-| 鏂囦欢 | 琛屾暟 | 闂 |
+| 文件 | 行数 | 问题 |
 |------|------|------|
-| `hcom_allReduce_.csv` | 22锛堥噸澶嶏級 | 涓ゆ torchrun append锛岄渶鍘婚噸锛?MB/256MB/512MB 鏈夊紓甯稿€?|
-| `hcom_allGather_.csv` | 11 | 4KB/16KB 楂樺欢杩燂紙HCCL JIT 鍒濆鍖栵級锛?MB/4MB 鍋忔參 |
-| `hcom_reduceScatter_.csv` | 10 | 缂?512MB锛?KB/16MB 寮傚父 |
-| `hcom_allToAll_.csv` | 11 | 鏂囦欢鍚嶉敊璇紙搴斾负 `hcom_alltoallv_.csv`锛夛紱4KB/16KB 楂樺欢杩?|
+| `hcom_allReduce_.csv` | 22（重复） | 两次 torchrun append，需去重；1MB/256MB/512MB 有异常值 |
+| `hcom_allGather_.csv` | 11 | 4KB/16KB 高延迟（HCCL JIT 初始化）；1MB/4MB 偏慢 |
+| `hcom_reduceScatter_.csv` | 10 | 缺 512MB；4KB/16MB 异常 |
+| `hcom_allToAll_.csv` | 11 | 文件名错误（应为 `hcom_alltoallv_.csv`）；4KB/16KB 高延迟 |
 
-**鏍规湰鍘熷洜**锛氭棫鑴氭湰姣忎釜 op 鐙珛 torchrun锛孒CCL 姣忔閲嶆柊鍒濆鍖栵紝灏忔秷鎭懡涓?JIT 缂栬瘧寮€閿€銆?
+**根本原因**：旧脚本每个 op 独立 torchrun，HCCL 每次重新初始化，小消息命中 JIT 编译开销。
 
-### 鑴氭湰淇锛堝凡瀹屾垚锛宑ommit f16a6ac锛?
+### 脚本修复（已完成，commit f16a6ac）
 
-| 淇椤?| 璇存槑 |
+| 修复项 | 说明 |
 |--------|------|
-| 鍗?session 杩愯 | 鎵€鏈?op + message_sizes 鍚堝苟涓轰竴娆?torchrun锛孒CCL 鍙垵濮嬪寲涓€娆?|
-| 鍏ㄥ眬棰勭儹 | 姣忎釜 (op, group) 鍏堣窇涓€娆?1KB 瑙﹀彂 HCCL JIT 缂栬瘧锛屽啀寮€濮嬫寮忚鏃?|
-| WARMUP_ITERS 10鈫?0 | 姣忎釜 message_size 鐨勯鐑疆娆″姞鍊?|
-| tier=2 瑕嗙洊 | 鏂板 `--num-devices 2`锛岄噰闆?die_level锛堝悓 node 鍐?2 鍗★級鏁版嵁 |
-| 鏂囦欢鍚嶄慨姝?| `_OP_TO_CSV_FILENAME` 鏄犲皠 `all_to_all 鈫?hcom_alltoallv_.csv` |
+| 单 session 运行 | 所有 op + message_sizes 合并为一次 torchrun，HCCL 只初始化一次 |
+| 全局预热 | 每个 (op, group) 先跑一次 1KB 触发 HCCL JIT 编译，再开始正式计时 |
+| WARMUP_ITERS 10→20 | 每个 message_size 的预热轮次加倍 |
+| tier=2 覆盖 | 新增 `--num-devices 2`，采集 die_level（同 node 内 2 卡）数据 |
+| 文件名修正 | `_OP_TO_CSV_FILENAME` 映射 `all_to_all → hcom_alltoallv_.csv` |
 
-### 鍚庣画浠诲姟娓呭崟
+### 后续任务清单
 
-| # | 浠诲姟 | 璐熻矗浜?| 鎴 | 楠屾敹鏍囧噯 |
+| # | 任务 | 负责人 | 截止 | 验收标准 |
 |---|------|--------|------|---------|
-| C10-1 | 閲嶆柊閲囬泦锛歚bash run_comm_bench.sh ./hccl_data_v2`锛堝崟 session锛屽惈 tier=2锛?| HDY | 3.14 | 4 涓?CSV锛屾瘡涓?22 琛岋紙11 sizes 脳 2 tiers锛夛紝鏃犻噸澶嶈 |
-| C10-2 | 鏁版嵁鍏ュ簱锛氬皢 CSV 鏀惧叆 `data/ATLAS_800_A3_752T_128G_DIE/hccl/v8.5/`锛堝搴?`communication_data_ref: "../../hccl/v8.5/"`锛?| HDY | 3.14 | ProfilingDataSource `_lookup_comm` 鑳藉懡涓?|
-| C10-3 | 鍐掔儫楠岃瘉锛歚pytest tests/perf_database/ -k comm -v` | HDY | 3.14 | 閫氫俊鏌ヨ鍗曞厓娴嬭瘯閫氳繃 |
-| H3 | HCCL Test 浜ゅ弶楠岃瘉锛氱敤 hccl_test 宸ュ叿瀵圭浉鍚?message_sizes 璺戜竴閬嶏紝涓?Python benchmark 瀵规瘮 | HDY | 3.18 | 鍋忓樊 <10%锛涢噸鐐归獙璇?1MB/256MB/512MB 寮傚父鐐?|
-| C10-4锛堝彲閫夛級| tier=0锛坕nter_pod锛夋暟鎹噰闆嗭細闇€澶氳妭鐐癸紙>16 鍗★級鐜 | HDY | 瑙嗚祫婧?| 鏈夊鑺傜偣璧勬簮鏃惰ˉ閲?|
+| C10-1 | 重新采集：`bash run_comm_bench.sh ./hccl_data_v2`（单 session，含 tier=2） | HDY | 3.14 | 4 个 CSV，每个 22 行（11 sizes × 2 tiers），无重复行 |
+| C10-2 | 数据入库：将 CSV 放入 `data/ATLAS_800_A3_752T_128G_DIE/hccl/v8.5/`（对应 `communication_data_ref: "../../hccl/v8.5/"`） | HDY | 3.14 | ProfilingDataSource `_lookup_comm` 能命中 |
+| C10-3 | 冒烟验证：`pytest tests/perf_database/ -k comm -v` | HDY | 3.14 | 通信查询单元测试通过 |
+| H3 | HCCL Test 交叉验证：用 hccl_test 工具对相同 message_sizes 跑一遍，与 Python benchmark 对比 | HDY | 3.18 | 偏差 <10%；重点验证 1MB/256MB/512MB 异常点 |
+| C10-4（可选）| tier=0（inter_pod）数据采集：需多节点（>16 卡）环境 | HDY | 视资源 | 有多节点资源时补采 |
 
-### 鏁版嵁鍏ュ簱璺緞
+### 数据入库路径
 
 ```
 tensor_cast/performance_model/perf_database/data/
-鈹斺攢鈹€ ATLAS_800_A3_752T_128G_DIE/
-    鈹溾攢鈹€ vllm_ascend/vllm0.15.0_torch2.9.0_cann8.5/
-    鈹?  鈹斺攢鈹€ op_mapping.yaml  鈫?communication_data_ref: "../../hccl/v8.5/"
-    鈹斺攢鈹€ hccl/
-        鈹斺攢鈹€ v8.5/            鈫?鏂板缓鐩綍锛屾斁 4 涓?CSV
-            鈹溾攢鈹€ hcom_allReduce_.csv
-            鈹溾攢鈹€ hcom_allGather_.csv
-            鈹溾攢鈹€ hcom_reduceScatter_.csv
-            鈹斺攢鈹€ hcom_alltoallv_.csv
+└── ATLAS_800_A3_752T_128G_DIE/
+    ├── vllm_ascend/vllm0.15.0_torch2.9.0_cann8.5/
+    │   └── op_mapping.yaml  ← communication_data_ref: "../../hccl/v8.5/"
+    └── hccl/
+        └── v8.5/            ← 新建目录，放 4 个 CSV
+            ├── hcom_allReduce_.csv
+            ├── hcom_allGather_.csv
+            ├── hcom_reduceScatter_.csv
+            └── hcom_alltoallv_.csv
 ```
 
-### 寮傚父鍊煎鐞嗙瓥鐣?
+### 异常值处理策略
 
-閲嶆柊閲囬泦鍚庤嫢浠嶆湁寮傚父鍊硷紙鍗曟娴嬮噺鎶栧姩锛夛紝澶勭悊浼樺厛绾э細
-1. **H3 浜ゅ弶楠岃瘉**锛氱敤 hccl_test 纭鐪熷疄鍊硷紝浠?hccl_test 缁撴灉涓哄噯瑕嗙洊寮傚父琛?
-2. **InterpolatingDataSource**锛氬紓甯稿€间細琚彃鍊煎钩婊戯紝瀵圭鍒扮绮惧害褰卞搷鏈夐檺
-3. **tier=0 缂哄け**锛氬綋鍓?DSV3 TP=4 EP=8 鐨?all_to_all 璧?tier=0锛屾殏鏃?fallback analytic锛岀瓑澶氳妭鐐硅祫婧?
+重新采集后若仍有异常值（单次测量抖动），处理优先级：
+1. **H3 交叉验证**：用 hccl_test 确认真实值，以 hccl_test 结果为准覆盖异常行
+2. **InterpolatingDataSource**：异常值会被插值平滑，对端到端精度影响有限
+3. **tier=0 缺失**：当前 DSV3 TP=4 EP=8 的 all_to_all 走 tier=0，暂时 fallback analytic，等多节点资源
 
 ---
 
-## 5.6 C11锛欴ispatchFFNCombine 瀛愬唴鏍告暟鎹噰闆嗭紙v3.1 鏂板锛?
+## 5.6 C11：DispatchFFNCombine 子内核数据采集（v3.1 新增）
 
-> **鑳屾櫙**锛欳ANN 8.5 寮曞叆 DispatchFFNCombine 瓒呯骇铻嶅悎绠楀瓙锛岃瀺鍚?`all_to_all脳2 + GroupedMatmul脳2 + SwiGlu + MoE routing`锛屽崰 DSV3 Decode **35.3%**銆傚綋鍓?op_mapping 宸查厤缃?`composite: true` 鍒嗚В锛屼絾瀛愬唴鏍?CSV 鏁版嵁涓嶅叏銆?
+> **背景**：CANN 8.5 引入 DispatchFFNCombine 超级融合算子，融合 `all_to_all×2 + GroupedMatmul×2 + SwiGlu + MoE routing`，占 DSV3 Decode **35.3%**。当前 op_mapping 已配置 `composite: true` 分解，但子内核 CSV 数据不全。
 
-| # | 浠诲姟 | 璐熻矗浜?| 鎴 | 楠屾敹鏍囧噯 |
+| # | 任务 | 负责人 | 截止 | 验收标准 |
 |---|------|--------|------|---------|
-| C11-1 | 纭 DispatchFFNCombine 瀛愬唴鏍稿垪琛?+ 鐜版湁 CSV 瑕嗙洊鎯呭喌 | HDY | 3.13 | 瀛愬唴鏍告竻鍗?+ 缂哄彛鎶ュ憡 |
-| C11-2 | 缂哄け瀛愬唴鏍?CSV 鏁版嵁閲囬泦锛圙roupedMatmulSwigluQuant, MoeDistributeDispatch/CombineV2, hcom_alltoallv_锛?| HDY | 3.18 | CSV 鍏ュ簱 |
-| C11-3 | DispatchFFNCombine composite 鍒嗚В绔埌绔獙璇?| ZH | 3.19 | 璇樊 <20% |
+| C11-1 | 确认 DispatchFFNCombine 子内核列表 + 现有 CSV 覆盖情况 | HDY | 3.13 | 子内核清单 + 缺口报告 |
+| C11-2 | 缺失子内核 CSV 数据采集（GroupedMatmulSwigluQuant, MoeDistributeDispatch/CombineV2, hcom_alltoallv_） | HDY | 3.18 | CSV 入库 |
+| C11-3 | DispatchFFNCombine composite 分解端到端验证 | ZH | 3.19 | 误差 <20% |
 
-> **娉?*锛欳11-1 鎴鏃ユ湡鎻愬墠鑷?3.13锛屼綔涓?Phase 1 E2E 楠岃瘉鐨勫墠缃潯浠躲€傝嫢瀛愬唴鏍?CSV 鏁版嵁鍏呭垎锛宑omposite 鍒嗚В鍗冲彲瑕嗙洊锛涜嫢涓嶅厖鍒嗭紝Phase 2 闇€璇勪及 TC 渚ц瀺鍚?pass 鍙鎬э紙LJW F1锛夈€?
-
----
-
-## 6. Phase 2锛氭暟鎹墿鍏?+ 铻嶅悎 Pass + DSV3 娣卞害鍖归厤锛?.16-3.20锛? 涓伐浣滄棩锛?
-
-**鐩爣**锛歁icrobenchmark 鏁版嵁鎵╁厖 + KvRmsNormRopeCache Pass + DSV3 MoE/MLA 鍖归厤 + Attention 鎻掑€煎崌绾?+ DSV3 mini 楠岃瘉銆?
+> **注**：C11-1 截止日期提前至 3.13，作为 Phase 1 E2E 验证的前置条件。若子内核 CSV 数据充分，composite 分解即可覆盖；若不充分，Phase 2 需评估 TC 侧融合 pass 可行性（LJW F1）。
 
 ---
 
-### 浠诲姟 E锛歁icrobenchmark + Attention 鍗囩骇锛圱CX锛?
+## 6. Phase 2：数据扩充 + 融合 Pass + DSV3 深度匹配（3.16-3.20，5 个工作日）
 
-**鍙傝€?*锛氳璁℃枃妗?搂6.1-搂6.4锛堟暟鎹簱鏋勫缓涓夋璧帮級銆伮?.2锛堣绠楃畻瀛?Microbenchmark锛夈€伮?.4锛團usedAttention Microbenchmark锛?
+**目标**：Microbenchmark 数据扩充 + KvRmsNormRopeCache Pass + DSV3 MoE/MLA 匹配 + Attention 插值升级 + DSV3 mini 验证。
 
-| # | 妫€鏌ョ偣 | 瀹屾垚鏃ユ湡 | 楠屾敹鏍囧噯 |
+---
+
+### 任务 E：Microbenchmark + Attention 升级（TCX）
+
+**参考**：设计文档 §6.1-§6.4（数据库构建三步走）、§6.2（计算算子 Microbenchmark）、§6.4（FusedAttention Microbenchmark）
+
+| # | 检查点 | 完成日期 | 验收标准 |
 |---|-------|---------|---------|
-| E1 | `generate_shape_grid.py`锛氭寜 kernel_type 鍒嗘淳鐢熸垚閫昏緫锛圙EMM: 妯″瀷 N/K + M 缃戞牸; Attention: 妯″瀷 heads + batch脳seq 缃戞牸; Elementwise: 妯″瀷 hidden + num_tokens 缃戞牸锛? powers-of-2 琛ュ厖 | 鉁?宸插畬鎴?(Phase 1 涓彁鍓嶅畬鎴? | Qwen3 + DSV3 shape 缃戞牸瑕嗙洊瀹為檯缁村害 |
-| E2 | `microbenchmark generation tool`锛氳 op_mapping.yaml 鐨?torch_npu_reference 鐢熸垚鑴氭湰 | 鉁?宸插畬鎴?(Phase 1 涓彁鍓嶅畬鎴? | 鐢熸垚鐨勮剼鏈娉曟纭?|
-| E3 | 闆嗙兢 Microbenchmark 閲囬泦 + `database build tool` | 3.19 | 姣忎釜 kernel_type CSV 琛屾暟 > Profiling 鍘熷 |
-| E4 | FusedAttention Microbenchmark锛堟瀯閫?paged KV cache 杈撳叆锛?| 3.20 | FIA CSV 瑕嗙洊澶氱 (batch_size, seq_len) 缁勫悎 |
-| E5 | Attention 鎻掑€?sqrt 鍙樻崲锛歄(n^2) 绠楀瓙鎻掑€煎墠鍋?sqrt 绾挎€у寲 | 鉁?宸插畬鎴?(Phase 1 涓彁鍓嶅畬鎴? | 涓嶅悓 seq_len 涓?FIA 鎻掑€艰宸?<20% |
+| E1 | `generate_shape_grid.py`：按 kernel_type 分派生成逻辑（GEMM: 模型 N/K + M 网格; Attention: 模型 heads + batch×seq 网格; Elementwise: 模型 hidden + num_tokens 网格）+ powers-of-2 补充 | ✅ 已完成 (Phase 1 中提前完成) | Qwen3 + DSV3 shape 网格覆盖实际维度 |
+| E2 | `generate_microbench.py`：读 op_mapping.yaml 的 torch_npu_reference 生成脚本 | ✅ 已完成 (Phase 1 中提前完成) | 生成的脚本语法正确 |
+| E3 | 集群 Microbenchmark 采集 + `build_database.py` | 3.19 | 每个 kernel_type CSV 行数 > Profiling 原始 |
+| E4 | FusedAttention Microbenchmark（构造 paged KV cache 输入） | 3.20 | FIA CSV 覆盖多种 (batch_size, seq_len) 组合 |
+| E5 | Attention 插值 sqrt 变换：O(n^2) 算子插值前做 sqrt 线性化 | ✅ 已完成 (Phase 1 中提前完成) | 不同 seq_len 下 FIA 插值误差 <20% |
 
 ---
 
-### 浠诲姟 F锛氳瀺鍚?Pass锛圠JW锛?00%锛?.17 璧凤級
+### 任务 F：融合 Pass（LJW，100%，3.17 起）
 
-**鐩爣**锛氳瘎浼?DispatchFFNCombine TC 渚ц瀺鍚堝彲琛屾€э紱鑻ュ彲琛屽垯瀹炵幇 pass锛屽惁鍒欎緷璧?composite 鍒嗚В鍏滃簳銆?
+**目标**：评估 DispatchFFNCombine TC 侧融合可行性；若可行则实现 pass，否则依赖 composite 分解兜底。
 
-**鑳屾櫙鍙樻洿锛坴3.1锛?*锛?
-- ~~KvRmsNormRopeCache pass~~锛?*涓嶅啀闇€瑕?*锛坢lapo op 宸茶鐩栵紝绌垮埡楠岃瘉 3f82c2b锛?
-- DispatchFFNCombine 鎴愪负 CANN 8.5 鏈€楂樹紭鍏堢骇铻嶅悎闇€姹傦紙35.3% DSV3锛?
-- LJW 鎺ユ浛 XJT锛?.17 璧锋姇鍏?
+**背景变更（v3.1）**：
+- ~~KvRmsNormRopeCache pass~~：**不再需要**（mlapo op 已覆盖，穿刺验证 3f82c2b）
+- DispatchFFNCombine 成为 CANN 8.5 最高优先级融合需求（35.3% DSV3）
+- LJW 接替 XJT，3.17 起投入
 
-**鍙傝€冨疄鐜?*锛?
-- 妯″紡鍙傝€冿細`compilation/patterns/rms_norm.py`锛?44 琛岋級+ `freezing_passes/grouped_matmul_swiglu_pass.py`锛?04 琛岋級
-- DispatchFFNCombine 铻嶅悎浜?`all_to_all脳2 + GroupedMatmul脳2 + SwiGlu + MoE routing`
-- 闇€鑾峰彇璐哄崥鐨勮秴绾ц瀺鍚堢畻瀛愯璁℃枃妗ｏ紙3.12 绔欎細寰呭姙锛?
+**参考实现**：
+- 模式参考：`compilation/patterns/rms_norm.py`（544 行）+ `freezing_passes/grouped_matmul_swiglu_pass.py`（204 行）
+- DispatchFFNCombine 融合了 `all_to_all×2 + GroupedMatmul×2 + SwiGlu + MoE routing`
+- 需获取贺博的超级融合算子设计文档（3.12 站会待办）
 
-| # | 妫€鏌ョ偣 | 瀹屾垚鏃ユ湡 | 楠屾敹鏍囧噯 |
+| # | 检查点 | 完成日期 | 验收标准 |
 |---|-------|---------|---------|
-| F1 | DispatchFFNCombine 鍙鎬ц瘎浼?+ 璁捐鏂囨。 | 3.18 | 璇勪及鎶ュ憡锛堝仛/涓嶅仛 + 鐞嗙敱锛?|
-| F2 | 锛堟潯浠舵€э級DispatchFFNCombine pass 瀹炵幇 | 3.20 | 鍗曞厓娴嬭瘯閫氳繃 |
+| F1 | DispatchFFNCombine 可行性评估 + 设计文档 | 3.18 | 评估报告（做/不做 + 理由） |
+| F2 | （条件性）DispatchFFNCombine pass 实现 | 3.20 | 单元测试通过 |
 
-**MoeGatingTopK**锛歈1 涓嶅仛 pass锛岀敤 op_mapping composite 鎴?analytic fallback 鍏滃簳銆俀2 琛?pass銆?
+**MoeGatingTopK**：Q1 不做 pass，用 op_mapping composite 或 analytic fallback 兜底。Q2 补 pass。
 
 ---
 
-### 浠诲姟 G锛歁oE/MLA 鍖归厤锛圸H锛?
+### 任务 G：MoE/MLA 匹配（ZH）
 
-**鍙傝€?*锛氳璁℃枃妗?搂4.2锛坈omposite 鏌ヨ + MLA 鍒嗚В锛?
+**参考**：设计文档 §4.2（composite 查询 + MLA 分解）
 
-**鍓嶇疆渚濊禆**锛歁oE/MLA spec锛圸H璧疯崏 3.12锛孒XW review锛?
+**前置依赖**：MoE/MLA spec（ZH起草 3.12，HXW review）
 
-| # | 妫€鏌ョ偣 | 瀹屾垚鏃ユ湡 | 楠屾敹鏍囧噯 |
+| # | 检查点 | 完成日期 | 验收标准 |
 |---|-------|---------|---------|
-| G1 | MoE 绠楀瓙鍖归厤锛歁oeGatingTopK, MoeDistributeDispatch/CombineV2 | 鉁?宸插畬鎴?(Phase 1 E2E 涓畬鎴? op + CSV + mapping) | 鍗曞厓娴嬭瘯 |
-| G2 | MLA 鍒嗚В鏌ヨ瀹屽杽锛氬尯鍒?Prefill/Decode 瀛愬唴鏍?shape锛堣璁℃枃妗?搂4.2 MLA 鍒嗚В琛級 | 3.20 | 鍗曞厓娴嬭瘯 |
+| G1 | MoE 算子匹配：MoeGatingTopK, MoeDistributeDispatch/CombineV2 | ✅ 已完成 (Phase 1 E2E 中完成, op + CSV + mapping) | 单元测试 |
+| G2 | MLA 分解查询完善：区分 Prefill/Decode 子内核 shape（设计文档 §4.2 MLA 分解表） | 3.20 | 单元测试 |
 
 ---
 
-### 浠诲姟 H锛欴SV3 娣卞害鍒嗘瀽 + 楠岃瘉宸ュ叿锛圸ZY + HDY + TCX锛?
+### 任务 H：DSV3 深度分析 + 验证工具（ZZY + HDY + TCX）
 
-| # | 璐熻矗浜?| 妫€鏌ョ偣 | 瀹屾垚鏃ユ湡 | 楠屾敹鏍囧噯 |
+| # | 负责人 | 检查点 | 完成日期 | 验收标准 |
 |---|-------|-------|---------|---------|
-| H1 | HDY | DSV3 Decode Profiling 閫愬眰鑰楁椂鍒嗘瀽 | 3.16 | 鍒嗘瀽鎶ュ憡 |
-| H2 | ZZY | TC vs Profiling 绠楀瓙瀵归綈琛紙Qwen3 + DSV3锛?| 3.18 | 瀵归綈琛ㄦ牸锛堝尮閰?涓嶅尮閰?鍘熷洜锛?|
-| H3 | HDY | HCCL Test 浜ゅ弶楠岃瘉 | 3.18 | Python benchmark 涓?hccl_test 鍋忓樊 <10%锛堣 搂C10 鍚庣画璁″垝锛?|
-| H4 | ZZY | 鏈鐩栫畻瀛愬垎鏋?+ 鑰楁椂褰卞搷璇勪及 | 3.20 | 缂哄彛娓呭崟 + 浼樺厛绾ф帓搴?|
-| H5 | TCX | `database validation tool`锛氶€愮畻瀛?+ 绔埌绔簿搴︽姤鍛婅緭鍑?| 3.20 | 绮惧害鎶ュ憡鍙緭鍑?|
+| H1 | HDY | DSV3 Decode Profiling 逐层耗时分析 | 3.16 | 分析报告 |
+| H2 | ZZY | TC vs Profiling 算子对齐表（Qwen3 + DSV3） | 3.18 | 对齐表格（匹配/不匹配/原因） |
+| H3 | HDY | HCCL Test 交叉验证 | 3.18 | Python benchmark 与 hccl_test 偏差 <10%（见 §C10 后续计划） |
+| H4 | ZZY | 未覆盖算子分析 + 耗时影响评估 | 3.20 | 缺口清单 + 优先级排序 |
+| H5 | TCX | `validate.py`：逐算子 + 端到端精度报告输出 | 3.20 | 精度报告可输出 |
 
-### Phase 2 妫€鏌ョ偣锛?.19 Review + 3.20 鏀跺熬锛?
+### Phase 2 检查点（3.19 Review + 3.20 收尾）
 
-| 浜や粯鐗?| 楠屾敹鏍囧噯 | 璐熻矗浜?|
+| 交付物 | 验收标准 | 负责人 |
 |-------|---------|--------|
-| 鎵╁厖 CSV 鏁版嵁搴?| shape 瑕嗙洊 > Profiling 鍘熷 | TCX |
-| FIA Microbenchmark + sqrt 鎻掑€?| 澶氱 batch/seq + 璇樊 <20% | TCX |
-| database validation tool | 绮惧害鎶ュ憡鍙緭鍑?| TCX |
-| DispatchFFNCombine 鍙鎬ц瘎浼帮紙+ 鏉′欢鎬?pass锛?| 璇勪及鎶ュ憡 / 鍗曞厓娴嬭瘯閫氳繃 | LJW |
-| DSV3 MoE/MLA 鍖归厤 | 鍗曞厓娴嬭瘯閫氳繃 | ZH |
-| DSV3 瀵归綈鍒嗘瀽 | 瀵归綈琛ㄦ牸 + 缂哄彛娓呭崟 | ZZY + HDY |
+| 扩充 CSV 数据库 | shape 覆盖 > Profiling 原始 | TCX |
+| FIA Microbenchmark + sqrt 插值 | 多种 batch/seq + 误差 <20% | TCX |
+| validate.py | 精度报告可输出 | TCX |
+| DispatchFFNCombine 可行性评估（+ 条件性 pass） | 评估报告 / 单元测试通过 | LJW |
+| DSV3 MoE/MLA 匹配 | 单元测试通过 | ZH |
+| DSV3 对齐分析 | 对齐表格 + 缺口清单 | ZZY + HDY |
 
-**DSV3 Mini 楠岃瘉**锛?.19锛夛細鍚?Phase 1 鏍煎紡锛岃鐩?DSV3 Decode 鍦烘櫙銆?
+**DSV3 Mini 验证**（3.19）：同 Phase 1 格式，覆盖 DSV3 Decode 场景。
 
-### Phase 2 鏂板浠诲姟锛圗2E 鍙戠幇锛?
+### Phase 2 新增任务（E2E 发现）
 
-| # | 妫€鏌ョ偣 | 璐熻矗浜?| 瀹屾垚鏃ユ湡 | 楠屾敹鏍囧噯 |
+| # | 检查点 | 负责人 | 完成日期 | 验收标准 |
 |---|--------|--------|---------|---------|
-| P-E2E-1 | RoPE dtype 瀹芥澗鍖归厤 (_triton_rope CSV FLOAT vs TC BF16) | 寰呭畾 | 3.18 | Qwen3 Prefill RoPE HIT |
-| P-E2E-2 | quantize/norm Microbenchmark shape 缃戞牸 (DSv3 M脳D 缂哄け缁勫悎) | TCX | 3.19 | AscendQuantV2 CSV 瑕嗙洊 DSv3 decode/prefill shapes |
-| P-E2E-3 | MoE routing 杈呭姪 ops CSV (TopKV2, ReduceSum, Sigmoid, etc.) | TCX | 3.19 | DSv3 MoE routing ops 鍏ㄩ噺 CSV |
+| P-E2E-1 | RoPE dtype 宽松匹配 (_triton_rope CSV FLOAT vs TC BF16) | 待定 | 3.18 | Qwen3 Prefill RoPE HIT |
+| P-E2E-2 | quantize/norm Microbenchmark shape 网格 (DSv3 M×D 缺失组合) | TCX | 3.19 | AscendQuantV2 CSV 覆盖 DSv3 decode/prefill shapes |
+| P-E2E-3 | MoE routing 辅助 ops CSV (TopKV2, ReduceSum, Sigmoid, etc.) | TCX | 3.19 | DSv3 MoE routing ops 全量 CSV |
 
-**Phase 2 浼樺厛绾ц皟鏁达紙鍩轰簬 E2E 鍙戠幇锛?*:
-1. **P0**: DFC TC fusion pass (DSv3 ~40% 寤惰繜) 鈥?LJW
-2. **P0**: FIA microbench CSV 鏍煎紡 (Qwen3 ~9% 寤惰繜) 鈥?ZZY
-3. **P0**: MLA/MLAPO composite shape 淇 (DSv3 ~3-5%) 鈥?ZH
+**Phase 2 优先级调整（基于 E2E 发现）**:
+1. **P0**: DFC TC fusion pass (DSv3 ~40% 延迟) — LJW
+2. **P0**: FIA microbench CSV 格式 (Qwen3 ~9% 延迟) — ZZY
+3. **P0**: MLA/MLAPO composite shape 修复 (DSv3 ~3-5%) — ZH
 
-**TC 涓诲垎鏀緷璧?*:
-- add_rms_norm2 SP 缁村害 (TC 鏈 seq dim 闄や互 TP)
-- MLA output quantize shape 涓嶄竴鑷?(3D per-head vs 2D hidden)
+**TC 主分支依赖**:
+- add_rms_norm2 SP 维度 (TC 未对 seq dim 除以 TP)
+- MLA output quantize shape 不一致 (3D per-head vs 2D hidden)
 
 ---
 
-## 7. Phase 3锛氱鍒扮绮惧害楠岃瘉锛?.19-3.23锛? 涓伐浣滄棩锛?
+## 7. Phase 3：端到端精度验证（3.19-3.23，3 个工作日）
 
-**鐩爣**锛氱鍒扮绮惧害 <15%锛屼氦浠樼簿搴︽姤鍛娿€?
+**目标**：端到端精度 <15%，交付精度报告。
 
-> **璇存槑**锛歅hase 3 涓?Phase 2 灏鹃儴鏈?1 澶╅噸鍙狅紙3.19-3.20锛夛紝ZH鍜孹JT鍙湪 3.19 Phase 2 Review 鍚庣洿鎺ュ惎鍔ㄧ鍒扮楠岃瘉銆?
+> **说明**：Phase 3 与 Phase 2 尾部有 1 天重叠（3.19-3.20），ZH和XJT可在 3.19 Phase 2 Review 后直接启动端到端验证。
 
-| # | 妫€鏌ョ偣 | 瀹屾垚鏃ユ湡 | 璐熻矗浜?| 楠屾敹鏍囧噯 |
+| # | 检查点 | 完成日期 | 负责人 | 验收标准 |
 |---|-------|---------|--------|---------|
-| J1 | Qwen3-32B 绔埌绔獙璇侊紙Prefill + Decode锛?| 3.20 | ZH + XJT | 璇樊 <15%, 瑕嗙洊 >90% |
-| J2 | DSV3 绔埌绔獙璇侊紙Decode, MoE + MLA锛?| 3.20 | HDY + XJT | 璇樊 <15%, 瑕嗙洊 >90% |
-| J3 | 绮惧害闂瀹氫綅 + 淇 | 3.23 | ZZY鍒嗘瀽 + ZH/TCX淇 | 琛ユ暟鎹?淇槧灏?璋冩彃鍊?|
-| J4 | 绮惧害鎬绘姤鍛?| 3.23 | 鍏ㄥ憳 | 浜や粯 |
+| J1 | Qwen3-32B 端到端验证（Prefill + Decode） | 3.20 | ZH + XJT | 误差 <15%, 覆盖 >90% |
+| J2 | DSV3 端到端验证（Decode, MoE + MLA） | 3.20 | HDY + XJT | 误差 <15%, 覆盖 >90% |
+| J3 | 精度问题定位 + 修复 | 3.23 | ZZY分析 + ZH/TCX修复 | 补数据/修映射/调插值 |
+| J4 | 精度总报告 | 3.23 | 全员 | 交付 |
 
 ---
 
-## 8. 椋庨櫓涓庣紦瑙?
+## 8. 风险与缓解
 
-| # | 椋庨櫓 | 褰卞搷 | 姒傜巼 | 缂撹В鎺柦 |
+| # | 风险 | 影响 | 概率 | 缓解措施 |
 |---|------|------|------|---------|
-| R1 | 闆嗙兢璧勬簮涓嶈冻 | E3/C10 寤惰繜 | 涓?| 3.10 鍓嶉绾︼紱Phase 1 鐢ㄧ幇鏈?Profiling 鏁版嵁 |
-| R2 | KvRmsNormRopeCache Pass 姣旈鏈熷鏉?| F1 寤舵湡 | 浣?| op_mapping composite 鍏滃簳锛涙湁 RmsNorm+RoPE 鐜版垚 pattern 鍙傝€?|
-| R3 | DSV3 MoE/MLA 鏄犲皠澶嶆潅 | G1/G2 寤舵湡 | 涓?| 绌垮埡宸查獙璇侀€氱敤閫昏緫锛汬DY鍏ㄨ亴 DSV3 鍒嗘瀽闄嶄綆涓嶇‘瀹氭€?|
-| R4 | Attention 鍖归厤绮惧害涓嶈冻 | 绔埌绔宸秴鏍?| 涓?| FIA.csv 宸叉湁 67 琛岋紱E4 琛?Microbenchmark锛汦5 sqrt 鎻掑€?|
-| R5 | 绔埌绔簿搴?<15% 闅捐揪鍒?| Phase 3 璋冧紭鏈熶笉瓒?| 楂?| **鏍稿績缂撹В**锛歅hase 1/2 鍚勫仛 mini 楠岃瘉鎻愬墠鏆撮湶闂 |
-| R6 | op_mapping 閿欒鑷寸郴缁熸€?MISS | 鍖归厤鐜囦笅闄?| 涓?| 鍙屼汉浜ゅ弶 review锛沝iscover_operators 妫€娴嬭鐩栫巼 |
-| R7 | 閫氫俊鍗犳瘮楂樹絾绮惧害涓嶈冻锛圦wen3 89.8%锛?| Qwen3 璇樊瓒呮爣 | 涓?| Phase 1 mini 楠岃瘉纭 CommAnalytic 绮惧害 |
-| R8 | ZH 50% 瀵艰嚧 Phase 2 DataSource 杩涘害涓嶈冻 | G1/G2 寤舵湡 | 涓?| TCX鎵挎媴 attention+鎻掑€煎噺杞籞H璐熸媴锛汳oE/MLA spec 鎻愬墠鍑嗗 |
-| R9 | ~~XJT琚叾浠栭」鐩嫋浣弤~ | ~~A2 寤舵湡褰卞搷鍏ㄩ槦~~ | ~~涓瓇~ | **宸插叧闂?*锛欰1/A2/A3 宸插畬鎴愶紝XJT鈫扡JW 浜ゆ帴 |
-| R10 | 鍗曠畻瀛愪笌鏁寸綉绠楀瓙鑰楁椂 gap | Microbenchmark 鏁版嵁鏃犳硶鐩存帴鍙嶆槧鏁寸綉鍦烘櫙锛?.12 TCX 鎻愬嚭锛?| 楂?| Phase 1 mini 楠岃瘉鏆撮湶宸窛锛汿CX 璋冪爺瑙ｅ喅鏂规锛涘繀瑕佹椂寮曞叆鏍℃鍥犲瓙 |
-| R11 | CANN 8.5 DispatchFFNCombine 瑕嗙洊涓嶈冻 | DSV3 35.3% 鑰楁椂鏃犳硶鍖归厤 | 楂?| C11 瀛愬唴鏍告暟鎹噰闆?+ composite 鍒嗚В鍏滃簳锛汱JW F1 璇勪及 TC 铻嶅悎鍙鎬?|
-| R12 | LJW 涓婃墜鍛ㄦ湡 | 鏂颁汉闇€ 2-3 澶╃啛鎮変唬鐮?| 涓?| XJT 浜ゆ帴 + 鐜版湁 compile pass 浠ｇ爜鍙傝€冧赴瀵?|
-| R13 | _triton_rope CSV dtype gap (NPU FP32 vs TC BF16) | Qwen3 RoPE 鏃犳硶 HIT | 浣?| Phase 2 dtype 瀹芥澗鍖归厤 (~10 琛? |
-| R14 | TC 涓诲垎鏀?SP/MLA 淇渚濊禆 | Qwen3/DSv3 norm+quantize MISS | 涓?| 宸叉彁 Issue锛岄渶 TC 涓诲垎鏀帓鏈?|
+| R1 | 集群资源不足 | E3/C10 延迟 | 中 | 3.10 前预约；Phase 1 用现有 Profiling 数据 |
+| R2 | KvRmsNormRopeCache Pass 比预期复杂 | F1 延期 | 低 | op_mapping composite 兜底；有 RmsNorm+RoPE 现成 pattern 参考 |
+| R3 | DSV3 MoE/MLA 映射复杂 | G1/G2 延期 | 中 | 穿刺已验证通用逻辑；HDY全职 DSV3 分析降低不确定性 |
+| R4 | Attention 匹配精度不足 | 端到端误差超标 | 中 | FIA.csv 已有 67 行；E4 补 Microbenchmark；E5 sqrt 插值 |
+| R5 | 端到端精度 <15% 难达到 | Phase 3 调优期不足 | 高 | **核心缓解**：Phase 1/2 各做 mini 验证提前暴露问题 |
+| R6 | op_mapping 错误致系统性 MISS | 匹配率下降 | 中 | 双人交叉 review；discover_operators 检测覆盖率 |
+| R7 | 通信占比高但精度不足（Qwen3 89.8%） | Qwen3 误差超标 | 中 | Phase 1 mini 验证确认 CommAnalytic 精度 |
+| R8 | ZH 50% 导致 Phase 2 DataSource 进度不足 | G1/G2 延期 | 中 | TCX承担 attention+插值减轻ZH负担；MoE/MLA spec 提前准备 |
+| R9 | ~~XJT被其他项目拖住~~ | ~~A2 延期影响全队~~ | ~~中~~ | **已关闭**：A1/A2/A3 已完成，XJT→LJW 交接 |
+| R10 | 单算子与整网算子耗时 gap | Microbenchmark 数据无法直接反映整网场景（3.12 TCX 提出） | 高 | Phase 1 mini 验证暴露差距；TCX 调研解决方案；必要时引入校正因子 |
+| R11 | CANN 8.5 DispatchFFNCombine 覆盖不足 | DSV3 35.3% 耗时无法匹配 | 高 | C11 子内核数据采集 + composite 分解兜底；LJW F1 评估 TC 融合可行性 |
+| R12 | LJW 上手周期 | 新人需 2-3 天熟悉代码 | 中 | XJT 交接 + 现有 compile pass 代码参考丰富 |
+| R13 | _triton_rope CSV dtype gap (NPU FP32 vs TC BF16) | Qwen3 RoPE 无法 HIT | 低 | Phase 2 dtype 宽松匹配 (~10 行) |
+| R14 | TC 主分支 SP/MLA 修复依赖 | Qwen3/DSv3 norm+quantize MISS | 中 | 已提 Issue，需 TC 主分支排期 |
 
 ---
 
-## 闄勫綍 A锛氬垎鏀瓥鐣?
+## 附录 A：分支策略
 
 ```
-develop (绋冲畾涓荤嚎)
+develop (稳定主线)
   |
-  +-- feat/perf-database (浠?db-spike 鍒涘缓)
+  +-- feat/perf-database (从 db-spike 创建)
         |
-        +-- LJW: feat/perf-db-compiler (鎺ユ浛 XJT)
+        +-- LJW: feat/perf-db-compiler (接替 XJT)
         +-- ZH:   feat/perf-db-datasource
         +-- TCX: feat/perf-db-toolchain
         +-- ZZY: feat/perf-db-op-mapping
         +-- HDY: feat/perf-db-op-mapping-dsv3
 ```
 
-**鎿嶄綔姝ラ**锛?
-- Step 1锛?.6锛孒XW锛夛細鍒涘缓 feat/perf-database锛岀‘璁ゆ祴璇曢€氳繃
-- Step 2锛?.6-3.9锛屽悇璐熻矗浜猴級锛氭媺涓汉鍒嗘敮
-- Step 3锛?.23锛孒XW锛夛細feat/perf-database PR 鍥?develop
+**操作步骤**：
+- Step 1（3.6，HXW）：创建 feat/perf-database，确认测试通过
+- Step 2（3.6-3.9，各负责人）：拉个人分支
+- Step 3（3.23，HXW）：feat/perf-database PR 回 develop
 
 ---
 
-## 闄勫綍 B锛氬弬鑰冪储寮?
+## 附录 B：参考索引
 
-姣忎釜浠诲姟娑夊強鐨勮璁℃枃妗?鏁欑▼绔犺妭閫熸煡锛?
+每个任务涉及的设计文档/教程章节速查：
 
-| 浠诲姟 | 璁捐鏂囨。绔犺妭 | 鍏朵粬鍙傝€?|
+| 任务 | 设计文档章节 | 其他参考 |
 |------|------------|---------|
-| A1-A2 CLI | 搂5.1-搂5.3 | 鈥?|
-| A3 铻嶅悎 Pass | 搂9.1 | `compilation/freezing_passes/patterns/matmul_allreduce.py` |
-| B1 閫氫俊鏌ヨ | 搂4.2, 搂4.4, 搂4.7 | `examples/comm_config_example.yaml` |
-| B2 Composite | 搂4.2 (composite + MLA 鍒嗚В) | `performance_model/__init__.py` (shape 鎺ㄥ) |
-| C1-C8 op_mapping | 搂4.5, 搂7.1-搂7.2 | `tutorial/OP_PLUGIN_MAPPING_TUTORIAL.md`, `examples/op_mapping_example.yaml` |
-| C9-C10 HCCL | 搂6.3 | HCCL Test 鏂囨。 |
-| D1 瑙ｆ瀽 | 搂6.5 | 鈥?|
-| D2 Attention | 搂4.8 | 绌垮埡鎶ュ憡 搂4.1 |
-| D3 鎻掑€?| 搂4.4 | AI Configurator `perf_database.py` 鎻掑€兼柟娉?|
-| D4 鍙戠幇 | 搂6.6 | 鈥?|
-| E1-E4 Microbench | 搂6.1-搂6.4 | 鈥?|
-| F1 KvRmsNormRopeCache | 搂9.1 | `compilation/patterns/rms_norm.py`, `patterns/rotary_embedding.py` |
-| G1-G2 MoE/MLA | 搂4.2 | 鈥?|
+| A1-A2 CLI | §5.1-§5.3 | — |
+| A3 融合 Pass | §9.1 | `compilation/freezing_passes/patterns/matmul_allreduce.py` |
+| B1 通信查询 | §4.2, §4.4, §4.7 | `examples/comm_config_example.yaml` |
+| B2 Composite | §4.2 (composite + MLA 分解) | `performance_model/__init__.py` (shape 推导) |
+| C1-C8 op_mapping | §4.5, §7.1-§7.2 | `tutorial/OP_PLUGIN_MAPPING_TUTORIAL.md`, `examples/op_mapping_example.yaml` |
+| C9-C10 HCCL | §6.3 | HCCL Test 文档 |
+| D1 解析 | §6.5 | — |
+| D2 Attention | §4.8 | 穿刺报告 §4.1 |
+| D3 插值 | §4.4 | AI Configurator `perf_database.py` 插值方法 |
+| D4 发现 | §6.6 | — |
+| E1-E4 Microbench | §6.1-§6.4 | — |
+| F1 KvRmsNormRopeCache | §9.1 | `compilation/patterns/rms_norm.py`, `patterns/rotary_embedding.py` |
+| G1-G2 MoE/MLA | §4.2 | — |
 
 ---
 
-## 闄勫綍 C锛氳繘灞曠鐞嗙粏鍒?
+## 附录 C：进展管理细则
 
-### 椋炰功鏃ユ姤
+### 飞书日报
 
-姣忎汉姣忓ぉ 18:00 鍓嶆洿鏂帮紝妯℃澘锛?
+每人每天 18:00 前更新，模板：
 
 ```
-銆愭棩鎶ャ€戝鍚?鏃ユ湡
+【日报】姓名 日期
 
-瀹屾垚锛?
-- [浠诲姟 ID] 鍏蜂綋瀹屾垚鍐呭
+完成：
+- [任务 ID] 具体完成内容
 
-杩涜涓細
-- [浠诲姟 ID] 杩涘睍鎻忚堪
+进行中：
+- [任务 ID] 进展描述
 
-闃诲锛?
-- 鏃?/ 鎻忚堪闃诲鍘熷洜鍜岄渶瑕佽皝甯姪
+阻塞：
+- 无 / 描述阻塞原因和需要谁帮助
 
-椋庨櫓淇″彿锛?
-- 鏃?/ 鎻忚堪鍙戠幇鐨勬綔鍦ㄩ棶棰?
+风险信号：
+- 无 / 描述发现的潜在问题
 
-鏄庢棩璁″垝锛?
-- [浠诲姟 ID] 璁″垝鍋氫粈涔?
+明日计划：
+- [任务 ID] 计划做什么
 ```
 
-**瑙勫垯**锛?
-- "闃诲"= 鎴戞棤娉曠户缁帹杩涳紝闇€瑕佸閮ㄥ府鍔?
-- "椋庨櫓淇″彿"= 鎴戣兘缁х画浣嗗彂鐜颁簡娼滃湪闂
-- 杩炵画 2 澶╁悓涓€浠诲姟鏃犺繘灞曚笖鏃犻樆濉烇紝SE 涓诲姩璇㈤棶
+**规则**：
+- "阻塞"= 我无法继续推进，需要外部帮助
+- "风险信号"= 我能继续但发现了潜在问题
+- 连续 2 天同一任务无进展且无阻塞，SE 主动询问
 
-### DIMA 鐪嬫澘
+### DIMA 看板
 
-鎸?Phase 鍒?Swimlane锛屾瘡涓鏌ョ偣涓€寮犲崱鐗囥€傚繀濉瓧娈碉細Owner銆丏ue Date銆丼tatus锛圱o Do / In Progress / Review / Done / Blocked锛夈€?
+按 Phase 分 Swimlane，每个检查点一张卡片。必填字段：Owner、Due Date、Status（To Do / In Progress / Review / Done / Blocked）。
 
-### 绔欎細瑙勫垯
+### 站会规则
 
-- 涓ユ牸 15 鍒嗛挓锛屾瘡浜?2 鍒嗛挓
-- **鍙洖绛斾袱涓棶棰?*锛?) 鏈夐樆濉為渶瑕佸府鍔╁悧锛?) 鍙戠幇椋庨櫓淇″彿浜嗗悧锛?
-- 鎵€鏈変汉閮藉洖绛?鏃?鈫?3 鍒嗛挓鏁ｄ細
+- 严格 15 分钟，每人 2 分钟
+- **只回答两个问题**：1) 有阻塞需要帮助吗？2) 发现风险信号了吗？
+- 所有人都回答"无"→ 3 分钟散会
 
-### Review 鑺傜偣
+### Review 节点
 
-| 鏃堕棿 | 褰㈠紡 | 鍐呭 |
+| 时间 | 形式 | 内容 |
 |------|------|------|
-| **3.13** | Review 浼?1h | Phase 1 mini 绔埌绔粨鏋?+ Phase 2 浼樺厛绾ц皟鏁?|
-| **3.19** | Review 浼?1h | DSV3 mini 楠岃瘉 + Phase 3 go/no-go |
-| **3.23** | Review 浼?1h | 绮惧害鎶ュ憡 Review |
-
+| **3.13** | Review 会 1h | Phase 1 mini 端到端结果 + Phase 2 优先级调整 |
+| **3.19** | Review 会 1h | DSV3 mini 验证 + Phase 3 go/no-go |
+| **3.23** | Review 会 1h | 精度报告 Review |

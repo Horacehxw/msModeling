@@ -1,12 +1,12 @@
-﻿---
+---
 name: weekly-report
-description: Generate Chinese weekly report (鍛ㄦ姤) from work plan, design doc, and daily standup notes
+description: Generate Chinese weekly report (周报) from work plan, design doc, and daily standup notes
 version: 1.1.0
 source: local-session-analysis
 analyzed_commits: 4
 ---
 
-# Weekly Report Generation Skill (鍛ㄦ姤)
+# Weekly Report Generation Skill (周报)
 
 Generate a Chinese weekly report summarizing team progress, risks, and next steps for the perf-database project.
 
@@ -19,9 +19,9 @@ Generate a Chinese weekly report summarizing team progress, risks, and next step
 
 - Updated work plan (`docs/perf_database/WORK_PLAN_Q1.md`)
 - Updated design doc (`docs/perf_database/OPERATOR_PERF_DATABASE_DESIGN_zh_v*.md`)
-- Daily standup notes (鏃ユ姤) for the reporting week
-- Previous weekly report (if exists): `D:\File\hxw-鍗庝负\铓傝殎浠跨湡鍣ㄩ」鐩甛鍛ㄦ姤\鍛ㄦ姤_{YYYYMMDD}.md`
-- Weekly report template: `D:\File\hxw-鍗庝负\铓傝殎浠跨湡鍣ㄩ」鐩甛鍛ㄦ姤\鍛ㄦ姤妯℃澘.txt`
+- Daily standup notes (日报) for the reporting week
+- Previous weekly report (if exists): `D:\File\hxw-华为\蚂蚁仿真器项目\周报\周报_{YYYYMMDD}.md`
+- Weekly report template: `D:\File\hxw-华为\蚂蚁仿真器项目\周报\周报模板.txt`
 
 ## Audience & Tone
 
@@ -32,9 +32,9 @@ Generate a Chinese weekly report summarizing team progress, risks, and next step
 4. **What** might go wrong and what help is needed (risks/blockers)
 
 **Writing principles**:
-- Lead each delivery goal with a brief **> 鑳屾櫙** block explaining the goal in plain language
+- Lead each delivery goal with a brief **> 背景** block explaining the goal in plain language
 - Summarize by **functional milestone**, not by individual PRs or task IDs
-- Use task IDs (A1, C3, etc.) sparingly 鈥?only when referencing work plan items for traceability, not as primary structure
+- Use task IDs (A1, C3, etc.) sparingly — only when referencing work plan items for traceability, not as primary structure
 - Prefer concrete numbers (coverage %, error ratios, checkpoint counts) over vague descriptions
 - Keep each bullet to 1-2 sentences; avoid implementation details (code paths, class names)
 - A reader should understand each bullet WITHOUT reading the design doc or work plan
@@ -49,9 +49,9 @@ Read the most recent weekly report to understand baseline and avoid repeating un
 
 Launch parallel reads of:
 
-1. **Work plan**: `docs/perf_database/WORK_PLAN_Q1.md` 鈥?extract task status, phase progress, risks
-2. **Design doc**: Latest `OPERATOR_PERF_DATABASE_DESIGN_zh_v*.md` 鈥?extract architecture decisions, gap analysis
-3. **Daily standup notes**: Read all 鏃ユ姤 files for the reporting week (typically Mon-Fri)
+1. **Work plan**: `docs/perf_database/WORK_PLAN_Q1.md` — extract task status, phase progress, risks
+2. **Design doc**: Latest `OPERATOR_PERF_DATABASE_DESIGN_zh_v*.md` — extract architecture decisions, gap analysis
+3. **Daily standup notes**: Read all 日报 files for the reporting week (typically Mon-Fri)
 4. **CHANGELOG** (if generated this week): `docs/perf_database/CHANGELOG_*.md`
 
 ### Step 2b: Gather M1-M6 Metrics (if profiling data available)
@@ -71,20 +71,20 @@ If metrics changed significantly from last week, highlight the delta and root ca
 
 For each Q1 delivery goal:
 
-1. Count completed checkpoints vs total from work plan 鈫?progress %
+1. Count completed checkpoints vs total from work plan → progress %
 2. Identify **3-6 core contributions** that represent meaningful milestones (NOT every small PR/task)
-3. Classify each contribution into a functional category (e.g., 绔埌绔祦绋? 绠楀瓙鏄犲皠瑕嗙洊, 鏁版嵁閲囬泦, 鍏抽敭闂瑙ｅ喅, 鎬ц兘鐡堕瀹氫綅)
+3. Classify each contribution into a functional category (e.g., 端到端流程, 算子映射覆盖, 数据采集, 关键问题解决, 性能瓶颈定位)
 4. For risk items that changed status (new/mitigated/escalated), highlight as a contribution if significant
 
 **What counts as a "core contribution"**:
-- A capability that didn't exist before (e.g., "绔埌绔祦绋嬫墦閫?)
-- A significant coverage/accuracy improvement with numbers (e.g., "瑕嗙洊鐜囦粠 40% 鈫?98%")
+- A capability that didn't exist before (e.g., "端到端流程打通")
+- A significant coverage/accuracy improvement with numbers (e.g., "覆盖率从 40% → 98%")
 - A high-risk item resolved or mitigated
-- A critical bug fix with measurable impact (e.g., "淇 8x 楂樹及闂")
+- A critical bug fix with measurable impact (e.g., "修复 8x 高估问题")
 
 **What to omit**:
 - Routine document updates, code review, minor refactors
-- Task-level details that only matter within the team (e.g., "B2 鏂囨。鍒濈瀹屾垚")
+- Task-level details that only matter within the team (e.g., "B2 文档初稿完成")
 - Work-in-progress items without a clear outcome
 
 ### Step 4: Generate Report
@@ -92,73 +92,73 @@ For each Q1 delivery goal:
 Follow the template structure. The standard format is:
 
 ```markdown
-鍛ㄦ姤锛歿YYYY.M.DD}
+周报：{YYYY.M.DD}
 ---
-銆愪富瑕佽繘灞曘€?
-Q1 浜や粯鐩爣 1锛歿goal description}锛坽quantitative target}锛?
-> 鑳屾櫙锛歿1-2 sentences explaining what this goal is about in plain language}
+【主要进展】
+Q1 交付目标 1：{goal description}（{quantitative target}）
+> 背景：{1-2 sentences explaining what this goal is about in plain language}
 
-- 宸插畬鎴愶細
+- 已完成：
   1. {functional milestone}: {what changed + quantitative result}
-  2. ...锛?-6 items max锛?
-- 鏁翠綋杩涘睍锛氱害 {N}%锛圥hase X {M}/{T} 妫€鏌ョ偣瀹屾垚锛?
+  2. ...（3-6 items max）
+- 整体进展：约 {N}%（Phase X {M}/{T} 检查点完成）
   - {1-sentence summary of status + main gaps}
 
-Q1 浜や粯鐩爣 2锛歿goal description}
-> 鑳屾櫙锛?..
-- 宸插畬鎴愶細
+Q1 交付目标 2：{goal description}
+> 背景：...
+- 已完成：
   1. ...
-- 鏁翠綋杩涘睍锛氱害 {N}%
+- 整体进展：约 {N}%
   - ...
 
 ---
-銆愪笅涓€姝ュ伐浣溿€?
-1. {milestone}锛坽deadline}锛夛細{what + expected outcome}
+【下一步工作】
+1. {milestone}（{deadline}）：{what + expected outcome}
 2. ...
 
 ---
-銆愰闄╂眰鍔┿€?
-1. {risk name}锛坽risk ID}锛寋severity change if any}锛夛細{impact + mitigation status}
+【风险求助】
+1. {risk name}（{risk ID}，{severity change if any}）：{impact + mitigation status}
 2. ...
 ```
 
 ### Step 5: Content Guidelines
 
-**銆愪富瑕佽繘灞曘€憇ection**:
-- Start each delivery goal with a `> 鑳屾櫙` block for non-project readers
+**【主要进展】section**:
+- Start each delivery goal with a `> 背景` block for non-project readers
 - Group by functional milestone, not by person or task ID
-- 3-6 core contributions per goal 鈥?quality over quantity
+- 3-6 core contributions per goal — quality over quantity
 - Include M1-M6 metrics where relevant (see METRICS_GUIDE.md for definitions)
-- Highlight risk status changes inline (e.g., "鍘熼珮椋庨櫓椤癸紝宸茬紦瑙?)
+- Highlight risk status changes inline (e.g., "原高风险项，已缓解")
 - End with progress % and 1-sentence gap summary
 
-**銆愪笅涓€姝ュ伐浣溿€憇ection**:
+**【下一步工作】section**:
 - 3-5 items max, ordered by priority/timeline
 - Each item: milestone name + deadline + expected outcome
 - Person names optional (omit if not relevant to leadership)
 - Focus on next 1-2 weeks
 
-**銆愰闄╂眰鍔┿€憇ection**:
+**【风险求助】section**:
 - Include risk ID from work plan (R10, R11, etc.)
-- Show severity changes (e.g., 楂樷啋宸茬紦瑙? to highlight progress
+- Show severity changes (e.g., 高→已缓解) to highlight progress
 - For mitigated risks: use ~~strikethrough~~ and briefly state the resolution
 - For active risks: describe impact on timeline + what help is needed
-- Order by severity (high 鈫?medium 鈫?low)
+- Order by severity (high → medium → low)
 
 ### Step 6: Save Report
 
-Save to: `D:\File\hxw-鍗庝负\铓傝殎浠跨湡鍣ㄩ」鐩甛鍛ㄦ姤\鍛ㄦ姤_{YYYYMMDD}.md`
+Save to: `D:\File\hxw-华为\蚂蚁仿真器项目\周报\周报_{YYYYMMDD}.md`
 
 (This is a local-only file, NOT committed to git)
 
 ## Privacy Convention
 
 - In git-tracked files: use abbreviations (XJT, LJW, ZH, ZZY, HDY, TCX)
-- In local-only reports (鍛ㄦ姤): abbreviations are also preferred for consistency
+- In local-only reports (周报): abbreviations are also preferred for consistency
 
 ## Quality Checklist
 
-- [ ] Each delivery goal has a `> 鑳屾櫙` block readable by non-project people
+- [ ] Each delivery goal has a `> 背景` block readable by non-project people
 - [ ] Contributions are functional milestones (not task-level items)
 - [ ] 3-6 items per goal, no more
 - [ ] All Q1 delivery goals covered with progress %
@@ -167,4 +167,3 @@ Save to: `D:\File\hxw-鍗庝负\铓傝殎浠跨湡鍣ㄩ」鐩甛鍛ㄦ姤\鍛�
 - [ ] Numbers/metrics are sourced from actual data (not estimated)
 - [ ] A leadership reader can understand every bullet without the work plan
 - [ ] Chinese language throughout (except technical terms)
-
