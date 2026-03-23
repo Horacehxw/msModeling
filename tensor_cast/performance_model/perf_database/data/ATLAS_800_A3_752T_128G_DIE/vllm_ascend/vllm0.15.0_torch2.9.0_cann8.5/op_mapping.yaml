@@ -724,18 +724,20 @@ operator_mappings:
     notes: "Index generation, negligible cost"
 
   "aten.copy_.default":
-    kernel_type: TensorMove
-    tc_input_count: 1
+    zero_cost: true
     notes: >
-      [LOW] op-plugin: CopyKernelNpuOpApi.cpp → aclnnInplaceCopy → TensorMove.
-      Profiling: Qwen3 CANN 8.5 TensorMove(94x).
-      TC has (dst, src); NPU CSV has (src) — tc_input_count=1.
+      [LOW] TC 的 aten.copy_ 是 Python 层显式 copy (1-2次/fwd)，与 NPU profiling 中的
+      TensorMove (Qwen3 PF 1040次, DSv3 PF 7044次) 不是同一来源。NPU 的 TensorMove 来自
+      CANN runtime 插入的格式转换/数据搬运，TC 无法建模。Decode graph mode 下 TensorMove
+      被编译器优化为 0。因此 TC 侧标记 zero_cost。
+      原 mapping: kernel_type=TensorMove, tc_input_count=1.
 
   "aten.copy.default":
-    kernel_type: TensorMove
-    tc_input_count: 1
+    zero_cost: true
     notes: >
-      [LOW] Non-inplace copy variant. Same kernel as copy_.default.
+      [LOW] Non-inplace copy variant. Same rationale as copy_.default — TC 层 copy
+      与 NPU TensorMove 不对应，标记 zero_cost。
+      原 mapping: kernel_type=TensorMove, tc_input_count=1.
 
   # --- Embedding TP row-mode auxiliary ops ---
   # These are TC decomposition artifacts from ParallelEmbedding row mode.
