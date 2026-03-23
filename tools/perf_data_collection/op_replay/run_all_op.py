@@ -1,5 +1,5 @@
 """
-Run all operator replay scripts in the current op_run directory.
+Run all operator replay scripts in the current op_replay directory.
 
 Purpose:
   Discover every *_run.py script next to this file and execute each one with
@@ -32,7 +32,7 @@ def build_argparser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         formatter_class=argparse.RawTextHelpFormatter,
         description=(
-            "Run all operator replay scripts under perf_database/op_run.\n"
+            "Run all operator replay scripts under tools/perf_data_collection/op_replay.\n"
             "Each operator script is executed once with the same device and\n"
             "vllm_ascend version arguments.\n"
             "By default, scripts run in-process so a single outer `msprof`\n"

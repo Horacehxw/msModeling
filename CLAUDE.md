@@ -224,12 +224,12 @@ References: `docs/perf_database/examples/op_mapping_example.yaml`, `docs/perf_da
 | Tool | Purpose |
 |------|---------|
 | `parse_kernel_details.py` | Parse NPU kernel_details.csv → per-kernel CSVs |
-| `discover_operators.py` | Compare Profiling vs op_mapping coverage |
-| `generate_shape_grid.py` | Generate microbenchmark shape grids |
-| `generate_microbench.py` | Generate torch_npu benchmark scripts |
+| `generate_shape_grid.py` | Generate microbenchmark shape grids from CSV mutation |
 | `generate_comm_microbench.py` | Generate HCCL communication benchmarks |
-| `build_database.py` | Build final CSV database from microbenchmark results |
-| `validate.py` | Per-operator + end-to-end accuracy validation |
+| `start_microbench.py` | Run op_replay microbenchmark scripts with msprof |
+| `compute_m6.py` | Compute M6 empirical E2E prediction ratio |
+| `validate_comm_alignment.py` | Validate HCCL microbenchmark CSVs vs CommAnalyticModel |
+| `build_comm_csv.py` | Build communication CSV from HCCL benchmark results |
 
 ## Quantization Framework
 
