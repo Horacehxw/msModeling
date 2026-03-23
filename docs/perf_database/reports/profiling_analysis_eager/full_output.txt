@@ -1,4 +1,4 @@
-
+﻿
 ====================================================================================================
   MODEL: DSv3
 ====================================================================================================
@@ -9,7 +9,7 @@
   Comm: 29,354,783.7 us (55.5%)
   Fused: 22,512,877.4 us (42.6%)
 
-── Per-Scenario Breakdown ──
+鈹€鈹€ Per-Scenario Breakdown 鈹€鈹€
                   scenario     total_us  compute_us  compute_pct     comm_us  comm_pct    fused_us  fused_pct  n_kernels
     profiler_decode_batch1  3848049.210   57137.920     1.484854 2976315.476 77.346087  814595.814  21.169059       7594
    profiler_decode_batch16  8254042.382  176882.730     2.142983 4214060.288 51.054503 3863099.364  46.802514      18550
@@ -20,7 +20,7 @@ profiler_prefill_input1024  5131003.270  101656.654     1.981224 3039989.730 59.
  profiler_prefill_input256  5480593.448   86987.388     1.587189 3413323.106 62.280173 1980282.954  36.132637      11387
 profiler_prefill_input4096  4396709.410  170887.326     3.886710 2241007.456 50.970106 1984814.628  45.143184      14785
 
-── Communication Ops ──
+鈹€鈹€ Communication Ops 鈹€鈹€
                   OP Type category  total_duration_us  pct_of_total  n_invocations  mean_duration_us  std_duration_us
       hcom_reduceScatter_     comm        16088493.72         30.41           5015           3208.07          2729.62
           hcom_allGather_     comm        13160107.46         24.88           9851           1335.92          1377.34
@@ -28,11 +28,11 @@ profiler_prefill_input4096  4396709.410  170887.326     3.886710 2241007.456 50.
 reduce_scatterAicpuKernel     comm           34210.40          0.06            195            175.44            79.30
      allgatherAicpuKernel     comm           13383.32          0.03             73            183.33            99.23
 
-── Fused Comm+Compute Ops ──
+鈹€鈹€ Fused Comm+Compute Ops 鈹€鈹€
            OP Type           category  total_duration_us  pct_of_total  n_invocations  mean_duration_us  std_duration_us
 DispatchFFNCombine comm+compute fused        22512877.39         42.56           4118           5466.94          6289.96
 
-── Compute Ops (top ops covering >=99% of compute time) ──
+鈹€鈹€ Compute Ops (top ops covering >=99% of compute time) 鈹€鈹€
                  OP Type category  total_duration_us  pct_of_total  pct_of_compute  cumul_pct_compute  n_invocations  mean_duration_us  std_duration_us  n_shape_groups  n_groups_with_cv  cv_min  cv_median  cv_max
       QuantBatchMatmulV3  compute        407639.1820        0.7706         39.4290            39.4290          15616           26.1039          11.7416              50                50  0.0049     0.0271  0.0691
                      Neg  compute         91750.0420        0.1734          8.8745            48.3035             38         2414.4748        3291.0663              10                 5  0.7912     1.4105  1.7274
@@ -65,7 +65,7 @@ FusedInferAttentionScore  compute         32162.6360        0.0608          3.11
   Remaining 18 compute op types: 8,737.9 us (0.85% of compute)
   Remaining ops: ArgMaxV2, SoftmaxV2, Index, DSARandomUniform, RealDiv, Mul, GatherV2, Log, Sub, Less, LogicalAnd, LogicalNot, ScatterElementsV2, SelectV2, LinearIndex, Triu, Equal, OnesLike
 
-── Per-Scenario Top Op Breakdown ──
+鈹€鈹€ Per-Scenario Top Op Breakdown 鈹€鈹€
 
   profiler_decode_batch1 (total: 3,848,049.2 us)
                     Type           category   total_us  count  mean_us   pct
@@ -211,7 +211,7 @@ reduce_scatterAicpuKernel               comm   22924.20    130   176.34  0.52
            InterleaveRope            compute    5115.60    244    20.97  0.12
  FusedInferAttentionScore            compute    4195.54    122    34.39  0.10
 
-── CV Detail for Compute Ops ──
+鈹€鈹€ CV Detail for Compute Ops 鈹€鈹€
 
   QuantBatchMatmulV3: 50 shape groups, 50 with CV
                      Input Shapes        Input Data Types    n  mean_us  std_us     cv    total_us
@@ -533,7 +533,7 @@ Input Shapes Input Data Types    n  mean_us  std_us     cv  total_us
   Comm: 43,355,730.5 us (98.4%)
   Fused: 0.0 us (0.0%)
 
-── Per-Scenario Breakdown ──
+鈹€鈹€ Per-Scenario Breakdown 鈹€鈹€
                   scenario     total_us  compute_us  compute_pct      comm_us  comm_pct  fused_us  fused_pct  n_kernels
     profiler_decode_batch1  2234101.182   28931.106     1.294977  2205170.076 98.705023       0.0        0.0       3661
    profiler_decode_batch16  9774411.896  130837.392     1.338570  9643574.504 98.661430       0.0        0.0      16329
@@ -544,7 +544,7 @@ profiler_prefill_input1024  2160827.876   48794.368     2.258133  2112033.508 97
  profiler_prefill_input256  2164437.916   36799.032     1.700166  2127638.884 98.299834       0.0        0.0       3726
 profiler_prefill_input4096  1904896.362   92659.038     4.864256  1812237.324 95.135744       0.0        0.0       3982
 
-── Communication Ops ──
+鈹€鈹€ Communication Ops 鈹€鈹€
                   OP Type category  total_duration_us  pct_of_total  n_invocations  mean_duration_us  std_duration_us
           hcom_allReduce_     comm        42820278.20         97.20          15494           2763.67          1483.12
           hcom_allGather_     comm          255630.38          0.58            251           1018.45           622.74
@@ -552,10 +552,10 @@ profiler_prefill_input4096  1904896.362   92659.038     4.864256  1812237.324 95
      allgatherAicpuKernel     comm           33975.52          0.08            129            263.38           188.32
 reduce_scatterAicpuKernel     comm           28521.81          0.06            129            221.10            73.00
 
-── Fused Comm+Compute Ops ──
+鈹€鈹€ Fused Comm+Compute Ops 鈹€鈹€
   (none)
 
-── Compute Ops (top ops covering >=99% of compute time) ──
+鈹€鈹€ Compute Ops (top ops covering >=99% of compute time) 鈹€鈹€
                  OP Type category  total_duration_us  pct_of_total  pct_of_compute  cumul_pct_compute  n_invocations  mean_duration_us  std_duration_us  n_shape_groups  n_groups_with_cv  cv_min  cv_median  cv_max
                 MatMulV2  compute        294198.5840        0.6678         42.0157            42.0157          15549           18.9207          13.8436              27                24  0.0024     0.0265  0.1252
 FusedInferAttentionScore  compute         98439.9980        0.2234         14.0586            56.0743           3904           25.2152          15.9202              17                17  0.0193     0.0750  0.3425
@@ -581,7 +581,7 @@ FusedInferAttentionScore  compute         98439.9980        0.2234         14.05
   Remaining 15 compute op types: 6,361.8 us (0.91% of compute)
   Remaining ops: GreaterEqual, Tile, GatherV3, Add, Neg, Transpose, Log, GatherV2, ScatterElementsV2, Fill, Sub, Less, LogicalAnd, LogicalNot, LinearIndex
 
-── Per-Scenario Top Op Breakdown ──
+鈹€鈹€ Per-Scenario Top Op Breakdown 鈹€鈹€
 
   profiler_decode_batch1 (total: 2,234,101.2 us)
                     Type category   total_us  count  mean_us   pct
@@ -727,7 +727,7 @@ reduce_scatterAicpuKernel     comm   28521.81    129   221.10  1.50
                     Slice  compute    1729.02    454     3.81  0.09
                      Sort  compute     694.05      3   231.35  0.04
 
-── CV Detail for Compute Ops ──
+鈹€鈹€ CV Detail for Compute Ops 鈹€鈹€
 
   MatMulV2: 27 shape groups, 24 with CV
             Input Shapes Input Data Types    n  mean_us  std_us     cv    total_us
@@ -958,10 +958,10 @@ Exported Qwen3-32B CSVs to /home/horacehxw/Projects/msmodeling-perf-db-profiling
   COMBINED SUMMARY FOR REPORT
 ========================================================================================================================
 
-────────────────────────────────────────────────────────────────────────────────
+鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   DSv3
   Total: 52.902s | Compute: 2.0% | Comm: 55.5% | Fused: 42.6%
-────────────────────────────────────────────────────────────────────────────────
+鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
                   OP Type Category   Total(us)  % Total % Compute  Invocations  Mean(us)    CV Range
       hcom_reduceScatter_     comm 16088493.72    30.41                   5015   3208.07            
           hcom_allGather_     comm 13160107.46    24.88                   9851   1335.92            
@@ -997,10 +997,10 @@ reduce_scatterAicpuKernel     comm    34210.40     0.06                    195  
    PagedCacheLoadNdKernel  compute     2144.97     0.00      0.21          183     11.72 0.061-0.117
                MaskedFill  compute     1840.51     0.00      0.18          109     16.89 0.006-0.156
 
-────────────────────────────────────────────────────────────────────────────────
+鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   Qwen3-32B
   Total: 44.056s | Compute: 1.6% | Comm: 98.4% | Fused: 0.0%
-────────────────────────────────────────────────────────────────────────────────
+鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
                   OP Type Category   Total(us)  % Total % Compute  Invocations  Mean(us)    CV Range
           hcom_allReduce_     comm 42820278.20    97.20                  15494   2763.67            
           hcom_allGather_     comm   255630.38     0.58                    251   1018.45            
@@ -1027,3 +1027,4 @@ reduce_scatterAicpuKernel     comm    28521.81     0.06                    129  
                      Cast  compute     1158.67     0.00      0.17          488      2.37 0.001-0.130
                     Index  compute      942.96     0.00      0.13           93     10.14 0.004-0.264
                       Mul  compute      863.10     0.00      0.12          183      4.72 0.001-0.089
+

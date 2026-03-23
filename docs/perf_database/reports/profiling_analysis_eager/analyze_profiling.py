@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Analyze NPU profiling kernel_details.csv files for DSv3 and Qwen3-32B.
 
 Produces summary tables with comm/compute classification, cumulative coverage,
@@ -89,7 +89,7 @@ def analyze_model(model_name: str, df: pd.DataFrame) -> dict:
 
     results = {}
 
-    # ── Per-scenario breakdown ──
+    # 鈹€鈹€ Per-scenario breakdown 鈹€鈹€
     scenario_rows = []
     for scenario in sorted(df["scenario"].unique()):
         sdf = df[df["scenario"] == scenario]
@@ -110,10 +110,10 @@ def analyze_model(model_name: str, df: pd.DataFrame) -> dict:
         })
     scenario_df = pd.DataFrame(scenario_rows)
     results["scenario_breakdown"] = scenario_df
-    print(f"\n── Per-Scenario Breakdown ──")
+    print(f"\n鈹€鈹€ Per-Scenario Breakdown 鈹€鈹€")
     print(scenario_df.to_string(index=False))
 
-    # ── COMM ops table ──
+    # 鈹€鈹€ COMM ops table 鈹€鈹€
     comm_df = df[df["category"] == "comm"]
     comm_summary = []
     for op_type in sorted(comm_df["Type"].unique()):
@@ -129,7 +129,7 @@ def analyze_model(model_name: str, df: pd.DataFrame) -> dict:
             "std_duration_us": odf["Duration(us)"].std(),
         })
 
-    # ── FUSED ops table ──
+    # 鈹€鈹€ FUSED ops table 鈹€鈹€
     fused_df = df[df["category"] == "comm+compute fused"]
     fused_summary = []
     for op_type in sorted(fused_df["Type"].unique()):
@@ -145,7 +145,7 @@ def analyze_model(model_name: str, df: pd.DataFrame) -> dict:
             "std_duration_us": odf["Duration(us)"].std(),
         })
 
-    # ── COMPUTE ops: top ops covering >99% ──
+    # 鈹€鈹€ COMPUTE ops: top ops covering >99% 鈹€鈹€
     compute_df = df[df["category"] == "compute"]
     op_durations = compute_df.groupby("Type")["Duration(us)"].sum().sort_values(ascending=False)
     cumsum = op_durations.cumsum()
@@ -199,8 +199,8 @@ def analyze_model(model_name: str, df: pd.DataFrame) -> dict:
     remaining_dur = remaining_ops.sum()
     remaining_pct = remaining_dur / compute_time * 100
 
-    # ── Print tables ──
-    print(f"\n── Communication Ops ──")
+    # 鈹€鈹€ Print tables 鈹€鈹€
+    print(f"\n鈹€鈹€ Communication Ops 鈹€鈹€")
     comm_tbl = pd.DataFrame(comm_summary)
     if not comm_tbl.empty:
         comm_tbl = comm_tbl.sort_values("total_duration_us", ascending=False)
@@ -208,14 +208,14 @@ def analyze_model(model_name: str, df: pd.DataFrame) -> dict:
     else:
         print("  (none)")
 
-    print(f"\n── Fused Comm+Compute Ops ──")
+    print(f"\n鈹€鈹€ Fused Comm+Compute Ops 鈹€鈹€")
     fused_tbl = pd.DataFrame(fused_summary)
     if not fused_tbl.empty:
         print(fused_tbl.to_string(index=False, float_format=lambda x: f"{x:.2f}"))
     else:
         print("  (none)")
 
-    print(f"\n── Compute Ops (top ops covering >=99% of compute time) ──")
+    print(f"\n鈹€鈹€ Compute Ops (top ops covering >=99% of compute time) 鈹€鈹€")
     compute_tbl = pd.DataFrame(compute_summary)
     pd.set_option("display.max_columns", 20)
     pd.set_option("display.width", 200)
@@ -236,9 +236,9 @@ def analyze_model(model_name: str, df: pd.DataFrame) -> dict:
         "fused_time_us": fused_time,
     }
 
-    # ── Per-scenario per-op breakdown (raw data) ──
+    # 鈹€鈹€ Per-scenario per-op breakdown (raw data) 鈹€鈹€
     # For each scenario, show top ops
-    print(f"\n── Per-Scenario Top Op Breakdown ──")
+    print(f"\n鈹€鈹€ Per-Scenario Top Op Breakdown 鈹€鈹€")
     for scenario in sorted(df["scenario"].unique()):
         sdf = df[df["scenario"] == scenario]
         s_total = sdf["Duration(us)"].sum()
@@ -249,8 +249,8 @@ def analyze_model(model_name: str, df: pd.DataFrame) -> dict:
         print(f"\n  {scenario} (total: {s_total:,.1f} us)")
         print(s_by_type.head(15).to_string(index=False, float_format=lambda x: f"{x:.2f}"))
 
-    # ── CV detail for compute ops ──
-    print(f"\n── CV Detail for Compute Ops ──")
+    # 鈹€鈹€ CV detail for compute ops 鈹€鈹€
+    print(f"\n鈹€鈹€ CV Detail for Compute Ops 鈹€鈹€")
     for row in compute_summary:
         op = row["OP Type"]
         odf = compute_df[compute_df["Type"] == op]
@@ -292,7 +292,7 @@ def main():
         df = load_model_data(model_dir)
         all_results[model_name] = analyze_model(model_name, df)
 
-    # ── Export raw CSV ──
+    # 鈹€鈹€ Export raw CSV 鈹€鈹€
     out_dir = Path("/home/horacehxw/Projects/msmodeling-perf-db-profiling-analysis/profiling_analysis_output")
     out_dir.mkdir(exist_ok=True)
 
@@ -304,19 +304,19 @@ def main():
         res["scenario_breakdown"].to_csv(out_dir / f"{prefix}_scenario_breakdown.csv", index=False)
         print(f"\nExported {model_name} CSVs to {out_dir}")
 
-    # ── Combined summary table (for report) ──
+    # 鈹€鈹€ Combined summary table (for report) 鈹€鈹€
     print(f"\n\n{'='*120}")
     print("  COMBINED SUMMARY FOR REPORT")
     print(f"{'='*120}")
     for model_name, res in all_results.items():
         totals = res["totals"]
-        print(f"\n{'─'*80}")
+        print(f"\n{'鈹€'*80}")
         print(f"  {model_name}")
         print(f"  Total: {totals['total_time_us']/1e6:.3f}s | "
               f"Compute: {totals['compute_time_us']/totals['total_time_us']*100:.1f}% | "
               f"Comm: {totals['comm_time_us']/totals['total_time_us']*100:.1f}% | "
               f"Fused: {totals['fused_time_us']/totals['total_time_us']*100:.1f}%")
-        print(f"{'─'*80}")
+        print(f"{'鈹€'*80}")
 
         # Unified table
         rows = []
@@ -362,3 +362,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

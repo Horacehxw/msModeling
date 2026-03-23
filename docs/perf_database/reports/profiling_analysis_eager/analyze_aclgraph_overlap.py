@@ -1,4 +1,4 @@
-"""
+﻿"""
 Analyze aclgraph profiling data for compute/comm overlap.
 Compare with eager mode results.
 """
@@ -336,3 +336,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

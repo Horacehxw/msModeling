@@ -1,4 +1,4 @@
-.vscode
+﻿.vscode
 **/__pycache__
 .idea
 .DS_Store
@@ -30,7 +30,7 @@ docs/perf_database/plans/
 docs/superpowers/
 docs/perf_database/issues/
 
-# Auto-generated microbench scripts (output of generate_microbench.py)
+# Auto-generated microbench scripts (legacy output)
 tools/perf_data_collection/generated_microbench/
 
 # msprof profiling output (op_replay pipeline)
@@ -38,3 +38,4 @@ PROF_*/
 
 # Ephemeral metrics output (regenerable via /project-status)
 results/
+

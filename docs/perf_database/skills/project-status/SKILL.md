@@ -1,67 +1,67 @@
----
+﻿---
 name: project-status
 description: Generate perf-database project progress dashboard. Default=concise console view; ALL=full PDF report; TCX/ZH/HDY/etc=person-focused view
 ---
 
-# 算子性能数据库 — 项目进展看板
+# 绠楀瓙鎬ц兘鏁版嵁搴?鈥?椤圭洰杩涘睍鐪嬫澘
 
-为 SE 生成可视化进度报告，整合代码、文档、日报、站会纪要等多维信息源。
+涓?SE 鐢熸垚鍙鍖栬繘搴︽姤鍛婏紝鏁村悎浠ｇ爜銆佹枃妗ｃ€佹棩鎶ャ€佺珯浼氱邯瑕佺瓑澶氱淮淇℃伅婧愩€?
 
-## 参数解析
+## 鍙傛暟瑙ｆ瀽
 
-| 调用方式 | 行为 |
+| 璋冪敤鏂瑰紡 | 琛屼负 |
 |---------|------|
-| `/project-status` (无参数) | **简化版**: 直接在 console 输出。聚焦整体进度、TOP 风险、需要 SE 关注的决策点、下一步建议。~200 行以内 |
-| `/project-status ALL` | **完整版**: 生成完整项目看板，保存到 `docs/perf_database/daily_project_status/进展看板_{YYYYMMDD}.md` (同时备份到 `/Users/horacehxw/Documents/hxw-华为/蚂蚁仿真器项目/AI进展总结\`)。格式美观，面向全体项目成员 |
-| `/project-status <人员代号>` | **个人版**: 在 console 输出。包含全局摘要 + 该成员的专项关注事项、阻塞、下一步建议。代号: TCX/ZH/ZZY/HDY/LJW/DSH/QCX/HXW |
+| `/project-status` (鏃犲弬鏁? | **绠€鍖栫増**: 鐩存帴鍦?console 杈撳嚭銆傝仛鐒︽暣浣撹繘搴︺€乀OP 椋庨櫓銆侀渶瑕?SE 鍏虫敞鐨勫喅绛栫偣銆佷笅涓€姝ュ缓璁€倊200 琛屼互鍐?|
+| `/project-status ALL` | **瀹屾暣鐗?*: 鐢熸垚瀹屾暣椤圭洰鐪嬫澘锛屼繚瀛樺埌 `docs/perf_database/daily_project_status/杩涘睍鐪嬫澘_{YYYYMMDD}.md` (鍚屾椂澶囦唤鍒?`/Users/horacehxw/Documents/hxw-鍗庝负/铓傝殎浠跨湡鍣ㄩ」鐩?AI杩涘睍鎬荤粨\`)銆傛牸寮忕編瑙傦紝闈㈠悜鍏ㄤ綋椤圭洰鎴愬憳 |
+| `/project-status <浜哄憳浠ｅ彿>` | **涓汉鐗?*: 鍦?console 杈撳嚭銆傚寘鍚叏灞€鎽樿 + 璇ユ垚鍛樼殑涓撻」鍏虫敞浜嬮」銆侀樆濉炪€佷笅涓€姝ュ缓璁€備唬鍙? TCX/ZH/ZZY/HDY/LJW/DSH/QCX/HXW |
 
-## 数据采集步骤
+## 鏁版嵁閲囬泦姝ラ
 
-**所有模式共用**。使用 Agent 工具并行采集以下 5 类信息源。
+**鎵€鏈夋ā寮忓叡鐢?*銆備娇鐢?Agent 宸ュ叿骞惰閲囬泦浠ヤ笅 5 绫讳俊鎭簮銆?
 
-### Step 1: 并行采集 (启动 3-4 个 Agent)
+### Step 1: 骞惰閲囬泦 (鍚姩 3-4 涓?Agent)
 
-**Agent 1: 代码仓库分析**
+**Agent 1: 浠ｇ爜浠撳簱鍒嗘瀽**
 ```
 1. git fetch --all
-2. git log --oneline -20 feat/perf-database (主线进展)
-3. git branch -r --list 'gitcode/*' | 逐分支统计领先/落后 feat/perf-database 的 commit 数
-4. git log --oneline gitcode-ascend/develop --not feat/perf-database (主仓新增)
-5. pytest tests/perf_database/ --ignore=tests/perf_database/test_reference_data_e2e.py -q (测试状态)
-6. git diff --stat remotes/gitcode/develop..feat/perf-database | tail -3 (变更规模)
+2. git log --oneline -20 feat/perf-database (涓荤嚎杩涘睍)
+3. git branch -r --list 'gitcode/*' | 閫愬垎鏀粺璁￠鍏?钀藉悗 feat/perf-database 鐨?commit 鏁?
+4. git log --oneline gitcode-ascend/develop --not feat/perf-database (涓讳粨鏂板)
+5. pytest tests/perf_database/ --ignore=tests/perf_database/test_reference_data_e2e.py -q (娴嬭瘯鐘舵€?
+6. git diff --stat remotes/gitcode/develop..feat/perf-database | tail -3 (鍙樻洿瑙勬ā)
 ```
 
-**Agent 2: 文档分析 (Design Doc 为合规基准)**
+**Agent 2: 鏂囨。鍒嗘瀽 (Design Doc 涓哄悎瑙勫熀鍑?**
 ```
-1. 读取 docs/perf_database/OPERATOR_PERF_DATABASE_DESIGN_zh_v1.4.md
-   - §4 核心模块: 逐模块检查实现 vs spec 偏差
-   - §7.5 评估指标: M1-M6 实现状态
-   - §8 开发计划: Phase 交付物 vs 实际完成
-   - §9.1 融合 Gap: 各项状态
-   - §1.4 验收标准: E2E <15%, 覆盖 >90%, 工具链 9 个
-2. 读取 docs/perf_database/WORK_PLAN_Q1.md (v3.2)
-   - 所有检查点的完成状态 (✅/🔄/⏳)
-   - Phase 时间线 vs 当前日期
-   - 风险表 R1-R14
-3. 读取最新的 E2E 验证报告 (reports/phase1-e2e-*/phase1_e2e_*_verification_report_zh.md)
-   - M1-M6 指标数据
-   - MISS 根因分类
-   - Phase 2/3 TODO 优先级
-4. 读取 CHANGELOG (docs/perf_database/CHANGELOG_*.md)
-5. 读取 docs/perf_database/METRICS_GUIDE.md (M1-M6 指标定义和用法)
+1. 璇诲彇 docs/perf_database/OPERATOR_PERF_DATABASE_DESIGN_zh_v1.4.md
+   - 搂4 鏍稿績妯″潡: 閫愭ā鍧楁鏌ュ疄鐜?vs spec 鍋忓樊
+   - 搂7.5 璇勪及鎸囨爣: M1-M6 瀹炵幇鐘舵€?
+   - 搂8 寮€鍙戣鍒? Phase 浜や粯鐗?vs 瀹為檯瀹屾垚
+   - 搂9.1 铻嶅悎 Gap: 鍚勯」鐘舵€?
+   - 搂1.4 楠屾敹鏍囧噯: E2E <15%, 瑕嗙洊 >90%, 宸ュ叿閾?9 涓?
+2. 璇诲彇 docs/perf_database/WORK_PLAN_Q1.md (v3.2)
+   - 鎵€鏈夋鏌ョ偣鐨勫畬鎴愮姸鎬?(鉁?馃攧/鈴?
+   - Phase 鏃堕棿绾?vs 褰撳墠鏃ユ湡
+   - 椋庨櫓琛?R1-R14
+3. 璇诲彇鏈€鏂扮殑 E2E 楠岃瘉鎶ュ憡 (reports/phase1-e2e-*/phase1_e2e_*_verification_report_zh.md)
+   - M1-M6 鎸囨爣鏁版嵁
+   - MISS 鏍瑰洜鍒嗙被
+   - Phase 2/3 TODO 浼樺厛绾?
+4. 璇诲彇 CHANGELOG (docs/perf_database/CHANGELOG_*.md)
+5. 璇诲彇 docs/perf_database/METRICS_GUIDE.md (M1-M6 鎸囨爣瀹氫箟鍜岀敤娉?
 ```
 
-**Agent 4: M1-M6 指标计算** (如果 profiling 数据可用)
+**Agent 4: M1-M6 鎸囨爣璁＄畻** (濡傛灉 profiling 鏁版嵁鍙敤)
 ```
-运行 4 个场景的 TC profiling 命令，采集 M1-M6 全量指标:
+杩愯 4 涓満鏅殑 TC profiling 鍛戒护锛岄噰闆?M1-M6 鍏ㄩ噺鎸囨爣:
 
 DATA_DIR="$(pwd)/tensor_cast/performance_model/perf_database/data/ATLAS_800_A3_752T_128G_DIE/vllm_ascend/vllm0.15.0_torch2.9.0_cann8.5"
 
-# M1-M5 (在线): 4 个场景各跑一次 TC profiling + --export-metrics
+# M1-M5 (鍦ㄧ嚎): 4 涓満鏅悇璺戜竴娆?TC profiling + --export-metrics
 
-# Qwen3 Prefill: --enable-flashcomm-v1 对标 vLLM ENABLE_FLASHCOMM1=1
-# FlashComm 将 all_reduce→rms_norm 替换为 reduce_scatter→rms_norm→all_gather
-# 效果: M3 33%→50%, M5 62%→88%, 但 reduce_scatter CSV 有膨胀风险 (35ms/call vs 真实 ~2ms)
+# Qwen3 Prefill: --enable-flashcomm-v1 瀵规爣 vLLM ENABLE_FLASHCOMM1=1
+# FlashComm 灏?all_reduce鈫抮ms_norm 鏇挎崲涓?reduce_scatter鈫抮ms_norm鈫抋ll_gather
+# 鏁堟灉: M3 33%鈫?0%, M5 62%鈫?8%, 浣?reduce_scatter CSV 鏈夎啫鑳€椋庨櫓 (35ms/call vs 鐪熷疄 ~2ms)
 python3.10 -m tensor_cast.scripts.text_generate Qwen/Qwen3-32B \
   --num-queries 10 --query-length 4104 --word-embedding-tp row \
   --device ATLAS_800_A3_752T_128G_DIE --world-size 16 --tp-size 16 \
@@ -70,9 +70,9 @@ python3.10 -m tensor_cast.scripts.text_generate Qwen/Qwen3-32B \
   --enable-flashcomm-v1 \
   --export-metrics results/qwen3_prefill_metrics.json --log-level info
 
-# Qwen3 Decode: 暂不加 --enable-flashcomm-v1
-# 原因: vLLM cudagraph FULL_DECODE_ONLY 模式下 decode 可能不走 flashcomm 路径
-# decode profiling 中是否有 hcom_reduceScatter_ 待确认, 如有则加此 flag
+# Qwen3 Decode: 鏆備笉鍔?--enable-flashcomm-v1
+# 鍘熷洜: vLLM cudagraph FULL_DECODE_ONLY 妯″紡涓?decode 鍙兘涓嶈蛋 flashcomm 璺緞
+# decode profiling 涓槸鍚︽湁 hcom_reduceScatter_ 寰呯‘璁? 濡傛湁鍒欏姞姝?flag
 python3.10 -m tensor_cast.scripts.text_generate Qwen/Qwen3-32B \
   --num-queries 16 --query-length 1 --context-length 4096 --word-embedding-tp row \
   --device ATLAS_800_A3_752T_128G_DIE --world-size 16 --tp-size 16 \
@@ -80,9 +80,9 @@ python3.10 -m tensor_cast.scripts.text_generate Qwen/Qwen3-32B \
   --performance-model profiling --compile --perf-database "$DATA_DIR" \
   --export-metrics results/qwen3_decode_metrics.json --log-level info
 
-# DSv3 Prefill: 对标 profiler-dsv3-input2048-output1 (QBM batch=2048)
-# 参数推导: profiling kernel_details 中 QuantBatchMatmulV3 batch dim=2048
-# vLLM max-num-batched-tokens=2048, 单请求 ISL=2048 → nq=1 ql=2048
+# DSv3 Prefill: 瀵规爣 profiler-dsv3-input2048-output1 (QBM batch=2048)
+# 鍙傛暟鎺ㄥ: profiling kernel_details 涓?QuantBatchMatmulV3 batch dim=2048
+# vLLM max-num-batched-tokens=2048, 鍗曡姹?ISL=2048 鈫?nq=1 ql=2048
 python3.10 -m tensor_cast.scripts.text_generate deepseek-ai/DeepSeek-V3 \
   --num-queries 1 --query-length 2048 --word-embedding-tp row \
   --device ATLAS_800_A3_752T_128G_DIE --world-size 16 --tp-size 8 --dp-size 2 --ep-size 16 \
@@ -90,9 +90,9 @@ python3.10 -m tensor_cast.scripts.text_generate deepseek-ai/DeepSeek-V3 \
   --performance-model profiling --compile --perf-database "$DATA_DIR" \
   --export-metrics results/dsv3_prefill_metrics.json --log-level info
 
-# DSv3 Decode: 对标 profiler-dsv3-input4096-output1536-concurrency8 (QBM batch=5)
-# 参数推导: profiling kernel_details 中 QuantBatchMatmulV3 batch dim=5
-# vLLM max-num-seqs=8, DP=2 → per-rank ~5 queries → nq=10 (dp_size=2, 10/2=5)
+# DSv3 Decode: 瀵规爣 profiler-dsv3-input4096-output1536-concurrency8 (QBM batch=5)
+# 鍙傛暟鎺ㄥ: profiling kernel_details 涓?QuantBatchMatmulV3 batch dim=5
+# vLLM max-num-seqs=8, DP=2 鈫?per-rank ~5 queries 鈫?nq=10 (dp_size=2, 10/2=5)
 python3.10 -m tensor_cast.scripts.text_generate deepseek-ai/DeepSeek-V3 \
   --num-queries 10 --query-length 1 --context-length 4096 --word-embedding-tp row \
   --device ATLAS_800_A3_752T_128G_DIE --world-size 16 --tp-size 8 --dp-size 2 --ep-size 16 \
@@ -100,32 +100,32 @@ python3.10 -m tensor_cast.scripts.text_generate deepseek-ai/DeepSeek-V3 \
   --performance-model profiling --compile --perf-database "$DATA_DIR" \
   --export-metrics results/dsv3_decode_metrics.json --log-level info
 
-# M6 (半离线): TC Prediction Ratio = tc_full_prediction / real_per_fwd
-# M6=1.0 完美, >1 高估, <1 低估. Phase 3 目标: 0.85-1.15
+# M6 (鍗婄绾?: TC Prediction Ratio = tc_full_prediction / real_per_fwd
+# M6=1.0 瀹岀編, >1 楂樹及, <1 浣庝及. Phase 3 鐩爣: 0.85-1.15
 #
-# M6 计算方法论 (2026-03-20 修正):
-#   分子: TC 全量预测 (empirical + analytic fallback), 从 --export-metrics JSON 的
-#         m6_input.tc_predicted_total_s 获取
-#   分母: 真实单个 forward pass 耗时, 通过以下步骤获取:
-#     1. 从 kernel_details.csv 中识别 forward pass 边界 (寻找每 forward pass 出现恰好一次的
-#        anchor kernel, 如 ArgMaxV2/ApplyTopKTopPCustom 等 sampling kernel, 或
-#        DispatchFFNCombine/FusedInferAttentionScore 等模型特有 kernel)
-#     2. AI 分析每个 forward pass 的结构 (batch dim, kernel 组成)
-#     3. 确认所有 forward pass 结构一致后, 用 Stage / n_forward_passes 作为分母
-#     4. 如不一致, 需找到与 TC 仿真参数匹配的那一个 forward pass
+# M6 璁＄畻鏂规硶璁?(2026-03-20 淇):
+#   鍒嗗瓙: TC 鍏ㄩ噺棰勬祴 (empirical + analytic fallback), 浠?--export-metrics JSON 鐨?
+#         m6_input.tc_predicted_total_s 鑾峰彇
+#   鍒嗘瘝: 鐪熷疄鍗曚釜 forward pass 鑰楁椂, 閫氳繃浠ヤ笅姝ラ鑾峰彇:
+#     1. 浠?kernel_details.csv 涓瘑鍒?forward pass 杈圭晫 (瀵绘壘姣?forward pass 鍑虹幇鎭板ソ涓€娆＄殑
+#        anchor kernel, 濡?ArgMaxV2/ApplyTopKTopPCustom 绛?sampling kernel, 鎴?
+#        DispatchFFNCombine/FusedInferAttentionScore 绛夋ā鍨嬬壒鏈?kernel)
+#     2. AI 鍒嗘瀽姣忎釜 forward pass 鐨勭粨鏋?(batch dim, kernel 缁勬垚)
+#     3. 纭鎵€鏈?forward pass 缁撴瀯涓€鑷村悗, 鐢?Stage / n_forward_passes 浣滀负鍒嗘瘝
+#     4. 濡備笉涓€鑷? 闇€鎵惧埌涓?TC 浠跨湡鍙傛暟鍖归厤鐨勯偅涓€涓?forward pass
 #
-# TC 参数推导方法论:
-#   1. 从 profiling kernel_details.csv 的 QuantBatchMatmulV3 (主计算 kernel) 读 batch dim
-#   2. 根据 batch dim 和 DP/TP 配置反推 TC 的 nq/ql 参数
-#   3. 用 anchor kernel 切分 forward passes, 验证每个 pass 结构是否一致
+# TC 鍙傛暟鎺ㄥ鏂规硶璁?
+#   1. 浠?profiling kernel_details.csv 鐨?QuantBatchMatmulV3 (涓昏绠?kernel) 璇?batch dim
+#   2. 鏍规嵁 batch dim 鍜?DP/TP 閰嶇疆鍙嶆帹 TC 鐨?nq/ql 鍙傛暟
+#   3. 鐢?anchor kernel 鍒囧垎 forward passes, 楠岃瘉姣忎釜 pass 缁撴瀯鏄惁涓€鑷?
 #
-# Qwen3 profiling 数据 (0314, 权威来源):
+# Qwen3 profiling 鏁版嵁 (0314, 鏉冨▉鏉ユ簮):
 PROF_QWEN3="/Users/horacehxw/Data/Profiling/Profiling-0317-full/profiler-qwen3-0314"
-# DSv3 profiling 数据 (0319, 权威来源):
+# DSv3 profiling 鏁版嵁 (0319, 鏉冨▉鏉ユ簮):
 PROF_DSV3="/Users/horacehxw/Data/Profiling/Profiling-0320-DSv3/profiler-dsv3-0319"
-# 注意: 不再使用 Profiling-0313-phase1-e2e-test (旧基线), Qwen3/DSv3 统一用上面的路径
+# 娉ㄦ剰: 涓嶅啀浣跨敤 Profiling-0313-phase1-e2e-test (鏃у熀绾?, Qwen3/DSv3 缁熶竴鐢ㄤ笂闈㈢殑璺緞
 
-# Qwen3 M6: 使用 0314 profiling 数据
+# Qwen3 M6: 浣跨敤 0314 profiling 鏁版嵁
 python3.10 tools/perf_data_collection/compute_m6.py \
   --tc-report results/qwen3_prefill_metrics.json \
   --profiler-output "$PROF_QWEN3/profiler-qwen3-input4096-output1"
@@ -134,7 +134,7 @@ python3.10 tools/perf_data_collection/compute_m6.py \
   --tc-report results/qwen3_decode_metrics.json \
   --profiler-output "$PROF_QWEN3/profiler-qwen3-input4096-output1536-concurrency4-rrate2"
 
-# DSv3 M6: 使用 0319 profiling 数据
+# DSv3 M6: 浣跨敤 0319 profiling 鏁版嵁
 python3.10 tools/perf_data_collection/compute_m6.py \
   --tc-report results/dsv3_prefill_metrics.json \
   --profiler-output "$PROF_DSV3/profiler-dsv3-input2048-output1"
@@ -143,10 +143,10 @@ python3.10 tools/perf_data_collection/compute_m6.py \
   --tc-report results/dsv3_decode_metrics.json \
   --profiler-output "$PROF_DSV3/profiler-dsv3-input4096-output1536-concurrency8-rrate4"
 
-# 汇总 M1-M5
+# 姹囨€?M1-M5
 python3.10 -c "
 import json
-print('场景                  M1     M2     M3     M4     M5     TC(ms)')
+print('鍦烘櫙                  M1     M2     M3     M4     M5     TC(ms)')
 print('-' * 70)
 for name, path in [
     ('Qwen3 PF (+FC)', 'results/qwen3_prefill_metrics.json'),
@@ -165,40 +165,40 @@ for name, path in [
 "
 
 # ==========================================
-# M6 计算: AI 分析 profiling forward pass
+# M6 璁＄畻: AI 鍒嗘瀽 profiling forward pass
 # ==========================================
-# compute_m6.py 会自动寻找 anchor kernel (默认 ArgMaxV2) 做 forward pass 切分并取平均。
-# 但 **必须** 由 AI (即你) 在使用前先验证:
+# compute_m6.py 浼氳嚜鍔ㄥ鎵?anchor kernel (榛樿 ArgMaxV2) 鍋?forward pass 鍒囧垎骞跺彇骞冲潎銆?
+# 浣?**蹇呴』** 鐢?AI (鍗充綘) 鍦ㄤ娇鐢ㄥ墠鍏堥獙璇?
 #
-# 步骤 1: 分析 profiling 中每个 forward pass 的结构
-#   对每个 profiling 场景, 用 kernel_details.csv 做以下分析:
-#   - 识别 anchor kernel 做 forward pass 边界切分 (每 fwd 恰好出现一次的 kernel type)
-#   - 检查每个 forward pass 的 kernel 组成 (DFC/QBM/FIA/RING_MLA 数量)
-#   - 提取每个 forward pass 的 QuantBatchMatmulV3 batch dim (= 实际 batch size)
-#   - 确认: 所有 forward pass 结构是否一致 (batch dim, kernel 数量, 算子类型)
+# 姝ラ 1: 鍒嗘瀽 profiling 涓瘡涓?forward pass 鐨勭粨鏋?
+#   瀵规瘡涓?profiling 鍦烘櫙, 鐢?kernel_details.csv 鍋氫互涓嬪垎鏋?
+#   - 璇嗗埆 anchor kernel 鍋?forward pass 杈圭晫鍒囧垎 (姣?fwd 鎭板ソ鍑虹幇涓€娆＄殑 kernel type)
+#   - 妫€鏌ユ瘡涓?forward pass 鐨?kernel 缁勬垚 (DFC/QBM/FIA/RING_MLA 鏁伴噺)
+#   - 鎻愬彇姣忎釜 forward pass 鐨?QuantBatchMatmulV3 batch dim (= 瀹為檯 batch size)
+#   - 纭: 鎵€鏈?forward pass 缁撴瀯鏄惁涓€鑷?(batch dim, kernel 鏁伴噺, 绠楀瓙绫诲瀷)
 #
-# 步骤 2: 匹配 TC 仿真的 forward pass
-#   - 如果所有 forward pass 结构一致 → 可以用 Stage/N 作为 M6 分母
-#   - 如果不一致 (混合 prefill+decode, 不同 batch size):
-#     → 找到 batch dim 匹配 TC 参数的那一个 forward pass
-#     → 用该 forward pass 的 kernel duration sum 作为 M6 分母
-#     → 注意: kernel sum 含 compute-comm overlap, 应优先用 step_trace Stage/N
+# 姝ラ 2: 鍖归厤 TC 浠跨湡鐨?forward pass
+#   - 濡傛灉鎵€鏈?forward pass 缁撴瀯涓€鑷?鈫?鍙互鐢?Stage/N 浣滀负 M6 鍒嗘瘝
+#   - 濡傛灉涓嶄竴鑷?(娣峰悎 prefill+decode, 涓嶅悓 batch size):
+#     鈫?鎵惧埌 batch dim 鍖归厤 TC 鍙傛暟鐨勯偅涓€涓?forward pass
+#     鈫?鐢ㄨ forward pass 鐨?kernel duration sum 浣滀负 M6 鍒嗘瘝
+#     鈫?娉ㄦ剰: kernel sum 鍚?compute-comm overlap, 搴斾紭鍏堢敤 step_trace Stage/N
 #
-# 步骤 3: 计算 M6
+# 姝ラ 3: 璁＄畻 M6
 #   M6 = TC_prediction / real_per_fwd
-#   - 分子: m6_input.tc_predicted_total_s (混合预测: empirical for HIT + analytic for MISS)
-#   - 分母: AI 确认后的单个 forward pass 真实耗时
+#   - 鍒嗗瓙: m6_input.tc_predicted_total_s (娣峰悎棰勬祴: empirical for HIT + analytic for MISS)
+#   - 鍒嗘瘝: AI 纭鍚庣殑鍗曚釜 forward pass 鐪熷疄鑰楁椂
 #
-# 示例 (已验证的 forward pass 结构):
-#   DSv3 PF (input2048): 12 个一致的纯 prefill pass, QBM batch=2048, Stage/12=295ms
-#   DSv3 DC (c8): 62 个一致的纯 decode pass, QBM batch=5, Stage/62=51ms
-#   Qwen3 PF (input4096): 5 个纯 prefill pass, Stage/5=1147ms
+# 绀轰緥 (宸查獙璇佺殑 forward pass 缁撴瀯):
+#   DSv3 PF (input2048): 12 涓竴鑷寸殑绾?prefill pass, QBM batch=2048, Stage/12=295ms
+#   DSv3 DC (c8): 62 涓竴鑷寸殑绾?decode pass, QBM batch=5, Stage/62=51ms
+#   Qwen3 PF (input4096): 5 涓函 prefill pass, Stage/5=1147ms
 
-# 自动计算 (仅在 AI 确认 forward pass 结构后使用):
+# 鑷姩璁＄畻 (浠呭湪 AI 纭 forward pass 缁撴瀯鍚庝娇鐢?:
 python3.10 -c "
 import json
 print()
-print('场景                  TC(ms)   Real(ms)   M6      判断')
+print('鍦烘櫙                  TC(ms)   Real(ms)   M6      鍒ゆ柇')
 print('-' * 65)
 for name, path in [
     ('Qwen3 PF (+FC)', 'results/qwen3_prefill_m6.json'),
@@ -214,269 +214,270 @@ for name, path in [
     n_fwd = r.get('n_forward_passes', '?')
     print(f'{name:<22} {tc:>8.1f} {real:>8.1f} {m6:>6.3f}   {flag}  (N={n_fwd})')
 print()
-print('注意: M6 因 microbench CSV 膨胀 (R10) 暂不可信。Phase 3 验收以 M3+M5 为主指标。')
-print('      如果 forward pass 结构未经 AI 验证, M6 分母可能不准确。')
+print('娉ㄦ剰: M6 鍥?microbench CSV 鑶ㄨ儉 (R10) 鏆備笉鍙俊銆侾hase 3 楠屾敹浠?M3+M5 涓轰富鎸囨爣銆?)
+print('      濡傛灉 forward pass 缁撴瀯鏈粡 AI 楠岃瘉, M6 鍒嗘瘝鍙兘涓嶅噯纭€?)
 "
 ```
 
-注意: 如果 profiling 数据路径不可访问（如 Profiling 数据目录不存在），M6 无法计算，跳过并注明。
-如果 results/*.json 已存在且日期为当天，可直接读取而不重新运行 TC。
+娉ㄦ剰: 濡傛灉 profiling 鏁版嵁璺緞涓嶅彲璁块棶锛堝 Profiling 鏁版嵁鐩綍涓嶅瓨鍦級锛孧6 鏃犳硶璁＄畻锛岃烦杩囧苟娉ㄦ槑銆?
+濡傛灉 results/*.json 宸插瓨鍦ㄤ笖鏃ユ湡涓哄綋澶╋紝鍙洿鎺ヨ鍙栬€屼笉閲嶆柊杩愯 TC銆?
 
-**Agent 3: 团队动态**
+**Agent 3: 鍥㈤槦鍔ㄦ€?*
 ```
-1. 读取日报: /Users/horacehxw/Documents/hxw-华为/蚂蚁仿真器项目/日报\日报汇总.txt
-2. 读取所有站会纪要 PDF: /Users/horacehxw/Documents/hxw-华为/蚂蚁仿真器项目/日报/智能纪要*.pdf
-   先列出所有纪要文件，然后逐个提取:
-   ls "/Users/horacehxw/Documents/hxw-华为/蚂蚁仿真器项目/日报/"智能纪要*.pdf
-   对每个 PDF 使用 text 模式提取 (低 context 开销):
+1. 璇诲彇鏃ユ姤: /Users/horacehxw/Documents/hxw-鍗庝负/铓傝殎浠跨湡鍣ㄩ」鐩?鏃ユ姤\鏃ユ姤姹囨€?txt
+2. 璇诲彇鎵€鏈夌珯浼氱邯瑕?PDF: /Users/horacehxw/Documents/hxw-鍗庝负/铓傝殎浠跨湡鍣ㄩ」鐩?鏃ユ姤/鏅鸿兘绾*.pdf
+   鍏堝垪鍑烘墍鏈夌邯瑕佹枃浠讹紝鐒跺悗閫愪釜鎻愬彇:
+   ls "/Users/horacehxw/Documents/hxw-鍗庝负/铓傝殎浠跨湡鍣ㄩ」鐩?鏃ユ姤/"鏅鸿兘绾*.pdf
+   瀵规瘡涓?PDF 浣跨敤 text 妯″紡鎻愬彇 (浣?context 寮€閿€):
    python3.10 ~/.claude/scripts/read_pdf.py "<pdf_path>" --mode text
-   如需查看图表/流程图, 改用 image 模式:
+   濡傞渶鏌ョ湅鍥捐〃/娴佺▼鍥? 鏀圭敤 image 妯″紡:
    python3.10 ~/.claude/scripts/read_pdf.py "<pdf_path>" --mode image --pages 1
-   然后用 Read 工具读取输出的 PNG 文件
-   - 提取每人进展、阻塞、风险信号
-   - 提取站会决策和 action items
-   - 提取待办清单
-3. 交叉验证: 日报说的 vs 站会纪要 vs 代码实际变更
+   鐒跺悗鐢?Read 宸ュ叿璇诲彇杈撳嚭鐨?PNG 鏂囦欢
+   - 鎻愬彇姣忎汉杩涘睍銆侀樆濉炪€侀闄╀俊鍙?
+   - 鎻愬彇绔欎細鍐崇瓥鍜?action items
+   - 鎻愬彇寰呭姙娓呭崟
+3. 浜ゅ弶楠岃瘉: 鏃ユ姤璇寸殑 vs 绔欎細绾 vs 浠ｇ爜瀹為檯鍙樻洿
 ```
 
-### Step 2: 交叉分析
+### Step 2: 浜ゅ弶鍒嗘瀽
 
-对采集到的数据进行交叉验证:
-1. **实现 vs Design Doc**: 每个已完成任务是否符合 spec？偏差即为风险
-2. **计划 vs 实际**: Work Plan 的检查点日期 vs 实际完成日期，识别延期趋势
-3. **日报 vs 代码**: 日报说"完成"但代码未合入？日报未提到但代码有变更？
-4. **指标趋势**: M1-M6 当前值 vs Phase 目标，差距分析。重点关注:
-   - M3 vs >50% 目标 (Phase 2)
-   - M5 vs >80% 目标 (Phase 3)
-   - M6 vs 0.85-1.15 目标 (Phase 3): M6<1 说明覆盖不足（需更多 microbench 数据），M6>1 说明 microbench 偏高
-   - M4 MISS shape list → 指导 microbench 数据采集优先级
+瀵归噰闆嗗埌鐨勬暟鎹繘琛屼氦鍙夐獙璇?
+1. **瀹炵幇 vs Design Doc**: 姣忎釜宸插畬鎴愪换鍔℃槸鍚︾鍚?spec锛熷亸宸嵆涓洪闄?
+2. **璁″垝 vs 瀹為檯**: Work Plan 鐨勬鏌ョ偣鏃ユ湡 vs 瀹為檯瀹屾垚鏃ユ湡锛岃瘑鍒欢鏈熻秼鍔?
+3. **鏃ユ姤 vs 浠ｇ爜**: 鏃ユ姤璇?瀹屾垚"浣嗕唬鐮佹湭鍚堝叆锛熸棩鎶ユ湭鎻愬埌浣嗕唬鐮佹湁鍙樻洿锛?
+4. **鎸囨爣瓒嬪娍**: M1-M6 褰撳墠鍊?vs Phase 鐩爣锛屽樊璺濆垎鏋愩€傞噸鐐瑰叧娉?
+   - M3 vs >50% 鐩爣 (Phase 2)
+   - M5 vs >80% 鐩爣 (Phase 3)
+   - M6 vs 0.85-1.15 鐩爣 (Phase 3): M6<1 璇存槑瑕嗙洊涓嶈冻锛堥渶鏇村 microbench 鏁版嵁锛夛紝M6>1 璇存槑 microbench 鍋忛珮
+   - M4 MISS shape list 鈫?鎸囧 microbench 鏁版嵁閲囬泦浼樺厛绾?
 
-### Step 3: 按模式生成输出
+### Step 3: 鎸夋ā寮忕敓鎴愯緭鍑?
 
 ---
 
-## 输出模板: 简化版 (默认, console)
+## 杈撳嚭妯℃澘: 绠€鍖栫増 (榛樿, console)
 
-直接在当前 console 回复，不生成文件。格式如下:
+鐩存帴鍦ㄥ綋鍓?console 鍥炲锛屼笉鐢熸垚鏂囦欢銆傛牸寮忓涓?
 
 ```markdown
-# 项目状态速览 | {YYYY-MM-DD}
+# 椤圭洰鐘舵€侀€熻 | {YYYY-MM-DD}
 
-## 进度: Phase {N} {状态} | 距交付 {X} 天
-{一句话当前状态}
+## 杩涘害: Phase {N} {鐘舵€亇 | 璺濅氦浠?{X} 澶?
+{涓€鍙ヨ瘽褰撳墠鐘舵€亇
 
-## 时间线
-{ASCII 时间线图，标注 Phase 起止、当前位置、里程碑}
-示例:
-Phase 1 [3.6━━━━━━━3.13] ✅ GO
-Phase 2 [3.16━▶━━━━3.20]   ← 今天在这里
-Phase 3      [3.19━━━━3.23]
-交付                    3.23 🎯
+## 鏃堕棿绾?
+{ASCII 鏃堕棿绾垮浘锛屾爣娉?Phase 璧锋銆佸綋鍓嶄綅缃€侀噷绋嬬}
+绀轰緥:
+Phase 1 [3.6鈹佲攣鈹佲攣鈹佲攣鈹?.13] 鉁?GO
+Phase 2 [3.16鈹佲柖鈹佲攣鈹佲攣3.20]   鈫?浠婂ぉ鍦ㄨ繖閲?
+Phase 3      [3.19鈹佲攣鈹佲攣3.23]
+浜や粯                    3.23 馃幆
 
-## 关键指标 (M1-M6)
-{完整 6 指标表 + 进度条}
-示例:
-| 场景 | M1 | M2 | M3 | M4 | M5 | M6 (ratio) |
+## 鍏抽敭鎸囨爣 (M1-M6)
+{瀹屾暣 6 鎸囨爣琛?+ 杩涘害鏉
+绀轰緥:
+| 鍦烘櫙 | M1 | M2 | M3 | M4 | M5 | M6 (ratio) |
 |------|:--:|:--:|:--:|:--:|:--:|:----------:|
 | Qwen3 PF | 77.8% | 47.4% | 23.1% | 47.4% | 52.4% | 0.531 |
 | Qwen3 DC | 84.1% | 63.2% | 46.2% | 63.2% | 59.5% | 1.607 |
 | DSv3 PF  | 70.6% | 50.0% | 15.4% | 41.2% | 71.9% | 0.531 |
 | DSv3 DC  | 71.8% | 52.3% | 19.2% | 43.1% | 56.3% | 0.303 |
 
-Phase 目标进度 (M2-M6 全列):
-| 指标 | 目标 | Qwen3 PF | Qwen3 DC | DSv3 PF | DSv3 DC | 进度 |
+Phase 鐩爣杩涘害 (M2-M6 鍏ㄥ垪):
+| 鎸囨爣 | 鐩爣 | Qwen3 PF | Qwen3 DC | DSv3 PF | DSv3 DC | 杩涘害 |
 |------|:---:|:--------:|:--------:|:-------:|:-------:|------|
-| M2   | (GO/NO-GO) | 47.4% | 63.2% | 50.0% | 52.3% | ▓▓▓▓▓░░░░░ |
-| M3   | >50% | 23.1% | 46.2% | 15.4% | 19.2% | ▓▓░░░░░░░░ |
-| M4   | (诊断) | 47.4% | 63.2% | 41.2% | 43.1% | ▓▓▓▓░░░░░░ |
-| M5   | >80% | 52.4% | 59.5% | 71.9% | 56.3% | ▓▓▓▓▓░░░░░ |
-| M6   | 0.85-1.15 | 0.531 | 1.607 | 0.531 | 0.303 | ▓▓▓░░░░░░░ |
+| M2   | (GO/NO-GO) | 47.4% | 63.2% | 50.0% | 52.3% | 鈻撯枔鈻撯枔鈻撯枒鈻戔枒鈻戔枒 |
+| M3   | >50% | 23.1% | 46.2% | 15.4% | 19.2% | 鈻撯枔鈻戔枒鈻戔枒鈻戔枒鈻戔枒 |
+| M4   | (璇婃柇) | 47.4% | 63.2% | 41.2% | 43.1% | 鈻撯枔鈻撯枔鈻戔枒鈻戔枒鈻戔枒 |
+| M5   | >80% | 52.4% | 59.5% | 71.9% | 56.3% | 鈻撯枔鈻撯枔鈻撯枒鈻戔枒鈻戔枒 |
+| M6   | 0.85-1.15 | 0.531 | 1.607 | 0.531 | 0.303 | 鈻撯枔鈻撯枒鈻戔枒鈻戔枒鈻戔枒 |
 
-如有历史数据，附趋势:
-M3 趋势 (Qwen3 PF):  Phase1 → Phase2 → 当前
-                       31.2% → ?      → ?
+濡傛湁鍘嗗彶鏁版嵁锛岄檮瓒嬪娍:
+M3 瓒嬪娍 (Qwen3 PF):  Phase1 鈫?Phase2 鈫?褰撳墠
+                       31.2% 鈫??      鈫??
 
-指标说明 (简):
-- M1: 原始 HIT 率 (debug 用, 被 zero_cost 膨胀)
-- M2: 融合算子 HIT 率 (GO/NO-GO 门槛, 含 zero_cost)
-- M3: 计算算子 HIT 率 (核心进度, 排除 zero_cost) — Phase 2 验收
-- M4: per-shape HIT 率 (缺口诊断, miss list 指导 microbench 采集)
-- M5: 仿真延迟覆盖 (延迟加权, 大算子优先) — Phase 3 验收
-- M6: empirical E2E ratio (vs 真实 per-fwd, 目标 0.85–1.15) — Phase 3 验收
+鎸囨爣璇存槑 (绠€):
+- M1: 鍘熷 HIT 鐜?(debug 鐢? 琚?zero_cost 鑶ㄨ儉)
+- M2: 铻嶅悎绠楀瓙 HIT 鐜?(GO/NO-GO 闂ㄦ, 鍚?zero_cost)
+- M3: 璁＄畻绠楀瓙 HIT 鐜?(鏍稿績杩涘害, 鎺掗櫎 zero_cost) 鈥?Phase 2 楠屾敹
+- M4: per-shape HIT 鐜?(缂哄彛璇婃柇, miss list 鎸囧 microbench 閲囬泦)
+- M5: 浠跨湡寤惰繜瑕嗙洊 (寤惰繜鍔犳潈, 澶х畻瀛愪紭鍏? 鈥?Phase 3 楠屾敹
+- M6: empirical E2E ratio (vs 鐪熷疄 per-fwd, 鐩爣 0.85鈥?.15) 鈥?Phase 3 楠屾敹
 
-**摘要规则**: 摘要/速览中必须展示 **M2-M6** (5 个指标), M1 因 zero_cost 膨胀可省略。
-完整看板的指标表必须展示 **M1-M6** 全部 6 个指标。
+**鎽樿瑙勫垯**: 鎽樿/閫熻涓繀椤诲睍绀?**M2-M6** (5 涓寚鏍?, M1 鍥?zero_cost 鑶ㄨ儉鍙渷鐣ャ€?
+瀹屾暣鐪嬫澘鐨勬寚鏍囪〃蹇呴』灞曠ず **M1-M6** 鍏ㄩ儴 6 涓寚鏍囥€?
 
-## 风险矩阵
-{用 ASCII 矩阵可视化 TOP 风险的 影响×概率 分布}
-示例:
-影响 ↑
- 高  │ R5●        R11●
- 中  │    R10●  R3  R7
- 低  │              R13
-     └──────────────────→ 概率
-       低    中    高
+## 椋庨櫓鐭╅樀
+{鐢?ASCII 鐭╅樀鍙鍖?TOP 椋庨櫓鐨?褰卞搷脳姒傜巼 鍒嗗竷}
+绀轰緥:
+褰卞搷 鈫?
+ 楂? 鈹?R5鈼?       R11鈼?
+ 涓? 鈹?   R10鈼? R3  R7
+ 浣? 鈹?             R13
+     鈹斺攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈫?姒傜巼
+       浣?   涓?   楂?
 
-## TOP 风险详情
-1. 🔴 {风险描述} — {影响} — {缓解}
-2. 🟡 ...
-3. 🟡 ...
+## TOP 椋庨櫓璇︽儏
+1. 馃敶 {椋庨櫓鎻忚堪} 鈥?{褰卞搷} 鈥?{缂撹В}
+2. 馃煛 ...
+3. 馃煛 ...
 
-## 需要 SE 决策/关注
-- {具体决策点，如: "通信建模方案 P/D 分开 vs 固定开销，HDY 待定论"}
-- {需要推动的外部依赖}
+## 闇€瑕?SE 鍐崇瓥/鍏虫敞
+- {鍏蜂綋鍐崇瓥鐐癸紝濡? "閫氫俊寤烘ā鏂规 P/D 鍒嗗紑 vs 鍥哄畾寮€閿€锛孒DY 寰呭畾璁?}
+- {闇€瑕佹帹鍔ㄧ殑澶栭儴渚濊禆}
 
-## 团队负载一览
-{紧凑表格: 每人当前主要任务 + 阻塞状态 + 依赖关系}
-示例:
-| 成员 | 主要任务 | 状态 | 阻塞 |
+## 鍥㈤槦璐熻浇涓€瑙?
+{绱у噾琛ㄦ牸: 姣忎汉褰撳墠涓昏浠诲姟 + 闃诲鐘舵€?+ 渚濊禆鍏崇郴}
+绀轰緥:
+| 鎴愬憳 | 涓昏浠诲姟 | 鐘舵€?| 闃诲 |
 |------|---------|:----:|------|
-| TCX | Microbench | 🟢 | 等 QCX NPU 接口 |
-| ZH  | 查询接口  | 🟢 | — |
-| HDY | Profiling 采集 | 🟡 | comm gap 1.66-20.6x |
+| TCX | Microbench | 馃煝 | 绛?QCX NPU 鎺ュ彛 |
+| ZH  | 鏌ヨ鎺ュ彛  | 馃煝 | 鈥?|
+| HDY | Profiling 閲囬泦 | 馃煛 | comm gap 1.66-20.6x |
 
-## 本周进展亮点
-- {3-5 条核心进展}
+## 鏈懆杩涘睍浜偣
+- {3-5 鏉℃牳蹇冭繘灞晑
 
-## Git 分支状态
-{与上游的 ahead/behind 可视化}
-示例:
+## Git 鍒嗘敮鐘舵€?
+{涓庝笂娓哥殑 ahead/behind 鍙鍖杴
+绀轰緥:
 feat/perf-database vs gitcode-ascend/develop:
-  ours ████████████████████ +120 commits ahead
-  upstream ██ +9 commits (需 rebase)
+  ours 鈻堚枅鈻堚枅鈻堚枅鈻堚枅鈻堚枅鈻堚枅鈻堚枅鈻堚枅鈻堚枅鈻堚枅 +120 commits ahead
+  upstream 鈻堚枅 +9 commits (闇€ rebase)
 
-## 下一步建议 (按优先级)
-1. {最重要的行动}
+## 涓嬩竴姝ュ缓璁?(鎸変紭鍏堢骇)
+1. {鏈€閲嶈鐨勮鍔▆
 2. ...
 3. ...
 ```
 
-**原则**: 300 行以内。保留需要 SE 知道和决策的信息，用 ASCII 可视化增强直观性。不展开任务列表细节。
+**鍘熷垯**: 300 琛屼互鍐呫€備繚鐣欓渶瑕?SE 鐭ラ亾鍜屽喅绛栫殑淇℃伅锛岀敤 ASCII 鍙鍖栧寮虹洿瑙傛€с€備笉灞曞紑浠诲姟鍒楄〃缁嗚妭銆?
 
-**可视化要素清单** (尽量包含):
-- 时间线图 (Phase 进度 + 当前位置)
-- 指标进度条 (▓░ 或 █ 风格)
-- 指标趋势 (如有历史数据)
-- 风险矩阵 (影响×概率 scatter)
-- 团队负载表 (含阻塞状态)
-- Git ahead/behind 条形图
+**鍙鍖栬绱犳竻鍗?* (灏介噺鍖呭惈):
+- 鏃堕棿绾垮浘 (Phase 杩涘害 + 褰撳墠浣嶇疆)
+- 鎸囨爣杩涘害鏉?(鈻撯枒 鎴?鈻?椋庢牸)
+- 鎸囨爣瓒嬪娍 (濡傛湁鍘嗗彶鏁版嵁)
+- 椋庨櫓鐭╅樀 (褰卞搷脳姒傜巼 scatter)
+- 鍥㈤槦璐熻浇琛?(鍚樆濉炵姸鎬?
+- Git ahead/behind 鏉″舰鍥?
 
 ---
 
-## 输出模板: 完整版 (ALL, 保存文件)
+## 杈撳嚭妯℃澘: 瀹屾暣鐗?(ALL, 淇濆瓨鏂囦欢)
 
-生成完整看板 Markdown，保存到:
-- **主路径** (git 仓库内): `docs/perf_database/daily_project_status/进展看板_{YYYYMMDD}.md`
-- **备份路径**: `/Users/horacehxw/Documents/hxw-华为/蚂蚁仿真器项目/AI进展总结\进展看板_{YYYYMMDD}.md`
+鐢熸垚瀹屾暣鐪嬫澘 Markdown锛屼繚瀛樺埌:
+- **涓昏矾寰?* (git 浠撳簱鍐?: `docs/perf_database/daily_project_status/杩涘睍鐪嬫澘_{YYYYMMDD}.md`
+- **澶囦唤璺緞**: `/Users/horacehxw/Documents/hxw-鍗庝负/铓傝殎浠跨湡鍣ㄩ」鐩?AI杩涘睍鎬荤粨\杩涘睍鐪嬫澘_{YYYYMMDD}.md`
 
-**结构** (按重要性排序，决策层信息在前，执行细节在后):
+**缁撴瀯** (鎸夐噸瑕佹€ф帓搴忥紝鍐崇瓥灞備俊鎭湪鍓嶏紝鎵ц缁嗚妭鍦ㄥ悗):
 
 ```markdown
-# 算子性能数据库项目看板
-**日期** | **分支** | **交付日** | **Design Doc 版本** | **数据版本**
+# 绠楀瓙鎬ц兘鏁版嵁搴撻」鐩湅鏉?
+**鏃ユ湡** | **鍒嗘敮** | **浜や粯鏃?* | **Design Doc 鐗堟湰** | **鏁版嵁鐗堟湰**
 
-## 一、执行摘要
-{3-5 句话总结当前状态，核心矛盾，关键判断}
+## 涓€銆佹墽琛屾憳瑕?
+{3-5 鍙ヨ瘽鎬荤粨褰撳墠鐘舵€侊紝鏍稿績鐭涚浘锛屽叧閿垽鏂瓆
 
-## 二、关键指标 (M1-M6)
-{M1-M5: 百分比指标表 (4 场景) + M6: ratio 列 (1.0=完美, 目标 0.85-1.15)}
-{M6 需要 ASCEND_PROFILER_OUTPUT 数据 + --export-metrics JSON，如不可用则注明}
-{Phase 目标进度 + 收益路径估算}
+## 浜屻€佸叧閿寚鏍?(M1-M6)
+{M1-M5: 鐧惧垎姣旀寚鏍囪〃 (4 鍦烘櫙) + M6: ratio 鍒?(1.0=瀹岀編, 鐩爣 0.85-1.15)}
+{M6 闇€瑕?ASCEND_PROFILER_OUTPUT 鏁版嵁 + --export-metrics JSON锛屽涓嶅彲鐢ㄥ垯娉ㄦ槑}
+{Phase 鐩爣杩涘害 + 鏀剁泭璺緞浼扮畻}
 
-## 三、TOP 风险 (按影响排序)
-{风险表: #/风险/影响/状态/缓解}
+## 涓夈€乀OP 椋庨櫓 (鎸夊奖鍝嶆帓搴?
+{椋庨櫓琛? #/椋庨櫓/褰卞搷/鐘舵€?缂撹В}
 
-## 四、时间线
-{ASCII 时间线 + 里程碑表}
+## 鍥涖€佹椂闂寸嚎
+{ASCII 鏃堕棿绾?+ 閲岀▼纰戣〃}
 
-## 五、本周目标与任务分配
-{P0 事项表 + 各人本周任务表 (来自日报+站会)}
+## 浜斻€佹湰鍛ㄧ洰鏍囦笌浠诲姟鍒嗛厤
+{P0 浜嬮」琛?+ 鍚勪汉鏈懆浠诲姟琛?(鏉ヨ嚜鏃ユ姤+绔欎細)}
 
-## 六、下一步建议
-{按优先级的 5-6 条建议}
+## 鍏€佷笅涓€姝ュ缓璁?
+{鎸変紭鍏堢骇鐨?5-6 鏉″缓璁畗
 
-## 七、Git 分支全景
-{gitcode-ascend/develop 主仓新增 commit 分析 + rebase 建议}
-{gitcode 功能分支状态表 (领先/落后/是否已合入)}
-{关键未合入分支提醒}
+## 涓冦€丟it 鍒嗘敮鍏ㄦ櫙
+{gitcode-ascend/develop 涓讳粨鏂板 commit 鍒嗘瀽 + rebase 寤鸿}
+{gitcode 鍔熻兘鍒嗘敮鐘舵€佽〃 (棰嗗厛/钀藉悗/鏄惁宸插悎鍏?}
+{鍏抽敭鏈悎鍏ュ垎鏀彁閱拀
 
-## 八、Phase {N} 完成详情 (折叠)
-{任务完成清单}
-{MISS 根因分类}
-{代码与测试现状}
-{日报关键事件时间线}
+## 鍏€丳hase {N} 瀹屾垚璇︽儏 (鎶樺彔)
+{浠诲姟瀹屾垚娓呭崟}
+{MISS 鏍瑰洜鍒嗙被}
+{浠ｇ爜涓庢祴璇曠幇鐘秨
+{鏃ユ姤鍏抽敭浜嬩欢鏃堕棿绾縸
 ```
 
-**格式要求**: 面向全体项目成员分发。使用中文。表格对齐。ASCII 图表清晰。重要数字加粗。
+**鏍煎紡瑕佹眰**: 闈㈠悜鍏ㄤ綋椤圭洰鎴愬憳鍒嗗彂銆備娇鐢ㄤ腑鏂囥€傝〃鏍煎榻愩€侫SCII 鍥捐〃娓呮櫚銆傞噸瑕佹暟瀛楀姞绮椼€?
 
 ---
 
-## 输出模板: 个人版 (<人员代号>, console)
+## 杈撳嚭妯℃澘: 涓汉鐗?(<浜哄憳浠ｅ彿>, console)
 
-直接在 console 回复。包含:
+鐩存帴鍦?console 鍥炲銆傚寘鍚?
 
 ```markdown
-# {姓名} 专项看板 | {YYYY-MM-DD}
+# {濮撳悕} 涓撻」鐪嬫澘 | {YYYY-MM-DD}
 
-## 全局状态 (所有人需知)
-{2-3 句话: 当前 Phase, 距交付天数, 核心矛盾}
-{M1-M6 指标表 (精简, 4 场景)}
+## 鍏ㄥ眬鐘舵€?(鎵€鏈変汉闇€鐭?
+{2-3 鍙ヨ瘽: 褰撳墠 Phase, 璺濅氦浠樺ぉ鏁? 鏍稿績鐭涚浘}
+{M1-M6 鎸囨爣琛?(绮剧畝, 4 鍦烘櫙)}
 
-## 你的任务状态
-| 任务 | 截止 | 状态 | 说明 |
-{从 Work Plan + 日报提取该人的任务}
+## 浣犵殑浠诲姟鐘舵€?
+| 浠诲姟 | 鎴 | 鐘舵€?| 璇存槑 |
+{浠?Work Plan + 鏃ユ姤鎻愬彇璇ヤ汉鐨勪换鍔
 
-## 你的阻塞与风险
-{从日报/站会提取该人的阻塞项和风险信号}
+## 浣犵殑闃诲涓庨闄?
+{浠庢棩鎶?绔欎細鎻愬彇璇ヤ汉鐨勯樆濉為」鍜岄闄╀俊鍙穧
 
-## 依赖你的下游任务
-{谁在等你的产出? 哪些任务依赖你完成?}
+## 渚濊禆浣犵殑涓嬫父浠诲姟
+{璋佸湪绛変綘鐨勪骇鍑? 鍝簺浠诲姟渚濊禆浣犲畬鎴?}
 
-## 你需要关注的协作点
-{站会 action items 中分配给你的待办}
-{需要与谁对齐什么}
+## 浣犻渶瑕佸叧娉ㄧ殑鍗忎綔鐐?
+{绔欎細 action items 涓垎閰嶇粰浣犵殑寰呭姙}
+{闇€瑕佷笌璋佸榻愪粈涔坿
 
-## 建议下一步 (按优先级)
-1. {最重要}
+## 寤鸿涓嬩竴姝?(鎸変紭鍏堢骇)
+1. {鏈€閲嶈}
 2. ...
 3. ...
 ```
 
-## 人员代号映射
+## 浜哄憳浠ｅ彿鏄犲皠
 
-| 代号 | 姓名 | 职责域 | Work Plan 任务 |
+| 浠ｅ彿 | 濮撳悕 | 鑱岃矗鍩?| Work Plan 浠诲姟 |
 |------|------|--------|---------------|
-| **HXW** | 贺骁武 | SE, spec review + 决策 + 进展管理 | 全局 |
-| **TCX** | 唐楚笑 | 数据层: 工具链 + Microbench + Attention + 插值 | D1-D4, E1-E5, H5 |
-| **ZH** | 祝豪 | 查询引擎: _lookup_compute/comm/composite | B1-B2, G1-G2 |
-| **ZZY** | 张震宇 | Qwen3 op_mapping: BF16 验证 + Decode + 自动化 | C1-C5, H2, H4 |
-| **HDY** | 胡定一 | DSV3 op_mapping + HCCL + Profiling 分析 | C6-C10, H1, H3 |
-| **LJW** | 魏宇昊 | 融合 Pass: DispatchFFNCombine | F1-F2 |
-| **XJT** | 许锦涛 | (已交接给 LJW) CLI + Compile Pass | A1-A3 ✅ |
-| **DSH**/**CY** | 丁世浩(从云) | 客户 database 分支 | — |
-| **QCX** | 钱晨希 | NPU 算子专家支持 | — |
+| **HXW** | 璐洪獊姝?| SE, spec review + 鍐崇瓥 + 杩涘睍绠＄悊 | 鍏ㄥ眬 |
+| **TCX** | 鍞愭绗?| 鏁版嵁灞? 宸ュ叿閾?+ Microbench + Attention + 鎻掑€?| D1-D4, E1-E5, H5 |
+| **ZH** | 绁濊豹 | 鏌ヨ寮曟搸: _lookup_compute/comm/composite | B1-B2, G1-G2 |
+| **ZZY** | 寮犻渿瀹?| Qwen3 op_mapping: BF16 楠岃瘉 + Decode + 鑷姩鍖?| C1-C5, H2, H4 |
+| **HDY** | 鑳″畾涓€ | DSV3 op_mapping + HCCL + Profiling 鍒嗘瀽 | C6-C10, H1, H3 |
+| **LJW** | 榄忓畤鏄?| 铻嶅悎 Pass: DispatchFFNCombine | F1-F2 |
+| **XJT** | 璁搁敠娑?| (宸蹭氦鎺ョ粰 LJW) CLI + Compile Pass | A1-A3 鉁?|
+| **DSH**/**CY** | 涓佷笘娴?浠庝簯) | 瀹㈡埛 database 鍒嗘敮 | 鈥?|
+| **QCX** | 閽辨櫒甯?| NPU 绠楀瓙涓撳鏀寔 | 鈥?|
 
-## 关键文件路径
+## 鍏抽敭鏂囦欢璺緞
 
-| 文件 | 用途 |
+| 鏂囦欢 | 鐢ㄩ€?|
 |------|------|
-| `docs/perf_database/OPERATOR_PERF_DATABASE_DESIGN_zh_v1.4.md` | Design Doc (合规基准) |
-| `docs/perf_database/WORK_PLAN_Q1.md` | Work Plan v3.2 (任务+时间线) |
-| `docs/perf_database/CHANGELOG_*.md` | 变更日志 |
-| `docs/perf_database/reports/phase1-e2e-*/phase1_e2e_*_verification_report_zh.md` | E2E 验证报告 |
-| `/Users/horacehxw/Documents/hxw-华为/蚂蚁仿真器项目/日报\日报汇总.txt` | 飞书日报汇总 |
-| `/Users/horacehxw/Documents/hxw-华为/蚂蚁仿真器项目/日报\智能纪要*.pdf` | 站会纪要 |
-| `docs/perf_database/daily_project_status/` | **主输出目录** (git 仓库内，日期命名) |
-| `/Users/horacehxw/Documents/hxw-华为/蚂蚁仿真器项目/AI进展总结\` | 完整看板备份目录 |
-| `tensor_cast/performance_model/perf_database/` | 核心实现代码 |
-| `tools/perf_data_collection/` | 数据采集工具链 |
+| `docs/perf_database/OPERATOR_PERF_DATABASE_DESIGN_zh_v1.4.md` | Design Doc (鍚堣鍩哄噯) |
+| `docs/perf_database/WORK_PLAN_Q1.md` | Work Plan v3.2 (浠诲姟+鏃堕棿绾? |
+| `docs/perf_database/CHANGELOG_*.md` | 鍙樻洿鏃ュ織 |
+| `docs/perf_database/reports/phase1-e2e-*/phase1_e2e_*_verification_report_zh.md` | E2E 楠岃瘉鎶ュ憡 |
+| `/Users/horacehxw/Documents/hxw-鍗庝负/铓傝殎浠跨湡鍣ㄩ」鐩?鏃ユ姤\鏃ユ姤姹囨€?txt` | 椋炰功鏃ユ姤姹囨€?|
+| `/Users/horacehxw/Documents/hxw-鍗庝负/铓傝殎浠跨湡鍣ㄩ」鐩?鏃ユ姤\鏅鸿兘绾*.pdf` | 绔欎細绾 |
+| `docs/perf_database/daily_project_status/` | **涓昏緭鍑虹洰褰?* (git 浠撳簱鍐咃紝鏃ユ湡鍛藉悕) |
+| `/Users/horacehxw/Documents/hxw-鍗庝负/铓傝殎浠跨湡鍣ㄩ」鐩?AI杩涘睍鎬荤粨\` | 瀹屾暣鐪嬫澘澶囦唤鐩綍 |
+| `tensor_cast/performance_model/perf_database/` | 鏍稿績瀹炵幇浠ｇ爜 |
+| `tools/perf_data_collection/` | 鏁版嵁閲囬泦宸ュ叿閾?|
 
-## 注意事项
+## 娉ㄦ剰浜嬮」
 
-- **Design Doc 是一切的标准**: 每个模块的实现状态都要对照 Design Doc spec 检查。合规分析作为内部方法论使用，不单独成章输出到报告。仅当发现 spec vs 实现偏差时，将偏差写入风险章节
-- **日报是非结构化的**: 飞书聊天记录格式，多人交错，需要仔细解析上下文
-- **站会纪要由 AI 生成**: 质量参差，需与日报交叉验证
-- **gitcode-ascend/develop 只关注主分支**: 分析它比我们多了什么功能，是否需要 rebase
-- **gitcode 是我们团队的 fork**: 所有 remote 分支都要 fetch 后分析
-- **不要自动 commit**: 生成的文件不入 git
-- **中文输出**: 面向中文团队
+- **Design Doc 鏄竴鍒囩殑鏍囧噯**: 姣忎釜妯″潡鐨勫疄鐜扮姸鎬侀兘瑕佸鐓?Design Doc spec 妫€鏌ャ€傚悎瑙勫垎鏋愪綔涓哄唴閮ㄦ柟娉曡浣跨敤锛屼笉鍗曠嫭鎴愮珷杈撳嚭鍒版姤鍛娿€備粎褰撳彂鐜?spec vs 瀹炵幇鍋忓樊鏃讹紝灏嗗亸宸啓鍏ラ闄╃珷鑺?
+- **鏃ユ姤鏄潪缁撴瀯鍖栫殑**: 椋炰功鑱婂ぉ璁板綍鏍煎紡锛屽浜轰氦閿欙紝闇€瑕佷粩缁嗚В鏋愪笂涓嬫枃
+- **绔欎細绾鐢?AI 鐢熸垚**: 璐ㄩ噺鍙傚樊锛岄渶涓庢棩鎶ヤ氦鍙夐獙璇?
+- **gitcode-ascend/develop 鍙叧娉ㄤ富鍒嗘敮**: 鍒嗘瀽瀹冩瘮鎴戜滑澶氫簡浠€涔堝姛鑳斤紝鏄惁闇€瑕?rebase
+- **gitcode 鏄垜浠洟闃熺殑 fork**: 鎵€鏈?remote 鍒嗘敮閮借 fetch 鍚庡垎鏋?
+- **涓嶈鑷姩 commit**: 鐢熸垚鐨勬枃浠朵笉鍏?git
+- **涓枃杈撳嚭**: 闈㈠悜涓枃鍥㈤槦
+

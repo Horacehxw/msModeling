@@ -1,4 +1,4 @@
-# op_mapping Verifier — Sub-Agent Prompt
+﻿# op_mapping Verifier 鈥?Sub-Agent Prompt
 
 ## Task
 
@@ -31,15 +31,11 @@ $python_path -m tensor_cast.scripts.text_generate $model \
 ```
 
 Then extract ops:
-```bash
-$python_path tools/perf_data_collection/extract_tc_ops.py \
-  --chrome-trace /tmp/verify_trace.json \
-  --op-mapping $op_mapping_path \
-  --output /tmp/verify_ops.json
-```
+Use the current trace-to-op extraction workflow in this repo to generate
+`/tmp/verify_ops.json` from `/tmp/verify_trace.json`.
 
-Read the JSON output. Check `unmapped_ops` list — should be empty.
-Check `mapped_count` vs total — compute coverage percentage.
+Read the JSON output. Check `unmapped_ops` list 鈥?should be empty.
+Check `mapped_count` vs total 鈥?compute coverage percentage.
 
 ### Step 2: Hit Rate Check
 
@@ -55,8 +51,8 @@ Expected misses (acceptable):
 
 If profiling_csv_path is provided:
 
-1. Parse profiling CSV — group by Type, sum Duration(us) per Type
-2. From TC run log or chrome trace — extract per-op latency
+1. Parse profiling CSV 鈥?group by Type, sum Duration(us) per Type
+2. From TC run log or chrome trace 鈥?extract per-op latency
 3. For each kernel_type present in both:
    - Compare TC total latency vs profiling total latency
    - Compute ratio: tc_latency / profiling_latency
@@ -64,15 +60,15 @@ If profiling_csv_path is provided:
 
 ### Step 4: End-to-End Latency Comparison (requires profiling CSV)
 
-Sum all TC op latencies → tc_total_us
-Sum all profiling durations → profiling_total_us
+Sum all TC op latencies 鈫?tc_total_us
+Sum all profiling durations 鈫?profiling_total_us
 Compute ratio: tc_total_us / profiling_total_us
-Target: within ±30% (ratio 0.7 to 1.3)
+Target: within 卤30% (ratio 0.7 to 1.3)
 
 ### Step 5: Shape Matching Spot-Check
 
 For top-5 ops by invocation count in TC trace:
-1. Read the TC chrome trace — extract input shapes for one invocation
+1. Read the TC chrome trace 鈥?extract input shapes for one invocation
 2. Read the corresponding CSV file (kernel_type.csv)
 3. Verify that _inputs_match() in profiling_data_source.py would match
 4. Document which shape transforms were needed
@@ -82,15 +78,15 @@ For top-5 ops by invocation count in TC trace:
 For every op_mapping entry with `tc_input_count` set, verify it's safe. Full rules: `ref/tc_input_count_rules.md`.
 
 For each entry with tc_input_count:
-1. Read the corresponding CSV — check if input count is **fixed** (all rows have same count) or **variable** (mixed 1-input and 2-input rows)
-2. If variable: `tc_input_count` is **UNSAFE** — flag for removal
+1. Read the corresponding CSV 鈥?check if input count is **fixed** (all rows have same count) or **variable** (mixed 1-input and 2-input rows)
+2. If variable: `tc_input_count` is **UNSAFE** 鈥?flag for removal
 3. If fixed and CSV count > TC count by exactly the truncated amount: **SAFE**
 
 **Red flags:**
-- `tc_input_count: 1` on elementwise ops (add, mul, div, sub) — almost always unsafe
+- `tc_input_count: 1` on elementwise ops (add, mul, div, sub) 鈥?almost always unsafe
 - `tc_input_count` on ops where CSV has mixed broadcast patterns
 - `tc_input_count` set without evidence in notes field
-- `query_mode: elementwise` combined with `tc_input_count` — mutually exclusive, elementwise ops must not have tc_input_count
+- `query_mode: elementwise` combined with `tc_input_count` 鈥?mutually exclusive, elementwise ops must not have tc_input_count
 
 ### Step 7: zero_cost Classification Audit
 
@@ -98,8 +94,8 @@ For every `zero_cost: true` entry, verify the classification is correct. Full ru
 
 For each zero_cost entry:
 1. Search all profiling kernel_details.csv for the original kernel Type
-2. If Type **found in profiling** → zero_cost is WRONG (should have kernel_type mapping)
-3. If Type **not found** → verify the op's latency is captured by a fused kernel (document which one)
+2. If Type **found in profiling** 鈫?zero_cost is WRONG (should have kernel_type mapping)
+3. If Type **not found** 鈫?verify the op's latency is captured by a fused kernel (document which one)
 
 **Red flags:**
 - zero_cost on ops that DO appear in profiling (miscategorized)
@@ -111,7 +107,7 @@ For each zero_cost entry:
 Check for profiling.* entries whose kernel_type is already covered by a TC op mapping:
 1. Collect all kernel_types from non-profiling entries (including alternate_kernel_types and sub_kernels)
 2. For each profiling.* entry, check if its kernel_type is in the collected set
-3. If yes → redundant, should be removed (TC op mapping already covers this kernel)
+3. If yes 鈫?redundant, should be removed (TC op mapping already covers this kernel)
 
 ## Output
 
@@ -151,3 +147,5 @@ corrections_needed:
     issue: "<description>"
     suggested_action: "<fix>"
 ```
+
+

@@ -1,59 +1,59 @@
-# NPU Profiling 分析报告 (二): Kernel Duration 与端到端时间关系
+﻿# NPU Profiling 鍒嗘瀽鎶ュ憡 (浜?: Kernel Duration 涓庣鍒扮鏃堕棿鍏崇郴
 
-**软件栈**: CANN 8.5 / vLLM 0.15.0 / PyTorch 2.9.0 / Eager + aclgraph 模式
-**硬件**: Atlas 800 A3 (Ascend 910B)
-**模型**: DeepSeek-V3 (W8A8, TP=8/DP=2/EP, 16 NPU) + Qwen3-32B (BF16, TP=16)
-**分析脚本**: `docs/perf_database/reports/profiling_analysis_eager/`
-
----
-
-## 核心问题
-
-Perf-database 仿真的核心假设是: **将所有算子的 device kernel 执行时间加总, 即可近似端到端推理时间**. 本报告验证这一假设, 量化 kernel duration 加总与 e2e 的差距及其来源, 并分析 compute/comm 是否存在 overlap.
+**杞欢鏍?*: CANN 8.5 / vLLM 0.15.0 / PyTorch 2.9.0 / Eager + aclgraph 妯″紡
+**纭欢**: Atlas 800 A3 (Ascend 910B)
+**妯″瀷**: DeepSeek-V3 (W8A8, TP=8/DP=2/EP, 16 NPU) + Qwen3-32B (BF16, TP=16)
+**鍒嗘瀽鑴氭湰**: `docs/perf_database/reports/profiling_analysis_eager/`
 
 ---
 
-## 一、分析原理
+## 鏍稿績闂
 
-### 1.1 NPU 多 Stream 执行模型
+Perf-database 浠跨湡鐨勬牳蹇冨亣璁炬槸: **灏嗘墍鏈夌畻瀛愮殑 device kernel 鎵ц鏃堕棿鍔犳€? 鍗冲彲杩戜技绔埌绔帹鐞嗘椂闂?*. 鏈姤鍛婇獙璇佽繖涓€鍋囪, 閲忓寲 kernel duration 鍔犳€讳笌 e2e 鐨勫樊璺濆強鍏舵潵婧? 骞跺垎鏋?compute/comm 鏄惁瀛樺湪 overlap.
 
-NPU 上有多个硬件 stream 可以并行执行 kernel:
-- **Compute stream** (Stream 2): 执行计算 kernel (MatMul, Norm, Attention 等) 和 DispatchFFNCombine
-- **HCCL stream** (DSv3 Stream 8 / Qwen3 Stream 6): 执行通信 kernel (allReduce, reduceScatter 等)
+---
 
-### 1.2 kernel_details.csv 的双重计数问题
+## 涓€銆佸垎鏋愬師鐞?
 
-`kernel_details.csv` 记录了所有 stream 上每个 kernel 的 `Task Duration(us)`. 存在关键问题:
+### 1.1 NPU 澶?Stream 鎵ц妯″瀷
 
-**双重计数**: HCCL 通信 kernel 在 CSV 中被记录了两次 — 一次作为 `hcom_*` 行 (Stream ID = NaN), 一次作为 `AivKernel` 行 (在 HCCL stream 上). 时间戳和 duration 完全相同. 如果不去重, kernel_sum/e2e 会达到 1.5-2.0x, 容易误判为 "stream 并行导致 kernel 总时间 > e2e".
+NPU 涓婃湁澶氫釜纭欢 stream 鍙互骞惰鎵ц kernel:
+- **Compute stream** (Stream 2): 鎵ц璁＄畻 kernel (MatMul, Norm, Attention 绛? 鍜?DispatchFFNCombine
+- **HCCL stream** (DSv3 Stream 8 / Qwen3 Stream 6): 鎵ц閫氫俊 kernel (allReduce, reduceScatter 绛?
 
-### 1.3 理论模型
+### 1.2 kernel_details.csv 鐨勫弻閲嶈鏁伴棶棰?
 
-假设两个 stream 串行交替执行 (无 overlap):
+`kernel_details.csv` 璁板綍浜嗘墍鏈?stream 涓婃瘡涓?kernel 鐨?`Task Duration(us)`. 瀛樺湪鍏抽敭闂:
+
+**鍙岄噸璁℃暟**: HCCL 閫氫俊 kernel 鍦?CSV 涓璁板綍浜嗕袱娆?鈥?涓€娆′綔涓?`hcom_*` 琛?(Stream ID = NaN), 涓€娆′綔涓?`AivKernel` 琛?(鍦?HCCL stream 涓?. 鏃堕棿鎴冲拰 duration 瀹屽叏鐩稿悓. 濡傛灉涓嶅幓閲? kernel_sum/e2e 浼氳揪鍒?1.5-2.0x, 瀹规槗璇垽涓?"stream 骞惰瀵艰嚧 kernel 鎬绘椂闂?> e2e".
+
+### 1.3 鐞嗚妯″瀷
+
+鍋囪涓や釜 stream 涓茶浜ゆ浛鎵ц (鏃?overlap):
 
 ```
-e2e = Σ(compute_stream kernels) + Σ(comm_stream kernels) + Σ(CPU dispatch gaps)
+e2e = 危(compute_stream kernels) + 危(comm_stream kernels) + 危(CPU dispatch gaps)
     = t1_compute + t1_comm + t_cpu
 ```
 
-如果存在 overlap, 则 `t1_compute + t1_comm > e2e - t_cpu`.
+濡傛灉瀛樺湪 overlap, 鍒?`t1_compute + t1_comm > e2e - t_cpu`.
 
 ---
 
-## 二、分析方法
+## 浜屻€佸垎鏋愭柟娉?
 
-1. 按 `Stream ID` 分组 kernel_details.csv, **去除 Stream ID = NaN 的重复 HCCL 行**
-2. 利用 `Start Time(us)` 和 `Duration(us)` 计算每个 stream 的 span: `stream_span = max(start + duration) - min(start)`
-3. 对比: `CPU gap = stream_span - Σ(kernel_duration)` (该 stream 上 kernel 之间的空闲)
-4. 对比: `e2e - (t1_compute + t1_comm)` = 纯 CPU 调度开销
+1. 鎸?`Stream ID` 鍒嗙粍 kernel_details.csv, **鍘婚櫎 Stream ID = NaN 鐨勯噸澶?HCCL 琛?*
+2. 鍒╃敤 `Start Time(us)` 鍜?`Duration(us)` 璁＄畻姣忎釜 stream 鐨?span: `stream_span = max(start + duration) - min(start)`
+3. 瀵规瘮: `CPU gap = stream_span - 危(kernel_duration)` (璇?stream 涓?kernel 涔嬮棿鐨勭┖闂?
+4. 瀵规瘮: `e2e - (t1_compute + t1_comm)` = 绾?CPU 璋冨害寮€閿€
 
 ---
 
-## 三、Eager 模式结果
+## 涓夈€丒ager 妯″紡缁撴灉
 
 ### 3.1 DSv3
 
-| 场景 | t1_comp (ms) | t1_comm (ms) | t1_sum (ms) | e2e (ms) | **e2e - t1_sum** | **CPU gap%** | comp_span (ms) |
+| 鍦烘櫙 | t1_comp (ms) | t1_comm (ms) | t1_sum (ms) | e2e (ms) | **e2e - t1_sum** | **CPU gap%** | comp_span (ms) |
 |------|---------|---------|---------|---------|----------|----------|---------|
 | decode_b1 | 869 | 1488 | 2357 | 2652 | **+295ms** | **11.1%** | 2650 |
 | decode_b4 | 4245 | 1274 | 5519 | 5761 | **+242ms** | **4.2%** | 5759 |
@@ -66,7 +66,7 @@ e2e = Σ(compute_stream kernels) + Σ(comm_stream kernels) + Σ(CPU dispatch gap
 
 ### 3.2 Qwen3-32B
 
-| 场景 | t1_comp (ms) | t1_comm (ms) | t1_sum (ms) | e2e (ms) | **e2e - t1_sum** | **CPU gap%** | comp_span (ms) |
+| 鍦烘櫙 | t1_comp (ms) | t1_comm (ms) | t1_sum (ms) | e2e (ms) | **e2e - t1_sum** | **CPU gap%** | comp_span (ms) |
 |------|---------|---------|---------|---------|----------|----------|---------|
 | decode_b1 | 29 | 1103 | 1132 | 1463 | **+331ms** | **22.6%** | 1453 |
 | decode_b4 | 58 | 2029 | 2087 | 2218 | **+131ms** | **5.9%** | 2215 |
@@ -79,57 +79,57 @@ e2e = Σ(compute_stream kernels) + Σ(comm_stream kernels) + Σ(CPU dispatch gap
 
 ---
 
-## 四、关键发现
+## 鍥涖€佸叧閿彂鐜?
 
-### 4.1 去重后 t1_sum < e2e, 差值全部为正
+### 4.1 鍘婚噸鍚?t1_sum < e2e, 宸€煎叏閮ㄤ负姝?
 
-符合串行执行的理论模型:
+绗﹀悎涓茶鎵ц鐨勭悊璁烘ā鍨?
 ```
-e2e = t1_compute + t1_comm + t_cpu_dispatch   (完美成立)
+e2e = t1_compute + t1_comm + t_cpu_dispatch   (瀹岀編鎴愮珛)
 ```
 
-去重前的 `kernel_sum / e2e` 达到 1.5-2.0x, 是 HCCL 双重计数导致的假象.
+鍘婚噸鍓嶇殑 `kernel_sum / e2e` 杈惧埌 1.5-2.0x, 鏄?HCCL 鍙岄噸璁℃暟瀵艰嚧鐨勫亣璞?
 
-### 4.2 Compute/Comm 几乎无 overlap
+### 4.2 Compute/Comm 鍑犱箮鏃?overlap
 
-Eager 模式下 step_trace 的 Overlapped 项在所有场景 <0.1%. 两个 stream 交替串行执行:
+Eager 妯″紡涓?step_trace 鐨?Overlapped 椤瑰湪鎵€鏈夊満鏅?<0.1%. 涓や釜 stream 浜ゆ浛涓茶鎵ц:
 ```
 Compute stream: |--kernel--|  wait  |--kernel--|  wait  |--kernel--|
 Comm stream:        idle   |--comm--|   idle   |--comm--|   idle
 ```
 
-### 4.3 CPU 调度开销: batch 越大越小
+### 4.3 CPU 璋冨害寮€閿€: batch 瓒婂ぇ瓒婂皬
 
-| 场景 | DSv3 CPU gap% | Qwen3 CPU gap% | 说明 |
+| 鍦烘櫙 | DSv3 CPU gap% | Qwen3 CPU gap% | 璇存槑 |
 |------|--------|--------|------|
-| decode_b1 | 11.1% | 22.6% | kernel 数少但每个短, 下发 overhead 暴露 |
-| decode_b8 | 1.3% | 1.8% | 正常水平 |
-| decode_b32 | 0.7% | 1.6% | kernel 密集, CPU gap 可忽略 |
-| prefill_4096 | 32.6% | 35.5% | 异常高 — profiling 采集自身开销 (tracing + disk I/O) |
+| decode_b1 | 11.1% | 22.6% | kernel 鏁板皯浣嗘瘡涓煭, 涓嬪彂 overhead 鏆撮湶 |
+| decode_b8 | 1.3% | 1.8% | 姝ｅ父姘村钩 |
+| decode_b32 | 0.7% | 1.6% | kernel 瀵嗛泦, CPU gap 鍙拷鐣?|
+| prefill_4096 | 32.6% | 35.5% | 寮傚父楂?鈥?profiling 閲囬泦鑷韩寮€閿€ (tracing + disk I/O) |
 
-prefill_4096 的 CPU gap 异常高 (>30%), 原因是 profiling 工具自身的 tracing/写盘开销在计算密集场景下暴露. 正常推理 (不开 profiling) 时该开销不存在.
+prefill_4096 鐨?CPU gap 寮傚父楂?(>30%), 鍘熷洜鏄?profiling 宸ュ叿鑷韩鐨?tracing/鍐欑洏寮€閿€鍦ㄨ绠楀瘑闆嗗満鏅笅鏆撮湶. 姝ｅ父鎺ㄧ悊 (涓嶅紑 profiling) 鏃惰寮€閿€涓嶅瓨鍦?
 
-### 4.4 Compute stream span ≈ e2e
+### 4.4 Compute stream span 鈮?e2e
 
-compute stream 是主控 stream, 它的时间跨度几乎等于 e2e. 这意味着 compute stream 在等通信完成时处于 idle 状态 (体现为 CPU gap 的一部分).
+compute stream 鏄富鎺?stream, 瀹冪殑鏃堕棿璺ㄥ害鍑犱箮绛変簬 e2e. 杩欐剰鍛崇潃 compute stream 鍦ㄧ瓑閫氫俊瀹屾垚鏃跺浜?idle 鐘舵€?(浣撶幇涓?CPU gap 鐨勪竴閮ㄥ垎).
 
 ---
 
-## 五、aclgraph vs Eager: 计算通信掩盖对比
+## 浜斻€乤clgraph vs Eager: 璁＄畻閫氫俊鎺╃洊瀵规瘮
 
-### 5.1 分析目的
+### 5.1 鍒嗘瀽鐩殑
 
-aclgraph (cudagraph) 将整个计算图一次性提交给 device, 理论上可以减少 CPU dispatch 开销, 并可能启用 compute/comm pipeline 掩盖.
+aclgraph (cudagraph) 灏嗘暣涓绠楀浘涓€娆℃€ф彁浜ょ粰 device, 鐞嗚涓婂彲浠ュ噺灏?CPU dispatch 寮€閿€, 骞跺彲鑳藉惎鐢?compute/comm pipeline 鎺╃洊.
 
-### 5.2 数据来源
+### 5.2 鏁版嵁鏉ユ簮
 
 - DSv3 aclgraph: `deepseekv3_torch2.9.0_vllm0.15.0_cann8.5_aclgraph_PandD/` (W8A8, TP=8/DP=2/EP, `FULL_DECODE_ONLY` cudagraph)
 - Qwen3 aclgraph: `qwen3-32b_torch2.9.0_vllm0.15.0_cann8.5_aclgraph_PandD/` (BF16, TP=16, `FULL_DECODE_ONLY` cudagraph)
-- 两者均为 PandD 混合场景 (非单一 decode/prefill), 包含多个 step
+- 涓よ€呭潎涓?PandD 娣峰悎鍦烘櫙 (闈炲崟涓€ decode/prefill), 鍖呭惈澶氫釜 step
 
-### 5.3 Qwen3-32B step_trace 官方分解
+### 5.3 Qwen3-32B step_trace 瀹樻柟鍒嗚В
 
-| 项目 | aclgraph | eager (decode_b8 参考) |
+| 椤圭洰 | aclgraph | eager (decode_b8 鍙傝€? |
 |------|---------|---------|
 | E2E (Stage) | 3295 ms | 3361 ms |
 | Computing | 635 ms (19.3%) | 89 ms (2.6%) |
@@ -137,9 +137,9 @@ aclgraph (cudagraph) 将整个计算图一次性提交给 device, 理论上可�
 | **Overlapped** | **33.5 ms (1.0%)** | **~0 ms (<0.1%)** |
 | Free | 788 ms (23.9%) | 62 ms (1.8%) |
 
-### 5.4 DSv3 按 stream 计算 (无 step_trace)
+### 5.4 DSv3 鎸?stream 璁＄畻 (鏃?step_trace)
 
-| 项目 | aclgraph | eager (decode_b8 参考) |
+| 椤圭洰 | aclgraph | eager (decode_b8 鍙傝€? |
 |------|---------|---------|
 | E2E span | 3258 ms | 5425 ms |
 | t1_compute | 1149 ms | 4420 ms |
@@ -147,63 +147,64 @@ aclgraph (cudagraph) 将整个计算图一次性提交给 device, 理论上可�
 | **Overlap** | **0.3 ms (~0%)** | **~0 ms** |
 | Free/CPU gap | 1487 ms (45.6%) | 70 ms (1.3%) |
 
-> 注: aclgraph 是 PandD 混合场景, Computing 时间 (635ms) 比 eager 单 decode_b8 (89ms) 大得多, 是因为跨了多个 step (含 prefill). Free 中包含 step 间空闲.
+> 娉? aclgraph 鏄?PandD 娣峰悎鍦烘櫙, Computing 鏃堕棿 (635ms) 姣?eager 鍗?decode_b8 (89ms) 澶у緱澶? 鏄洜涓鸿法浜嗗涓?step (鍚?prefill). Free 涓寘鍚?step 闂寸┖闂?
 
-### 5.5 结论: aclgraph 模式下仍然几乎没有计算通信掩盖
+### 5.5 缁撹: aclgraph 妯″紡涓嬩粛鐒跺嚑涔庢病鏈夎绠楅€氫俊鎺╃洊
 
-- Qwen3 Overlapped = 33.5 ms, 仅占 Communication 总量的 **1.8%**
-- DSv3 Overlap = 0.3 ms, 可忽略
-- 两者与 eager 模式一样, compute/comm 本质上是串行交替执行
+- Qwen3 Overlapped = 33.5 ms, 浠呭崰 Communication 鎬婚噺鐨?**1.8%**
+- DSv3 Overlap = 0.3 ms, 鍙拷鐣?
+- 涓よ€呬笌 eager 妯″紡涓€鏍? compute/comm 鏈川涓婃槸涓茶浜ゆ浛鎵ц
 
-### 5.6 原因分析
+### 5.6 鍘熷洜鍒嗘瀽
 
-vllm-ascend 的 aclgraph (`FULL_DECODE_ONLY` cudagraph) 减少了 CPU dispatch 开销, 但并没有实现 compute/comm 的 pipeline 调度:
+vllm-ascend 鐨?aclgraph (`FULL_DECODE_ONLY` cudagraph) 鍑忓皯浜?CPU dispatch 寮€閿€, 浣嗗苟娌℃湁瀹炵幇 compute/comm 鐨?pipeline 璋冨害:
 
 ```
 Layer N:  |--compute--|--allReduce--|
 Layer N+1:                          |--compute--|--allReduce--|
-                                     ↑ 必须等 N 的 allReduce 完成
+                                     鈫?蹇呴』绛?N 鐨?allReduce 瀹屾垚
 ```
 
-每层的 compute 完成后才启动该层的 allReduce, allReduce 完成后才启动下一层的 compute. 这种**层内串行**模式无论 eager 还是 aclgraph 都一样 — aclgraph 只是把串行序列打包成图, 减少 CPU 参与.
+姣忓眰鐨?compute 瀹屾垚鍚庢墠鍚姩璇ュ眰鐨?allReduce, allReduce 瀹屾垚鍚庢墠鍚姩涓嬩竴灞傜殑 compute. 杩欑**灞傚唴涓茶**妯″紡鏃犺 eager 杩樻槸 aclgraph 閮戒竴鏍?鈥?aclgraph 鍙槸鎶婁覆琛屽簭鍒楁墦鍖呮垚鍥? 鍑忓皯 CPU 鍙備笌.
 
-真正实现 compute/comm overlap 需要**跨层 pipeline** (如 layer N 的 allReduce 与 layer N+1 的 compute 并行), 这需要框架层面的显式设计 (如 vllm-ascend 的 `multistream_overlap_shared_expert`, 但在此次 profiling 中被设为 `false`).
+鐪熸瀹炵幇 compute/comm overlap 闇€瑕?*璺ㄥ眰 pipeline** (濡?layer N 鐨?allReduce 涓?layer N+1 鐨?compute 骞惰), 杩欓渶瑕佹鏋跺眰闈㈢殑鏄惧紡璁捐 (濡?vllm-ascend 鐨?`multistream_overlap_shared_expert`, 浣嗗湪姝ゆ profiling 涓璁句负 `false`).
 
 ---
 
-## 六、对 Perf-Database 仿真的意义
+## 鍏€佸 Perf-Database 浠跨湡鐨勬剰涔?
 
-综合 eager 和 aclgraph 的分析结果:
+缁煎悎 eager 鍜?aclgraph 鐨勫垎鏋愮粨鏋?
 
-| 结论 | 说明 |
+| 缁撹 | 璇存槑 |
 |------|------|
-| **仿真公式** | `e2e ≈ Σ(compute_kernels) + Σ(comm_kernels) + t_cpu` — 无需建模 overlap |
-| **compute kernel duration 可信** | 单 stream 上无并行, 每个 kernel 的 Task Duration 是真实的 device 执行时间 |
-| **CPU gap 可忽略** | batch≥8 时 <2%, 仿真可不建模 CPU dispatch; batch=1 时需加 ~10-20% 修正 |
-| **通信 kernel duration 含等待** | comm kernel 的 Task Duration 包含了等 compute stream ready 的时间, 不等于纯网络传输时延. 仿真通信应使用带宽模型而非查表 |
-| **prefill_4096 的 Free 不代表真实** | 32% 的 CPU gap 是 profiling 工具 overhead, 不应作为仿真基准 |
-| **kernel_details.csv 需去重** | HCCL kernel 被记录两次 (hcom_* 行 + AivKernel 行), 使用时必须按 Stream ID 去重 |
+| **浠跨湡鍏紡** | `e2e 鈮?危(compute_kernels) + 危(comm_kernels) + t_cpu` 鈥?鏃犻渶寤烘ā overlap |
+| **compute kernel duration 鍙俊** | 鍗?stream 涓婃棤骞惰, 姣忎釜 kernel 鐨?Task Duration 鏄湡瀹炵殑 device 鎵ц鏃堕棿 |
+| **CPU gap 鍙拷鐣?* | batch鈮? 鏃?<2%, 浠跨湡鍙笉寤烘ā CPU dispatch; batch=1 鏃堕渶鍔?~10-20% 淇 |
+| **閫氫俊 kernel duration 鍚瓑寰?* | comm kernel 鐨?Task Duration 鍖呭惈浜嗙瓑 compute stream ready 鐨勬椂闂? 涓嶇瓑浜庣函缃戠粶浼犺緭鏃跺欢. 浠跨湡閫氫俊搴斾娇鐢ㄥ甫瀹芥ā鍨嬭€岄潪鏌ヨ〃 |
+| **prefill_4096 鐨?Free 涓嶄唬琛ㄧ湡瀹?* | 32% 鐨?CPU gap 鏄?profiling 宸ュ叿 overhead, 涓嶅簲浣滀负浠跨湡鍩哄噯 |
+| **kernel_details.csv 闇€鍘婚噸** | HCCL kernel 琚褰曚袱娆?(hcom_* 琛?+ AivKernel 琛?, 浣跨敤鏃跺繀椤绘寜 Stream ID 鍘婚噸 |
 
 ---
 
-## 附录
+## 闄勫綍
 
-### A. 数据文件
+### A. 鏁版嵁鏂囦欢
 
-**Eager 模式** (`dsv3_qwen3_full_torch2.9.0_vllm0.15.0_cann8.5_eager/`):
-每个场景包含: `kernel_details.csv` (逐 kernel 详情), `op_statistic.csv` (聚合统计), `step_trace_time.csv` (compute/comm/free 分解), `communication.json`, `trace_view.json`.
+**Eager 妯″紡** (`dsv3_qwen3_full_torch2.9.0_vllm0.15.0_cann8.5_eager/`):
+姣忎釜鍦烘櫙鍖呭惈: `kernel_details.csv` (閫?kernel 璇︽儏), `op_statistic.csv` (鑱氬悎缁熻), `step_trace_time.csv` (compute/comm/free 鍒嗚В), `communication.json`, `trace_view.json`.
 
-**aclgraph 模式**:
-- DSv3: `deepseekv3_torch2.9.0_vllm0.15.0_cann8.5_aclgraph_PandD/kernel_details_deepseekv3-cann85.csv` (仅 kernel_details)
+**aclgraph 妯″紡**:
+- DSv3: `deepseekv3_torch2.9.0_vllm0.15.0_cann8.5_aclgraph_PandD/kernel_details_deepseekv3-cann85.csv` (浠?kernel_details)
 - Qwen3: `qwen3-32b_torch2.9.0_vllm0.15.0_cann8.5_aclgraph_PandD/.../kernel_details.csv` + `step_trace_time.csv`
 
-### B. 分析脚本
+### B. 鍒嗘瀽鑴氭湰
 
 ```bash
-python3.10 docs/perf_database/reports/profiling_analysis_eager/profiling_analysis.py          # CV/outlier 深度分析, 含 per-stream 时间计算
-python3.10 docs/perf_database/reports/profiling_analysis_eager/analyze_aclgraph_overlap.py   # aclgraph compute/comm overlap 分析
+python3.10 docs/perf_database/reports/profiling_analysis_eager/profiling_analysis.py          # CV/outlier 娣卞害鍒嗘瀽, 鍚?per-stream 鏃堕棿璁＄畻
+python3.10 docs/perf_database/reports/profiling_analysis_eager/analyze_aclgraph_overlap.py   # aclgraph compute/comm overlap 鍒嗘瀽
 ```
 
-### C. 相关报告
+### C. 鐩稿叧鎶ュ憡
 
-- 姊妹报告: [算子稳定性与接入可行性](profiling_analysis_op_stability_zh.md) — 分析每个算子在相同 shape 下的 CV, 评估查表可行性
+- 濮婂鎶ュ憡: [绠楀瓙绋冲畾鎬т笌鎺ュ叆鍙鎬(profiling_analysis_op_stability_zh.md) 鈥?鍒嗘瀽姣忎釜绠楀瓙鍦ㄧ浉鍚?shape 涓嬬殑 CV, 璇勪及鏌ヨ〃鍙鎬?
+

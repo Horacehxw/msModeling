@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Profiling data analysis for DSv3 & Qwen3-32B (CANN 8.5 / vLLM 0.15.0 / torch 2.9.0).
 
 Analyzes kernel_details.csv for:
@@ -357,3 +357,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

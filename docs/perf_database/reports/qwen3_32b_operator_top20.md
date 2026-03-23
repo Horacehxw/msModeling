@@ -1,95 +1,96 @@
-# Qwen3-32B 算子耗时 Top-20 清单
+﻿# Qwen3-32B 绠楀瓙鑰楁椂 Top-20 娓呭崟
 
-**数据来源**: `kernel_details_qwen3-32b_cann85.csv`
-**硬件**: ATLAS_800_A3_752T_128G_DIE，16 卡，BF16 aclgraph
-**CANN 版本**: 8.5
-**负责人**: ZZY
-**日期**: 2026-03-10
-
----
-
-## 统计概览
-
-- **总耗时**: 4,461,888 us（4.462 s）
-- **kernel Type 种数**: 38 种
-- **总 kernel 调用次数**: 28,641
-- **Top-20 累计覆盖**: 99.76%
+**鏁版嵁鏉ユ簮**: `kernel_details_qwen3-32b_cann85.csv`
+**纭欢**: ATLAS_800_A3_752T_128G_DIE锛?6 鍗★紝BF16 aclgraph
+**CANN 鐗堟湰**: 8.5
+**璐熻矗浜?*: ZZY
+**鏃ユ湡**: 2026-03-10
 
 ---
 
-## Top-20 算子耗时排名
+## 缁熻姒傝
 
-| 排名 | kernel Type | 调用次数 | 总耗时 (us) | 占比 | 累计占比 | 类别 | 备注 |
+- **鎬昏€楁椂**: 4,461,888 us锛?.462 s锛?
+- **kernel Type 绉嶆暟**: 38 绉?
+- **鎬?kernel 璋冪敤娆℃暟**: 28,641
+- **Top-20 绱瑕嗙洊**: 99.76%
+
+---
+
+## Top-20 绠楀瓙鑰楁椂鎺掑悕
+
+| 鎺掑悕 | kernel Type | 璋冪敤娆℃暟 | 鎬昏€楁椂 (us) | 鍗犳瘮 | 绱鍗犳瘮 | 绫诲埆 | 澶囨敞 |
 |------|------------|--------:|----------:|-----:|--------:|------|------|
-| 1 | hcom_allReduce_ | 7,748 | 3,755,792 | 84.17% | 84.17% | 通信 | TP all-reduce，绝对主导 |
-| 2 | MatMulV2 | 7,710 | 245,135 | 5.49% | 89.67% | 计算 | BF16 矩阵乘（主力 GEMM） |
-| 3 | FusedInferAttentionScore | 1,920 | 118,485 | 2.66% | 92.32% | 计算 | Prefill + Decode attention |
-| 4 | AddRmsNormBias | 3,840 | 70,568 | 1.58% | 93.91% | 计算 | Add + RmsNorm 融合（CANN 8.5） |
-| 5 | DSARandomUniform | 30 | 54,614 | 1.22% | 95.13% | 其他 | 随机数生成，sampling pipeline，TC 不模拟 |
-| 6 | Sort | 30 | 47,139 | 1.06% | 96.19% | 其他 | Sampling top-k sort，TC 不模拟 |
-| 7 | SwiGlu | 1,920 | 33,273 | 0.75% | 96.93% | 计算 | SwiGlu 激活 |
-| 8 | split_qkv_rmsnorm_rope_kernel | 1,890 | 31,102 | 0.70% | 97.63% | 计算 | Triton 融合：QKV split + RmsNorm + RoPE（63/64 层） |
-| 9 | hcom_allGather_ | 30 | 27,921 | 0.63% | 98.26% | 通信 | all-gather（sampling 阶段） |
-| 10 | ReshapeAndCacheNdKernel | 1,920 | 23,929 | 0.54% | 98.79% | 计算 | KV cache 写入 |
-| 11 | allgatherAicpuKernel | 30 | 10,754 | 0.24% | 99.03% | 通信 | AICPU all-gather 变体（graph 编译路径） |
-| 12 | SoftmaxV2 | 30 | 6,273 | 0.14% | 99.17% | 其他 | Sampling softmax，TC 不模拟 |
-| 13 | RealDiv | 60 | 4,486 | 0.10% | 99.27% | 计算 | 除法 |
-| 14 | MaskedFill | 60 | 4,387 | 0.10% | 99.37% | 其他 | Sampling mask，TC 不模拟 |
-| 15 | ArgMaxV2 | 30 | 4,281 | 0.10% | 99.47% | 其他 | Sampling argmax，TC 不模拟 |
-| 16 | Neg | 30 | 4,015 | 0.09% | 99.56% | 其他 | Sampling 内部，TC 不模拟 |
-| 17 | ApplyTopKTopPCustom | 30 | 2,766 | 0.06% | 99.62% | 其他 | vllm-ascend 自定义 sampling op，TC 不模拟 |
-| 18 | Add | 30 | 2,412 | 0.05% | 99.67% | 计算 | 残差加法 |
-| 19 | GreaterEqual | 60 | 2,094 | 0.05% | 99.72% | 其他 | Sampling 比较，TC 不模拟 |
-| 20 | Mul | 90 | 1,942 | 0.04% | 99.76% | 计算 | 标量乘法 |
+| 1 | hcom_allReduce_ | 7,748 | 3,755,792 | 84.17% | 84.17% | 閫氫俊 | TP all-reduce锛岀粷瀵逛富瀵?|
+| 2 | MatMulV2 | 7,710 | 245,135 | 5.49% | 89.67% | 璁＄畻 | BF16 鐭╅樀涔橈紙涓诲姏 GEMM锛?|
+| 3 | FusedInferAttentionScore | 1,920 | 118,485 | 2.66% | 92.32% | 璁＄畻 | Prefill + Decode attention |
+| 4 | AddRmsNormBias | 3,840 | 70,568 | 1.58% | 93.91% | 璁＄畻 | Add + RmsNorm 铻嶅悎锛圕ANN 8.5锛?|
+| 5 | DSARandomUniform | 30 | 54,614 | 1.22% | 95.13% | 鍏朵粬 | 闅忔満鏁扮敓鎴愶紝sampling pipeline锛孴C 涓嶆ā鎷?|
+| 6 | Sort | 30 | 47,139 | 1.06% | 96.19% | 鍏朵粬 | Sampling top-k sort锛孴C 涓嶆ā鎷?|
+| 7 | SwiGlu | 1,920 | 33,273 | 0.75% | 96.93% | 璁＄畻 | SwiGlu 婵€娲?|
+| 8 | split_qkv_rmsnorm_rope_kernel | 1,890 | 31,102 | 0.70% | 97.63% | 璁＄畻 | Triton 铻嶅悎锛歈KV split + RmsNorm + RoPE锛?3/64 灞傦級 |
+| 9 | hcom_allGather_ | 30 | 27,921 | 0.63% | 98.26% | 閫氫俊 | all-gather锛坰ampling 闃舵锛?|
+| 10 | ReshapeAndCacheNdKernel | 1,920 | 23,929 | 0.54% | 98.79% | 璁＄畻 | KV cache 鍐欏叆 |
+| 11 | allgatherAicpuKernel | 30 | 10,754 | 0.24% | 99.03% | 閫氫俊 | AICPU all-gather 鍙樹綋锛坓raph 缂栬瘧璺緞锛?|
+| 12 | SoftmaxV2 | 30 | 6,273 | 0.14% | 99.17% | 鍏朵粬 | Sampling softmax锛孴C 涓嶆ā鎷?|
+| 13 | RealDiv | 60 | 4,486 | 0.10% | 99.27% | 璁＄畻 | 闄ゆ硶 |
+| 14 | MaskedFill | 60 | 4,387 | 0.10% | 99.37% | 鍏朵粬 | Sampling mask锛孴C 涓嶆ā鎷?|
+| 15 | ArgMaxV2 | 30 | 4,281 | 0.10% | 99.47% | 鍏朵粬 | Sampling argmax锛孴C 涓嶆ā鎷?|
+| 16 | Neg | 30 | 4,015 | 0.09% | 99.56% | 鍏朵粬 | Sampling 鍐呴儴锛孴C 涓嶆ā鎷?|
+| 17 | ApplyTopKTopPCustom | 30 | 2,766 | 0.06% | 99.62% | 鍏朵粬 | vllm-ascend 鑷畾涔?sampling op锛孴C 涓嶆ā鎷?|
+| 18 | Add | 30 | 2,412 | 0.05% | 99.67% | 璁＄畻 | 娈嬪樊鍔犳硶 |
+| 19 | GreaterEqual | 60 | 2,094 | 0.05% | 99.72% | 鍏朵粬 | Sampling 姣旇緝锛孴C 涓嶆ā鎷?|
+| 20 | Mul | 90 | 1,942 | 0.04% | 99.76% | 璁＄畻 | 鏍囬噺涔樻硶 |
 
 ---
 
-## 关键观察
+## 鍏抽敭瑙傚療
 
-### 耗时分布
+### 鑰楁椂鍒嗗竷
 
-- **通信绝对主导**：`hcom_allReduce_` 单项占 **84.2%**，是 Qwen3-32B BF16 TP 推理的核心瓶颈
-- **计算侧集中**：`MatMulV2`（5.5%）+ `FusedInferAttentionScore`（2.7%）+ `AddRmsNormBias`（1.6%）合计 9.8%
-- **Sampling 开销不可忽视**：`DSARandomUniform`（1.2%）+ `Sort`（1.1%）合计 2.3%，但 TC 不模拟 sampling，不影响推理耗时估算
-- **与 DSV3 对比**：Qwen3 无 MoE，无 `DispatchFFNCombine`，通信形式为 all-reduce（TP），而非 DSV3 的 reduce-scatter + all-gather（SP）
+- **閫氫俊缁濆涓诲**锛歚hcom_allReduce_` 鍗曢」鍗?**84.2%**锛屾槸 Qwen3-32B BF16 TP 鎺ㄧ悊鐨勬牳蹇冪摱棰?
+- **璁＄畻渚ч泦涓?*锛歚MatMulV2`锛?.5%锛? `FusedInferAttentionScore`锛?.7%锛? `AddRmsNormBias`锛?.6%锛夊悎璁?9.8%
+- **Sampling 寮€閿€涓嶅彲蹇借**锛歚DSARandomUniform`锛?.2%锛? `Sort`锛?.1%锛夊悎璁?2.3%锛屼絾 TC 涓嶆ā鎷?sampling锛屼笉褰卞搷鎺ㄧ悊鑰楁椂浼扮畻
+- **涓?DSV3 瀵规瘮**锛歈wen3 鏃?MoE锛屾棤 `DispatchFFNCombine`锛岄€氫俊褰㈠紡涓?all-reduce锛圱P锛夛紝鑰岄潪 DSV3 鐨?reduce-scatter + all-gather锛圫P锛?
 
-### 计算+通信融合算子确认
+### 璁＄畻+閫氫俊铻嶅悎绠楀瓙纭
 
-**结论：Qwen3-32B Profiling 中不存在计算+通信融合类 kernel。**
+**缁撹锛歈wen3-32B Profiling 涓笉瀛樺湪璁＄畻+閫氫俊铻嶅悎绫?kernel銆?*
 
-| 融合类型 | kernel Type | 是否存在 | 说明 |
+| 铻嶅悎绫诲瀷 | kernel Type | 鏄惁瀛樺湪 | 璇存槑 |
 |---------|------------|---------|------|
-| MC2（MatMul + AllReduce） | 无专用 kernel | 否 | `MatMulV2` 和 `hcom_allReduce_` 分开记录 |
-| MoE EP 融合（DispatchFFNCombine） | 无 | 否 | Qwen3 无 MoE 结构 |
+| MC2锛圡atMul + AllReduce锛?| 鏃犱笓鐢?kernel | 鍚?| `MatMulV2` 鍜?`hcom_allReduce_` 鍒嗗紑璁板綍 |
+| MoE EP 铻嶅悎锛圖ispatchFFNCombine锛?| 鏃?| 鍚?| Qwen3 鏃?MoE 缁撴瀯 |
 
-`MatMulV2`（7710 次）和 `hcom_allReduce_`（7748 次）调用次数几乎相等，印证了 TP 模式下每个 matmul 后跟一次 all-reduce，两者独立记录，无融合。
+`MatMulV2`锛?710 娆★級鍜?`hcom_allReduce_`锛?748 娆★級璋冪敤娆℃暟鍑犱箮鐩哥瓑锛屽嵃璇佷簡 TP 妯″紡涓嬫瘡涓?matmul 鍚庤窡涓€娆?all-reduce锛屼袱鑰呯嫭绔嬭褰曪紝鏃犺瀺鍚堛€?
 
-### op_mapping 覆盖状态（C3 参考）
+### op_mapping 瑕嗙洊鐘舵€侊紙C3 鍙傝€冿級
 
-| kernel Type | TC op 映射 | 状态 |
+| kernel Type | TC op 鏄犲皠 | 鐘舵€?|
 |------------|-----------|------|
-| hcom_allReduce_ | `tensor_cast.all_reduce` | 已配置 |
-| MatMulV2 | `aten.mm.default` | 已配置 |
-| FusedInferAttentionScore | `tensor_cast.attention` | 已配置（attention_special） |
-| AddRmsNormBias | `tensor_cast.add_rms_norm` / `add_rms_norm2` | 已配置（CANN 8.5） |
-| DSARandomUniform | — | TC 不模拟（sampling） |
-| Sort | — | TC 不模拟（sampling） |
-| SwiGlu | `tensor_cast.swiglu` | 已配置 |
-| split_qkv_rmsnorm_rope_kernel | `tensor_cast.apply_rope`（composite） | Triton 融合 kernel，TC 分解为 rms_norm + apply_rope |
-| hcom_allGather_ | `tensor_cast.all_gather` | 已配置 |
-| ReshapeAndCacheNdKernel | `tensor_cast.reshape_and_cache` | 已配置 |
-| allgatherAicpuKernel | `tensor_cast.all_gather`（alternate） | 已配置 |
-| SoftmaxV2 | — | TC 不模拟（sampling） |
-| RealDiv | `aten.div.Tensor` | 已配置（alternate RealDiv） |
-| MaskedFill | — | TC 不模拟（sampling） |
-| ArgMaxV2 | — | TC 不模拟（sampling） |
-| Neg | — | TC 不模拟（sampling） |
-| ApplyTopKTopPCustom | — | TC 不模拟（sampling） |
-| Add | `aten.add.Tensor` | 已配置 |
-| GreaterEqual | — | TC 不模拟（sampling） |
-| Mul | `aten.mul.Tensor` | 已配置 |
+| hcom_allReduce_ | `tensor_cast.all_reduce` | 宸查厤缃?|
+| MatMulV2 | `aten.mm.default` | 宸查厤缃?|
+| FusedInferAttentionScore | `tensor_cast.attention` | 宸查厤缃紙attention_special锛?|
+| AddRmsNormBias | `tensor_cast.add_rms_norm` / `add_rms_norm2` | 宸查厤缃紙CANN 8.5锛?|
+| DSARandomUniform | 鈥?| TC 涓嶆ā鎷燂紙sampling锛?|
+| Sort | 鈥?| TC 涓嶆ā鎷燂紙sampling锛?|
+| SwiGlu | `tensor_cast.swiglu` | 宸查厤缃?|
+| split_qkv_rmsnorm_rope_kernel | `tensor_cast.apply_rope`锛坈omposite锛?| Triton 铻嶅悎 kernel锛孴C 鍒嗚В涓?rms_norm + apply_rope |
+| hcom_allGather_ | `tensor_cast.all_gather` | 宸查厤缃?|
+| ReshapeAndCacheNdKernel | `tensor_cast.reshape_and_cache` | 宸查厤缃?|
+| allgatherAicpuKernel | `tensor_cast.all_gather`锛坅lternate锛?| 宸查厤缃?|
+| SoftmaxV2 | 鈥?| TC 涓嶆ā鎷燂紙sampling锛?|
+| RealDiv | `aten.div.Tensor` | 宸查厤缃紙alternate RealDiv锛?|
+| MaskedFill | 鈥?| TC 涓嶆ā鎷燂紙sampling锛?|
+| ArgMaxV2 | 鈥?| TC 涓嶆ā鎷燂紙sampling锛?|
+| Neg | 鈥?| TC 涓嶆ā鎷燂紙sampling锛?|
+| ApplyTopKTopPCustom | 鈥?| TC 涓嶆ā鎷燂紙sampling锛?|
+| Add | `aten.add.Tensor` | 宸查厤缃?|
+| GreaterEqual | 鈥?| TC 涓嶆ā鎷燂紙sampling锛?|
+| Mul | `aten.mul.Tensor` | 宸查厤缃?|
 
-### 注意事项（C3 验证重点）
+### 娉ㄦ剰浜嬮」锛圕3 楠岃瘉閲嶇偣锛?
 
-- **`split_qkv_rmsnorm_rope_kernel`**（排名 8，0.70%）：vllm-ascend Triton 融合 kernel，TC 无对应单一 op，分解为 `rms_norm + apply_rope`。需确认分解后耗时估算误差是否可接受
-- **`hcom_allReduce_` 占比异常高（84%）**：工作计划风险 R7 已标注，Phase 1 mini 验证需重点确认 `CommAnalytic` 在此场景下的精度
+- **`split_qkv_rmsnorm_rope_kernel`**锛堟帓鍚?8锛?.70%锛夛細vllm-ascend Triton 铻嶅悎 kernel锛孴C 鏃犲搴斿崟涓€ op锛屽垎瑙ｄ负 `rms_norm + apply_rope`銆傞渶纭鍒嗚В鍚庤€楁椂浼扮畻璇樊鏄惁鍙帴鍙?
+- **`hcom_allReduce_` 鍗犳瘮寮傚父楂橈紙84%锛?*锛氬伐浣滆鍒掗闄?R7 宸叉爣娉紝Phase 1 mini 楠岃瘉闇€閲嶇偣纭 `CommAnalytic` 鍦ㄦ鍦烘櫙涓嬬殑绮惧害
+

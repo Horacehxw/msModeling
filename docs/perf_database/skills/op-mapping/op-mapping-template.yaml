@@ -1,11 +1,11 @@
-# op_mapping.yaml — Worker Output Template
+﻿# op_mapping.yaml 鈥?Worker Output Template
 #
 # Each worker agent produces ONE snippet in this format for a single operator.
 # The orchestrator merges all snippets into the final op_mapping.yaml.
 #
 # RULES:
 #   - kernel_type, composite, zero_cost are MUTUALLY EXCLUSIVE (exactly one required)
-#   - notes field is REQUIRED — must contain full evidence chain
+#   - notes field is REQUIRED 鈥?must contain full evidence chain
 #   - alternate_kernel_types only for compute ops with multiple NPU kernel variants
 
 # --- Variant A: Compute Op (most common) ---
@@ -79,3 +79,4 @@
 #       note: "<op-plugin source and aclnn mapping>"
 #   aclnn: [<aclnn_kernel_1>, <aclnn_kernel_2>]   # or single string
 #   microbench_api: "<default API for microbenchmark scripts>"
+
