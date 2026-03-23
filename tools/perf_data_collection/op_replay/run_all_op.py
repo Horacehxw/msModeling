@@ -1,12 +1,12 @@
 """
-Run all operator replay scripts in the current op_run directory.
+Run all operator replay scripts in the current op_replay directory.
 
 Purpose:
   Discover every *_run.py script next to this file and execute each one with
   the same --device and --vllm-ascend-version arguments.
 
 Usage:
-  python tensor_cast/performance_model/perf_database/op_run/run_all_op.py ^
+  python tools/perf_data_collection/op_replay/run_all_op.py ^
     --device ATLAS_800_A3_752T_128G_DIE --vllm-ascend-version 0.13.0
 
 Arguments:
@@ -32,7 +32,7 @@ def build_argparser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         formatter_class=argparse.RawTextHelpFormatter,
         description=(
-            "Run all operator replay scripts under perf_database/op_run.\n"
+            "Run all operator replay scripts under tools/perf_data_collection/op_replay.\n"
             "Each operator script is executed once with the same device and\n"
             "vllm_ascend version arguments.\n"
             "By default, scripts run in-process so a single outer `msprof`\n"
@@ -40,9 +40,9 @@ def build_argparser() -> argparse.ArgumentParser:
         ),
         epilog=(
             "Usage examples:\n"
-            "  py -3 tensor_cast/performance_model/perf_database/op_run/run_all_op.py "
+            "  py -3 tools/perf_data_collection/op_replay/run_all_op.py "
             "--device ATLAS_800_A3_752T_128G_DIE --vllm-ascend-version 0.13.0\n"
-            "  python tensor_cast/performance_model/perf_database/op_run/run_all_op.py "
+            "  python tools/perf_data_collection/op_replay/run_all_op.py "
             "--device TEST_DEVICE --vllm-ascend-version 0.9.2\n"
             "  msprof python tools/perf_data_collection/op_replay/run_all_op.py "
             "--device ATLAS_800_A3_752T_128G_DIE --vllm-ascend-version 0.15.0\n\n"

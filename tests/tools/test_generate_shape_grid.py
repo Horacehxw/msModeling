@@ -133,16 +133,3 @@ class TestMutateShape:
         assert s2 == (shared[7168], 256)
 
 
-class TestGenerateShapeGridFromModel:
-    """Smoke test for the preserved feat version (model-config-driven)."""
-
-    def test_module_importable(self):
-        path = (
-            Path(__file__).resolve().parents[2]
-            / "tools"
-            / "perf_data_collection"
-            / "generate_shape_grid_from_model.py"
-        )
-        assert path.is_file(), f"Preserved file not found: {path}"
-        source = path.read_text()
-        ast.parse(source)

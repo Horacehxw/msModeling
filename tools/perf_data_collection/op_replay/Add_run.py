@@ -8,7 +8,7 @@ Purpose:
   then execute torch.add() workload.
 
 Usage:
-  python tensor_cast/performance_model/perf_database/op_run/Add_run.py ^
+  python tools/perf_data_collection/op_replay/Add_run.py ^
     --device ATLAS_800_A3_752T_128G_DIE --vllm-ascend-version 0.13.0
 """
 
@@ -35,7 +35,7 @@ def build_argparser():
             "Input Shapes / Input Formats / Input Data Types, then runs torch.add()."
         ),
         usage_examples=[
-            "python tensor_cast/performance_model/perf_database/op_run/Add_run.py "
+            "python tools/perf_data_collection/op_replay/Add_run.py "
             "--device ATLAS_800_A3_752T_128G_DIE --vllm-ascend-version 0.13.0",
         ],
         version_help="vLLM-Ascend version, e.g. 0.9.2.",
