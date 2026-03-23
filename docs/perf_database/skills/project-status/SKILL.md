@@ -119,22 +119,22 @@ python3.10 -m tensor_cast.scripts.text_generate deepseek-ai/DeepSeek-V3 \
 #   2. 根据 batch dim 和 DP/TP 配置反推 TC 的 nq/ql 参数
 #   3. 用 anchor kernel 切分 forward passes, 验证每个 pass 结构是否一致
 #
-# Qwen3 profiling 数据 (0314):
+# Qwen3 profiling 数据 (0314, 权威来源):
 PROF_QWEN3="/Users/horacehxw/Data/Profiling/Profiling-0317-full/profiler-qwen3-0314"
-# DSv3 profiling 数据 (0319, 最新):
+# DSv3 profiling 数据 (0319, 权威来源):
 PROF_DSV3="/Users/horacehxw/Data/Profiling/Profiling-0320-DSv3/profiler-dsv3-0319"
-# Phase 1 E2E 基线 (0313, Qwen3 M6 用):
-PROF_BASE="/Users/horacehxw/Data/Profiling/Profiling-0313-phase1-e2e-test"
+# 注意: 不再使用 Profiling-0313-phase1-e2e-test (旧基线), Qwen3/DSv3 统一用上面的路径
 
+# Qwen3 M6: 使用 0314 profiling 数据
 python3.10 tools/perf_data_collection/compute_m6.py \
   --tc-report results/qwen3_prefill_metrics.json \
-  --profiler-output "$PROF_BASE/profilier_prefill_qwen32b-input4096-output1/$(ls $PROF_BASE/profilier_prefill_qwen32b-input4096-output1/)/ASCEND_PROFILER_OUTPUT"
+  --profiler-output "$PROF_QWEN3/profiler-qwen3-input4096-output1"
 
 python3.10 tools/perf_data_collection/compute_m6.py \
   --tc-report results/qwen3_decode_metrics.json \
-  --profiler-output "$PROF_BASE/profilier_decode_qwen32b-input4k/$(ls $PROF_BASE/profilier_decode_qwen32b-input4k/)/ASCEND_PROFILER_OUTPUT"
+  --profiler-output "$PROF_QWEN3/profiler-qwen3-input4096-output1536-concurrency4-rrate2"
 
-# DSv3 M6: 使用新 0319 profiling 数据 (通信模式已从 reduceScatter 变为 allReduce)
+# DSv3 M6: 使用 0319 profiling 数据
 python3.10 tools/perf_data_collection/compute_m6.py \
   --tc-report results/dsv3_prefill_metrics.json \
   --profiler-output "$PROF_DSV3/profiler-dsv3-input2048-output1"
