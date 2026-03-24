@@ -297,15 +297,21 @@ operator_mappings:
 
   "tensor_cast.multihead_latent_attention.default":
     composite: true
-    sub_kernels: [BatchMatMulV2, FusedInferAttentionScore, TransposeBatchMatMul]
+    sub_kernels: [TransposeBatchMatMul, FusedInferAttentionScore, MatMulV2, RINGMLAPrefillBF16Kernel]
     notes: >
-      [HIGH] MLA composite: BMM (absorb projection) + FIA (attention).
+      [HIGH] MLA composite, decode/prefill 使用不同 kernel 组合 (由 decomposer 分支).
+      Decode: TransposeBMM(q@W_UK_T) + FIA(attention) + TransposeBMM(out@W_UV).
+      Prefill: MatMulV2(kv_c@kv_b_proj) + RINGMLAPrefillBF16Kernel.
+      注意: DSV3 prefill 不走 FusedInferAttentionScore (v1.5 验证确认).
 
   "tensor_cast.multihead_latent_attention_quant.default":
     composite: true
-    sub_kernels: [BatchMatMulV2, FusedInferAttentionScore, TransposeBatchMatMul]
+    sub_kernels: [QuantBatchMatmulV3, FusedInferAttentionScore, MatMulV2, RINGMLAPrefillBF16Kernel]
     notes: >
-      [HIGH] 量化 MLA; BMM with scale for INT8, FIA with dequant/quant scales.
+      [HIGH] 量化 MLA, decode/prefill 使用不同 kernel 组合 (由 decomposer 分支).
+      Decode: QuantBatchMatmulV3(q@W_UK_T) + FIA + QuantBatchMatmulV3(out@W_UV).
+      Prefill: MatMulV2(kv_c@kv_b_proj) + RINGMLAPrefillBF16Kernel.
+      注意: Prefill 路径与非量化版本相同 (RINGMLAPrefillBF16Kernel).
 
   "tensor_cast.mlapo.default":
     composite: true
@@ -822,9 +828,10 @@ operator_mappings:
   "profiling.RINGMLAPrefillBF16Kernel":
     kernel_type: RINGMLAPrefillBF16Kernel
     notes: >
-      [MEDIUM] vllm-ascend custom kernel for MLA prefill ring attention.
-      Appears only in eager-mode DSv3 Prefill. Fuses ring-attention for MLA.
-      0313 profiling: 366x. TC decomposes MLA differently — no direct TC equivalent.
+      [HIGH] vllm-ascend custom kernel for MLA prefill ring attention.
+      Appears only in DSv3 Prefill. Fuses ring-attention + KV projection for MLA.
+      Used as sub_kernel in MLA composite prefill path (替代 FIA, v1.5).
+      0313 profiling: 366x. CSV 数据待补充 (TCX T3, P1).
 
   "profiling.PagedCacheLoadNdKernel":
     kernel_type: PagedCacheLoadNdKernel
