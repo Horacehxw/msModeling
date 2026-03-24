@@ -1,4 +1,5 @@
 # tests/test_tensor_cast/test_dfc_pass.py
+import os
 import unittest
 from dataclasses import asdict
 
@@ -103,3 +104,39 @@ class DfcPassTestCase(unittest.TestCase):
         baseline_shape = run_model(enable_dfc=False)
         dfc_shape = run_model(enable_dfc=True)
         self.assertEqual(baseline_shape, dfc_shape)
+
+    def test_dfc_dsv3_0324_w8a8_local_model(self):
+        """Verify DFC on local DeepSeek-V3-0324 W8A8 model."""
+        if os.getenv("TC_ENABLE_LOCAL_MODEL_TESTS") != "1":
+            self.skipTest(
+                "Local model test disabled. Set TC_ENABLE_LOCAL_MODEL_TESTS=1 to enable."
+            )
+
+        # model_id is from modelscope, download to local and replace model_id with local path
+        user_input = UserInputConfig(
+            device="ATLAS_800_A3_752T_128G_DIE",
+            model_id="Eco-Tech/DeepSeek-V3-0324-w8a8-mtp-QuaRot",
+            num_queries=2,
+            query_len=4096,
+            do_compile=True,
+            allow_graph_break=True,
+            world_size=16,
+            tp_size=8,
+            dp_size=2,
+            ep_size=16,
+            quantize_linear_action=QuantizeLinearAction.W8A8_STATIC,
+            performance_model="profiling",
+            perf_database=(
+                "tensor_cast/performance_model/perf_database/data/"
+                "ATLAS_800_A3_752T_128G_DIE/vllm_ascend/"
+                "vllm0.15.0_torch2.9.0_cann8.5"
+            ),
+        )
+        model_runner = ModelRunner(user_input)
+        result = model_runner.run_inference(generate_inputs_func=generate_inputs)
+        if isinstance(result, ModelRunnerMetrics):
+            result = asdict(result)
+
+        self.assertIn("tensor_cast.dispatch_ffn_combine.default", result["table_result"])
+        self.assertNotIn("tensor_cast.permute_tokens.default", result["table_result"])
+        self.assertNotIn("tensor_cast.unpermute_tokens.default", result["table_result"])
