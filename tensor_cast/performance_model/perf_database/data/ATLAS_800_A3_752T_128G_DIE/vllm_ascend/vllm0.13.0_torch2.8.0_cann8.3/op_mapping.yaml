@@ -307,26 +307,27 @@ operator_mappings:
 
 
   # ========== 7. MLA (Multihead Latent Attention) ==========
-  # MLA 为 composite op, NPU 上分解为 BMM (absorb projection) + FIA (attention)
+  # MLA 为 composite op, decode/prefill 使用不同 kernel 组合 (由 decomposer 分支)
 
   "tensor_cast.multihead_latent_attention.default":
     composite: true
-    sub_kernels: [BatchMatMulV2, FusedInferAttentionScore, batch_matmul_transpose]
+    sub_kernels: [TransposeBatchMatMul, FusedInferAttentionScore, MatMulV2, RINGMLAPrefillBF16Kernel]
     notes: >
-      [HIGH] op-plugin: YAML:6534 (npu_transpose_batchmatmul) + YAML:5873.
+      [HIGH] MLA composite, decode/prefill 使用不同 kernel 组合 (由 decomposer 分支).
+      Decode: TransposeBMM(q@W_UK_T) + FIA(attention) + TransposeBMM(out@W_UV).
+      op-plugin: YAML:6534 (npu_transpose_batchmatmul) + YAML:5873.
       aclnn: aclnnTransposeBatchMatMul + aclnnFusedInferAttentionScoreV2.
-      Decode: q@W_UK_T + attn@W_UV → TransposeBatchMatMul (5002x in DSV3, 2 per MLA layer),
-      core attention → FusedInferAttentionScore.
-      Prefill: kv_c@kv_b_proj → MatMulV2, attention → FusedInferAttentionScore.
-      需 MLA 分解 pass 才能逐 kernel 查询, 当前 fallback to analytic.
+      Prefill: MatMulV2(kv_c@kv_b_proj) + RINGMLAPrefillBF16Kernel.
+      注意: DSV3 prefill 不走 FusedInferAttentionScore (v1.5 验证确认).
 
   "tensor_cast.multihead_latent_attention_quant.default":
     composite: true
-    sub_kernels: [BatchMatMulV2, FusedInferAttentionScore, batch_matmul_transpose]
+    sub_kernels: [QuantBatchMatmulV3, FusedInferAttentionScore, MatMulV2, RINGMLAPrefillBF16Kernel]
     notes: >
-      [HIGH] op-plugin: YAML:6534 + YAML:5873/5886.
-      aclnn: aclnnTransposeBatchMatMul + aclnnFusedInferAttentionScoreV2.
-      量化 MLA; BMM with scale for INT8, FIA with dequant/quant scales.
+      [HIGH] 量化 MLA, decode/prefill 使用不同 kernel 组合 (由 decomposer 分支).
+      Decode: QuantBatchMatmulV3(q@W_UK_T) + FIA + QuantBatchMatmulV3(out@W_UV).
+      op-plugin: YAML:6534 + YAML:5873/5886.
+      Prefill: MatMulV2(kv_c@kv_b_proj) + RINGMLAPrefillBF16Kernel.
       额外 AscendQuantV2/DynamicQuant kernel 用于中间 quant/dequant 步骤.
 
   "tensor_cast.mlapo.default":
@@ -862,7 +863,10 @@ operator_mappings:
 
   profiling.RINGMLAPrefillBF16Kernel:
     kernel_type: RINGMLAPrefillBF16Kernel
-    notes: "[HIGH] CANN 8.3. 61x DSv3. ATB ring MLA prefill. vllm-ascend: torch_npu.atb.npu_ring_mla()."
+    notes: >
+      [HIGH] CANN 8.3. 61x DSv3. ATB ring MLA prefill. vllm-ascend: torch_npu.atb.npu_ring_mla().
+      Used as sub_kernel in MLA composite prefill path (替代 FIA, v1.5).
+      CSV 数据待补充 (TCX T3, P1).
 
   profiling.MoeTokenPermute:
     kernel_type: MoeTokenPermute
