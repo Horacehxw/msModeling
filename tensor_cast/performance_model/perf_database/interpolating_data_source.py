@@ -193,6 +193,13 @@ class InterpolatingDataSource(DataSource):
             return None
         num_devices = len(rank_group)
 
+        # reduce_scatter: TC args[0] is the full input tensor (sendBuf), but
+        # bench CSV message_bytes follows HCCL API convention where recvCount
+        # is the per-rank output size.  Divide by num_devices to align.
+        func_str = _normalize_func_name(op_invoke_info.func)
+        if func_str == "tensor_cast.reduce_scatter.default" and num_devices > 1:
+            message_bytes = message_bytes // num_devices
+
         latency_col = (
             "Average Duration(us)"
             if "Average Duration(us)" in df.columns
