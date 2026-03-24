@@ -546,10 +546,14 @@ operator_mappings:
 
   "tensor_cast.matmul_all_reduce.default":
     composite: true
-    sub_kernels: [MatMulV2, hcom_allReduce_]
+    sub_kernels: [MatMulV2, MatMulV3, MatMulCommon, hcom_allReduce_]
     notes: >
       [MEDIUM] op-plugin: npu_mm_all_reduce_base → aclnnMatmulAllReduce/V2 (MC2).
       BF16/FP16 matmul + all_reduce; NPU MC2 pipeline ~20% prefill improvement with TP.
+      sub_kernels order mirrors aten.mm dispatch (CANN 8.5):
+        MatMulV2: small M (Decode QKV/O projections)
+        MatMulV3: large M (Prefill FFN, M > ~256-512)
+        MatMulCommon: fallback for special shapes
 
   "tensor_cast.static_quant_linear_all_reduce.default":
     composite: true
