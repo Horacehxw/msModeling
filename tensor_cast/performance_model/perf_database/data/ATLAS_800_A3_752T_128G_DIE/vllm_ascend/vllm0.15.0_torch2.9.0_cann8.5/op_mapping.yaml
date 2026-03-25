@@ -317,14 +317,16 @@ operator_mappings:
     composite: true
     sub_kernels: [MatMulV2, KvRmsNormRopeCache]
     notes: >
-      [HIGH] MLAPO: projection + norm + RoPE.
-      sub_kernels: MatMulV2 (Q/KV projection) + KvRmsNormRopeCache (KV norm+rope).
+      [HIGH] MLAPO composite: TC fuses projection+norm+RoPE. Decomposer splits
+      into 3x MatMulV2 (q_a, q_b, kv_a projections) + KvRmsNormRopeCache (post-projection
+      norm+rope). Shapes derived from OpInvokeInfo.args projection weights.
 
   "tensor_cast.mlapo_quant.default":
     composite: true
     sub_kernels: [QuantBatchMatmulV3, KvRmsNormRopeCache]
     notes: >
-      [HIGH] 量化 MLAPO: QuantBatchMatmulV3 (量化 Q/KV projection) + KvRmsNormRopeCache.
+      [HIGH] Quantized MLAPO composite: same decomposition, QuantBatchMatmulV3
+      for projections instead of MatMulV2.
 
 
   # ========== 8. KV Cache ==========

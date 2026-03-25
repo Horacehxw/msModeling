@@ -45,12 +45,12 @@ class CompilePassOpMappingTest(unittest.TestCase):
         self.assertIsNotNone(entry)
         self.assertTrue(entry.get("composite", False))
 
-    def test_mlapo_includes_kv_rmsnorm_rope_cache(self):
-        """mlapo should be composite with KvRmsNormRopeCache in sub_kernels."""
+    def test_mlapo_is_composite(self):
+        """mlapo should be composite with sub_kernels including KvRmsNormRopeCache."""
         entry = self.mapping.get("tensor_cast.mlapo.default")
         self.assertIsNotNone(entry, "Missing mlapo in op_mapping")
         self.assertTrue(entry.get("composite", False))
-        self.assertIn("KvRmsNormRopeCache", entry["sub_kernels"])
+        self.assertIn("KvRmsNormRopeCache", entry.get("sub_kernels", []))
 
     def test_torch_npu_reference_kv_rmsnorm(self):
         """torch_npu_reference should have KvRmsNormRopeCache entry."""

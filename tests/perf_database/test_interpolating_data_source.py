@@ -1,5 +1,6 @@
 """Tests for InterpolatingDataSource."""
 
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -69,10 +70,24 @@ message_bytes,num_devices,dtype,topology_tier,Duration(us)
 200000,16,DT_BF16,0,200.0
 400000,16,DT_BF16,0,400.0"""
 
-INTERP_FIA_CSV = """\
-batch_size,avg_seq_len,num_heads,head_dim,dtype,Duration(us)
-1,1000,4,128,DT_BF16,100.0
-1,4000,4,128,DT_BF16,1600.0"""
+_INTERP_FIA_ROW_COMMON = (
+    '"1,4,128;16,128,4,128;16,128,4,128;;;;1;;;;;;;;1,16;;;;;;;;;;;;;;"'
+    ',"DT_BF16;DT_BF16;DT_BF16;DT_UNDEFINED;DT_UNDEFINED;DT_UNDEFINED;'
+    "INT64;DT_UNDEFINED;DT_UNDEFINED;DT_UNDEFINED;DT_UNDEFINED;DT_UNDEFINED;"
+    "DT_UNDEFINED;DT_UNDEFINED;INT32;DT_UNDEFINED;DT_UNDEFINED;DT_UNDEFINED;"
+    "DT_UNDEFINED;DT_UNDEFINED;DT_UNDEFINED;DT_UNDEFINED;DT_UNDEFINED;"
+    "DT_UNDEFINED;DT_UNDEFINED;DT_UNDEFINED;DT_UNDEFINED;DT_UNDEFINED;"
+    'DT_UNDEFINED;DT_UNDEFINED;DT_UNDEFINED"'
+    ',"ND;ND;ND;NULL;NULL;NULL;ND;NULL;NULL;NULL;NULL;NULL;NULL;NULL;ND;'
+    'NULL;NULL;NULL;NULL;NULL;NULL;NULL;NULL;NULL;NULL;NULL;NULL;NULL;NULL;NULL;NULL"'
+    ',"""1,4,128;""","DT_BF16;FLOAT","ND;ND"'
+)
+INTERP_FIA_CSV = (
+    "Input Shapes,Input Data Types,Input Formats,Output Shapes,"
+    "Output Data Types,Output Formats,Duration(us),avg_seq_len\n"
+    + _INTERP_FIA_ROW_COMMON + ",100.0,1000\n"
+    + _INTERP_FIA_ROW_COMMON + ",1600.0,4000"
+)
 
 
 @pytest.fixture
@@ -204,9 +219,9 @@ def test_attention_interpolation_sqrt(interp_data_dir):
     assert result is not None, "Should interpolate attention with sqrt transform"
     assert result.source == QuerySource.INTERPOLATED
     # With sqrt transform, expect ~721 (not 600 from linear)
-    assert 680.0 < result.latency_us < 760.0, (
-        f"Expected ~721 with sqrt, got {result.latency_us}"
-    )
+    assert (
+        680.0 < result.latency_us < 760.0
+    ), f"Expected ~721 with sqrt, got {result.latency_us}"
 
 
 def test_unmapped_op_no_interpolation(interp_data_dir):
@@ -252,12 +267,12 @@ def test_interpolate_elementwise_basic(interp_data_dir):
         out,
     )
     result = ds.lookup(op)
-    assert result is not None, (
-        "Should interpolate elementwise (192,7168) between bracketing rows"
-    )
-    assert abs(result.latency_us - 9.0) < 0.5, (
-        f"Expected ~9.0 us, got {result.latency_us}"
-    )
+    assert (
+        result is not None
+    ), "Should interpolate elementwise (192,7168) between bracketing rows"
+    assert (
+        abs(result.latency_us - 9.0) < 0.5
+    ), f"Expected ~9.0 us, got {result.latency_us}"
     assert result.source == QuerySource.INTERPOLATED
     assert result.confidence == 0.7
 
@@ -282,16 +297,16 @@ def test_interpolate_elementwise_dtype_scaled(interp_data_dir):
         out,
     )
     result = ds.lookup(op)
-    assert result is not None, (
-        "Should interpolate FP32 target with dtype-scaled BF16 candidates"
-    )
-    assert abs(result.latency_us - 18.0) < 1.0, (
-        f"Expected ~18.0 us, got {result.latency_us}"
-    )
+    assert (
+        result is not None
+    ), "Should interpolate FP32 target with dtype-scaled BF16 candidates"
+    assert (
+        abs(result.latency_us - 18.0) < 1.0
+    ), f"Expected ~18.0 us, got {result.latency_us}"
     assert result.source == QuerySource.INTERPOLATED
-    assert result.confidence == 0.6, (
-        f"Dtype-scaled interpolation should have confidence=0.6, got {result.confidence}"
-    )
+    assert (
+        result.confidence == 0.6
+    ), f"Dtype-scaled interpolation should have confidence=0.6, got {result.confidence}"
 
 
 def test_interpolate_elementwise_hidden_dim_filter(interp_data_dir):
@@ -320,3 +335,40 @@ def test_interpolate_elementwise_hidden_dim_filter(interp_data_dir):
         f"Expected ~9.0 us (7168 rows only), got {result.latency_us}"
         " — hidden dim rows may have been mixed"
     )
+
+
+class TestFiaRawNoInterpolation:
+    """Spec §6.2 F3: InterpolatingDataSource skips raw FIA CSV interpolation."""
+
+    def test_f3_raw_csv_no_interpolation(self):
+        """FIA raw CSV MISS → InterpolatingDataSource returns None (no interpolation)."""
+        fixture_dir = Path(__file__).parent / "fixtures" / "fia_raw_test"
+        base = ProfilingDataSource(fixture_dir)
+        interp = InterpolatingDataSource(base)
+
+        # Build attention op_info with a shape that won't match any CSV row.
+        # Raw CSV rows have query shapes like (128,4,128), (336,4,128), etc.
+        # Use num_tokens=999 which doesn't appear in the fixture.
+        op = _make_op_info(
+            torch.ops.tensor_cast.attention.default,
+            [
+                torch.empty(999, 512, device="meta", dtype=torch.bfloat16),  # query
+                torch.empty(
+                    12307, 128, 128, device="meta", dtype=torch.bfloat16
+                ),  # key
+                torch.empty(
+                    12307, 128, 128, device="meta", dtype=torch.bfloat16
+                ),  # value
+                None,
+                None,
+                None,
+                torch.tensor([100] * 999, dtype=torch.int64),  # seq_lens
+                None,
+            ],
+        )
+
+        result = interp.lookup(op)
+        # Raw CSV cannot be interpolated on structured attention dims — must return None
+        assert (
+            result is None
+        ), f"InterpolatingDataSource must not interpolate raw FIA CSV, got {result}"

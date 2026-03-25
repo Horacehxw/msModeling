@@ -4,8 +4,9 @@ Design doc reference: S4.2 (ProfilingDataSource), S4.9 (FRACTAL_NZ)
 """
 
 import logging
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -14,6 +15,7 @@ import yaml
 
 from ...device import DeviceProfile
 from .data_source import DataSource, QueryResult, QuerySource
+
 
 if TYPE_CHECKING:
     from ...device import CommGrid
@@ -74,7 +76,54 @@ def _parse_str_list(s: str) -> List[str]:
     return [x.strip() for x in s.split(";") if x.strip()]
 
 
-# Matmul kernel types where ND weight may be stored as (N,K)
+def _parse_fia_q_shape(input_shapes_str: str) -> Optional[Tuple[int, ...]]:
+    """Parse slot 0 (Q shape) from FIA CSV Input Shapes string."""
+    if not input_shapes_str or not input_shapes_str.strip():
+        return None
+    parts = input_shapes_str.split(";")
+    if not parts or not parts[0].strip():
+        return None
+    try:
+        return tuple(int(x) for x in parts[0].strip().split(","))
+    except ValueError:
+        return None
+
+
+def _normalize_fia_q_shape(
+    q_shape: Tuple[int, ...], head_dim: int = 0
+) -> Optional[Tuple[int, ...]]:
+    """Normalize FIA Q shape to 3D (T, N, D).
+
+    3D (T, N, D) → identity; 4D (B, N, 1, D) → squeeze; 2D (T, H) → reshape.
+    """
+    ndim = len(q_shape)
+    if ndim == 3:
+        return q_shape
+    if ndim == 4 and q_shape[2] == 1:
+        return (q_shape[0], q_shape[1], q_shape[3])
+    if ndim == 2 and head_dim > 0 and q_shape[1] % head_dim == 0:
+        return (q_shape[0], q_shape[1] // head_dim, head_dim)
+    return None
+
+
+def _infer_sparse_mode(query_lens) -> int:
+    """Infer FIA sparse_mode from query_lens.
+
+    TC attention op does not pass sparse_mode explicitly.
+    Prefill (query_lens has values > 1) uses causal mask -> sparse_mode=3.
+    Decode (all query_lens == 1) uses no mask -> sparse_mode=0.
+    """
+    if query_lens is not None and isinstance(query_lens, torch.Tensor):
+        try:
+            if query_lens.numel() > 0 and query_lens.max().item() > 1:
+                return 3  # right_down_causal
+        except Exception:
+            pass
+    return 0  # no_mask
+
+
+
+
 # while TC's aten.mm receives (K,N) after F.linear transpose.
 # FRACTAL_NZ weights restore to (K,N) directly — no transpose needed.
 _MATMUL_KERNELS = frozenset(
@@ -99,6 +148,14 @@ _SWIGLU_KERNELS = frozenset({"SwiGlu"})
 _ROPE_KERNELS = frozenset(
     {"ApplyRotaryPosEmb", "_triton_rope", "split_qkv_rmsnorm_rope_kernel"}
 )
+
+# Dtype groups that are considered equivalent for matching purposes.
+# NPU _triton_rope profiling records K as FLOAT (FP32) while TC dispatches
+# BF16 — the kernel internally up-casts, but performance is the same.
+_DTYPE_COMPAT = {"DT_BF16": "FLOAT_GROUP", "FLOAT": "FLOAT_GROUP"}
+
+# Kernel types that allow relaxed dtype matching via _DTYPE_COMPAT.
+_DTYPE_RELAXED_KERNELS = _ROPE_KERNELS
 
 # Kernel types where TC may produce 3D (B, M, D) shapes that should
 # match CSV's 2D (B*M, D) shapes by flattening the leading two dims.
@@ -260,6 +317,287 @@ def get_topology_tier(comm_grid: "CommGrid", group: List[int]) -> int:
     raise ValueError(f"No topology found for group spanning grid dimension {diff_dim}")
 
 
+# ---- MLA / MLAPO composite decomposition (design doc §4.2, G2) ----
+
+
+@dataclass
+class SubKernelSpec:
+    """Specification for a sub-kernel in composite decomposition."""
+
+    kernel_type: str
+    input_shapes: List[Tuple[int, ...]]
+    dtype: str  # Profiling dtype string, e.g. "DT_BF16"
+    query_mode: str = "compute"  # "compute" | "attention"
+    attention_params: Optional[Dict[str, Any]] = field(default=None)
+
+
+def _is_decode_mla(args: tuple) -> bool:
+    """Determine if MLA op is in decode mode.
+
+    query_lens (args[5]) is None or all 1s → decode.
+    """
+    query_lens = args[5]
+    if query_lens is None:
+        return True
+    if isinstance(query_lens, torch.Tensor):
+        try:
+            return bool(query_lens.max().item() <= 1)
+        except Exception:
+            return True
+    return True
+
+
+def _decompose_mla_common(
+    op_invoke_info: "OpInvokeInfo",
+    mapping: dict,
+    first_kernel_type: str,
+) -> Optional[List[SubKernelSpec]]:
+    """Shared MLA decomposition for BF16 and quantized variants.
+
+    Decode: first_kernel_type(q@W_UK_T) + FIA + TransposeBatchMatMul(out@W_UV)
+    Prefill: MatMulV2(kv_c@kv_b_proj) + RINGMLAPrefillBF16Kernel (compute match)
+
+    Args:
+        first_kernel_type: "TransposeBatchMatMul" for BF16, "QuantBatchMatmulV3" for quant.
+    """
+    args = op_invoke_info.args
+    if len(args) < 10:
+        return None
+    q = args[0]  # (num_tokens, num_heads, qk_head_dim)
+    seq_lens = args[4]  # (batch_size,)
+    dtype_str = DTYPE_MAP.get(q.dtype)
+    if dtype_str is None:
+        return None
+
+    if not isinstance(seq_lens, torch.Tensor):
+        return None
+    batch_size = seq_lens.shape[0]
+    num_heads = q.shape[1]
+    kv_cache = args[1]  # (total_blocks, block_size, kv_lora_rank + qk_rope_head_dim)
+    head_dim = kv_cache.shape[-1]
+    num_tokens = q.shape[0]
+
+    if _is_decode_mla(args):
+        W_UK_T = args[6]  # (num_heads, qk_nope_head_dim, kv_lora_rank)
+        W_UV = args[7]  # (num_heads, kv_lora_rank, v_head_dim)
+        if W_UK_T is None or W_UV is None:
+            return None
+
+        qk_nope_head_dim = W_UK_T.shape[1]
+        kv_lora_rank = W_UK_T.shape[2]
+        v_head_dim_val = W_UV.shape[2]
+
+        try:
+            avg_seq_len = int(seq_lens.float().mean().item())
+        except (RuntimeError, ValueError):
+            avg_seq_len = 0
+
+        fia_q_raw = (batch_size, num_heads, 1, head_dim)
+        fia_q_normalized = _normalize_fia_q_shape(fia_q_raw, head_dim)
+
+        fia_spec = SubKernelSpec(
+            kernel_type="FusedInferAttentionScore",
+            input_shapes=[],
+            dtype=dtype_str,
+            query_mode="attention",
+            attention_params={
+                "q_shape_3d": fia_q_normalized or (batch_size, num_heads, head_dim),
+                "avg_seq_len": avg_seq_len,
+                "sparse_mode": 0,  # decode uses no_mask
+                "num_kv_heads": 1,  # MLA compressed attention: single KV head
+            },
+        )
+
+        return [
+            SubKernelSpec(
+                kernel_type=first_kernel_type,
+                input_shapes=[
+                    (num_tokens, num_heads, qk_nope_head_dim),
+                    (num_heads, qk_nope_head_dim, kv_lora_rank),
+                ],
+                dtype=dtype_str,
+            ),
+            fia_spec,
+            SubKernelSpec(
+                kernel_type="TransposeBatchMatMul",
+                input_shapes=[
+                    (num_tokens, num_heads, kv_lora_rank),
+                    (num_heads, kv_lora_rank, v_head_dim_val),
+                ],
+                dtype=dtype_str,
+            ),
+        ]
+    else:
+        # Prefill: MatMulV2(kv_c@kv_b_proj) + RINGMLAPrefillBF16Kernel
+        # Design doc v1.5 §4.8.7, §9.2: DSV3 prefill uses RING kernel, not FIA.
+        # RING kernel CSV shapes differ by seqlen (K/V dim varies), so compute
+        # path _inputs_match can distinguish rows.
+        kv_b_proj = args[8]  # (kv_lora_rank, num_heads*(qk_nope_head_dim+v_head_dim))
+        if kv_b_proj is None:
+            logger.debug("MLA prefill: kv_b_proj is None, fallback to analytic")
+            return None
+
+        kv_lora_rank = kv_b_proj.shape[0]
+        specs = [
+            SubKernelSpec(
+                kernel_type="MatMulV2",
+                input_shapes=[
+                    (num_tokens, kv_lora_rank),
+                    tuple(kv_b_proj.shape),
+                ],
+                dtype=dtype_str,
+            ),
+            SubKernelSpec(
+                kernel_type="RINGMLAPrefillBF16Kernel",
+                input_shapes=[
+                    (num_tokens, num_heads, head_dim),
+                ],
+                dtype=dtype_str,
+                query_mode="compute",
+            ),
+        ]
+        return specs
+
+
+def _decompose_mla(
+    op_invoke_info: "OpInvokeInfo", mapping: dict
+) -> Optional[List[SubKernelSpec]]:
+    """Decompose multihead_latent_attention (BF16)."""
+    return _decompose_mla_common(op_invoke_info, mapping, "TransposeBatchMatMul")
+
+
+def _decompose_mla_quant(
+    op_invoke_info: "OpInvokeInfo", mapping: dict
+) -> Optional[List[SubKernelSpec]]:
+    """Decompose multihead_latent_attention_quant."""
+    return _decompose_mla_common(op_invoke_info, mapping, "QuantBatchMatmulV3")
+
+
+def _decompose_mlapo(
+    op_invoke_info: "OpInvokeInfo", mapping: dict
+) -> Optional[List[SubKernelSpec]]:
+    """Decompose mlapo into projection MatMuls + KvRmsNormRopeCache.
+
+    TC mlapo fuses: q_a_proj + q_a_norm + q_b_proj + kv_a_proj + kv_a_norm + rope.
+    NPU runs these as separate kernels. Decompose to match profiling data.
+
+    Args layout (tensor_cast/ops/mla.py):
+        args[0]: hidden_states (num_tokens, hidden_size)
+        args[3]: q_a_proj_weight (hidden_size, q_lora_rank) — Optional
+        args[5]: q_b_proj_weight (q_lora_rank, num_heads*qk_head_dim) — Optional
+        args[6]: kv_a_proj_weight (hidden_size, kv_lora_rank+rope_dim) — Optional
+        args[7]: kv_a_layernorm_weight (kv_lora_rank,)
+        args[12]: kv_lora_rank (int)
+    """
+    args = op_invoke_info.args
+    if len(args) < 14:
+        return None
+
+    hidden_states = args[0]  # (num_tokens, hidden_size)
+    q_a_proj = args[3]  # (hidden_size, q_lora_rank)
+    q_b_proj = args[5]  # (q_lora_rank, num_heads*qk_head_dim)
+    kv_a_proj = args[6]  # (hidden_size, kv_lora_rank+rope_dim)
+
+    if hidden_states is None or q_a_proj is None or q_b_proj is None or kv_a_proj is None:
+        return None
+
+    dtype_str = DTYPE_MAP.get(hidden_states.dtype)
+    if dtype_str is None:
+        return None
+
+    num_tokens = hidden_states.shape[0]
+    hidden_size = hidden_states.shape[1]
+    q_lora_rank = q_a_proj.shape[1]
+    kv_proj_dim = kv_a_proj.shape[1]  # kv_lora_rank + rope_dim
+
+    return [
+        # Op1: hidden @ q_a_proj
+        SubKernelSpec(
+            kernel_type="MatMulV2",
+            input_shapes=[(num_tokens, hidden_size), tuple(q_a_proj.shape)],
+            dtype=dtype_str,
+        ),
+        # Op3: q_compressed @ q_b_proj
+        SubKernelSpec(
+            kernel_type="MatMulV2",
+            input_shapes=[(num_tokens, q_lora_rank), tuple(q_b_proj.shape)],
+            dtype=dtype_str,
+        ),
+        # Op5: hidden @ kv_a_proj
+        SubKernelSpec(
+            kernel_type="MatMulV2",
+            input_shapes=[(num_tokens, hidden_size), tuple(kv_a_proj.shape)],
+            dtype=dtype_str,
+        ),
+        # Op6+7: kv norm + rope (post-projection)
+        SubKernelSpec(
+            kernel_type="KvRmsNormRopeCache",
+            input_shapes=[(num_tokens, kv_proj_dim)],
+            dtype=dtype_str,
+        ),
+    ]
+
+
+def _decompose_mlapo_quant(
+    op_invoke_info: "OpInvokeInfo", mapping: dict
+) -> Optional[List[SubKernelSpec]]:
+    """Decompose mlapo_quant — same structure, QuantBatchMatmulV3 for projections."""
+    args = op_invoke_info.args
+    if len(args) < 20:
+        return None
+
+    hidden_states = args[0]
+    q_a_proj = args[3]
+    q_b_proj = args[5]
+    kv_a_proj = args[6]
+
+    if hidden_states is None or q_a_proj is None or q_b_proj is None or kv_a_proj is None:
+        return None
+
+    dtype_str = DTYPE_MAP.get(hidden_states.dtype)
+    if dtype_str is None:
+        return None
+
+    num_tokens = hidden_states.shape[0]
+    hidden_size = hidden_states.shape[1]
+    q_lora_rank = q_a_proj.shape[1]
+    kv_proj_dim = kv_a_proj.shape[1]
+
+    return [
+        SubKernelSpec(
+            kernel_type="QuantBatchMatmulV3",
+            input_shapes=[(num_tokens, hidden_size), tuple(q_a_proj.shape)],
+            dtype=dtype_str,
+        ),
+        SubKernelSpec(
+            kernel_type="QuantBatchMatmulV3",
+            input_shapes=[(num_tokens, q_lora_rank), tuple(q_b_proj.shape)],
+            dtype=dtype_str,
+        ),
+        SubKernelSpec(
+            kernel_type="QuantBatchMatmulV3",
+            input_shapes=[(num_tokens, hidden_size), tuple(kv_a_proj.shape)],
+            dtype=dtype_str,
+        ),
+        SubKernelSpec(
+            kernel_type="KvRmsNormRopeCache",
+            input_shapes=[(num_tokens, kv_proj_dim)],
+            dtype=dtype_str,
+        ),
+    ]
+
+
+COMPOSITE_DECOMPOSERS: Dict[
+    str,
+    Callable[["OpInvokeInfo", dict], Optional[List[SubKernelSpec]]],
+] = {
+    "tensor_cast.multihead_latent_attention.default": _decompose_mla,
+    "tensor_cast.multihead_latent_attention_quant.default": _decompose_mla_quant,
+    "tensor_cast.mlapo.default": _decompose_mlapo,
+    "tensor_cast.mlapo_quant.default": _decompose_mlapo_quant,
+}
+
+
 class ProfilingDataSource(DataSource):
     """CSV-backed data source with op_mapping.yaml + FRACTAL_NZ.
 
@@ -325,12 +663,20 @@ class ProfilingDataSource(DataSource):
 
     @staticmethod
     def _latency_col(df: pd.DataFrame) -> str:
-        """Return the latency column name present in *df*."""
-        return (
-            "Average Duration(us)"
-            if "Average Duration(us)" in df.columns
-            else "Duration(us)"
-        )
+        """Return the latency column name present in *df*.
+
+        Priority: MicroBench (op-replay) > Profiling Average (enriched CSV)
+        > Average (legacy parse_kernel_details) > Duration (comm / earliest).
+        """
+        for col in (
+            "MicroBench Duration(us)",
+            "Profiling Average Duration(us)",
+            "Average Duration(us)",
+            "Duration(us)",
+        ):
+            if col in df.columns:
+                return col
+        return "Duration(us)"
 
     def _query_comm_csv(
         self,
@@ -501,10 +847,20 @@ class ProfilingDataSource(DataSource):
     ) -> Optional[QueryResult]:
         """Decompose composite ops and sum sub-kernel latencies.
 
-        For MC2 (matmul+comm): queries both compute (MatMulV2) and comm
-        (hcom_allReduce_) sub-kernels and returns their sum.
+        For MLA/MLAPO: uses registered decomposer to derive sub-kernel shapes,
+        then queries each sub-kernel individually.
+        For MC2 (matmul+comm): queries both compute and comm sub-kernels.
         Returns None if any required sub-kernel misses.
         """
+        # Check for registered decomposer (MLA/MLAPO)
+        func_str = _normalize_func_name(op_invoke_info.func)
+        decomposer = COMPOSITE_DECOMPOSERS.get(func_str)
+        if decomposer is not None:
+            return self._lookup_composite_decomposed(
+                op_invoke_info, mapping, decomposer
+            )
+
+        # Generic composite path (MC2 etc.)
         sub_kernels = mapping.get("sub_kernels", [])
         if not sub_kernels:
             self.last_miss_reason = "no_sub_kernels"
@@ -584,11 +940,195 @@ class ProfilingDataSource(DataSource):
             details={
                 "kernel_type": compute_kernel_hit,
                 "composite": True,
-                "note": "compute + comm sub-kernels"
-                if has_comm
-                else "compute sub-kernel only",
+                "note": (
+                    "compute + comm sub-kernels"
+                    if has_comm
+                    else "compute sub-kernel only"
+                ),
             },
         )
+
+    def _lookup_composite_decomposed(
+        self,
+        op_invoke_info: "OpInvokeInfo",
+        mapping: dict,
+        decomposer: Callable,
+    ) -> Optional[QueryResult]:
+        """Query composite op using registered decomposer (MLA/MLAPO).
+
+        Calls the decomposer to get SubKernelSpec list, then queries each
+        sub-kernel via _lookup_compute_by_shapes or _lookup_attention_by_params.
+        """
+        specs = decomposer(op_invoke_info, mapping)
+        if not specs:
+            self.last_miss_reason = "decompose_failed"
+            return None
+
+        total_latency = 0.0
+        hit_kernels = []
+
+        for spec in specs:
+            if spec.query_mode == "attention" and spec.attention_params:
+                lat = self._lookup_attention_by_params(
+                    spec.kernel_type, spec.attention_params, spec.dtype
+                )
+            else:
+                lat = self._lookup_compute_by_shapes(
+                    spec.kernel_type, spec.input_shapes, spec.dtype
+                )
+
+            if lat is None:
+                self.last_miss_reason = f"sub_kernel_miss:{spec.kernel_type}"
+                return None
+
+            total_latency += lat
+            hit_kernels.append(spec.kernel_type)
+
+        logger.debug(
+            "HIT (composite decomposed) %s: sub_kernels=%s, total=%.1f us",
+            _normalize_func_name(op_invoke_info.func),
+            hit_kernels,
+            total_latency,
+        )
+        return QueryResult(
+            latency_us=total_latency,
+            confidence=0.8,
+            source=QuerySource.MEASURED,
+            details={
+                "kernel_type": hit_kernels,
+                "composite": True,
+                "note": "decomposed sub-kernels",
+            },
+        )
+
+    def _lookup_compute_by_shapes(
+        self,
+        kernel_type: str,
+        input_shapes: List[Tuple[int, ...]],
+        dtype_str: str,
+    ) -> Optional[float]:
+        """Query compute CSV by explicit shapes + dtype (for composite decomposition)."""
+        df = self._load_csv(kernel_type)
+        if df is None:
+            return None
+
+        # Build synthetic tc_inputs for _inputs_match
+        torch_dtype = None
+        for k, v in DTYPE_MAP.items():
+            if v == dtype_str:
+                torch_dtype = k
+                break
+        if torch_dtype is None:
+            return None
+
+        tc_inputs = [(shape, torch_dtype) for shape in input_shapes]
+
+        for _, row in df.iterrows():
+            if self._inputs_match(tc_inputs, row, kernel_type=kernel_type):
+                lat = float(row[self._latency_col(df)])
+                logger.debug(
+                    "HIT (by_shapes) %s: shapes=%s -> %.1f us",
+                    kernel_type,
+                    input_shapes,
+                    lat,
+                )
+                return lat
+        return None
+
+    def _lookup_attention_by_params(
+        self,
+        kernel_type: str,
+        params: Dict[str, Any],
+        dtype_str: str,
+    ) -> Optional[float]:
+        """Query FIA enriched CSV by explicit params (for composite decomposition).
+
+        params must contain: q_shape_3d (tuple), avg_seq_len (int).
+        Optional: sparse_mode (int), num_kv_heads (int).
+        """
+        df = self._load_csv(kernel_type)
+        if df is None:
+            return None
+
+        # Unified column naming: prefer "Runtime avg_seq_len", fall back to "avg_seq_len"
+        avg_seq_col = None
+        if "Runtime avg_seq_len" in df.columns:
+            avg_seq_col = "Runtime avg_seq_len"
+        elif "avg_seq_len" in df.columns:
+            avg_seq_col = "avg_seq_len"
+        else:
+            return None
+
+        if "Input Shapes" not in df.columns:
+            return None
+
+        q_shape_3d = params.get("q_shape_3d")
+        target_avg_seq = params.get("avg_seq_len")
+        if q_shape_3d is None or target_avg_seq is None:
+            return None
+
+        target_sparse = params.get("sparse_mode")
+        target_kv_heads = params.get("num_kv_heads")
+
+        has_sparse_col = "Runtime sparse_mode" in df.columns
+        has_kv_heads_col = "Runtime num_key_value_heads" in df.columns
+
+        tc_N, tc_D = q_shape_3d[1], q_shape_3d[2]
+        head_dim = tc_D
+        latency_col = self._latency_col(df)
+
+        for _, row in df.iterrows():
+            csv_avg_seq = int(row[avg_seq_col])
+            if csv_avg_seq < 0:
+                continue
+
+            shapes_str = str(row.get("Input Shapes", "")).strip('"')
+            csv_q_raw = _parse_fia_q_shape(shapes_str)
+            if csv_q_raw is None:
+                continue
+            csv_q_3d = _normalize_fia_q_shape(csv_q_raw, head_dim)
+            if csv_q_3d is None:
+                continue
+
+            csv_N, csv_D = csv_q_3d[1], csv_q_3d[2]
+
+            csv_dtypes_str = str(row.get("Input Data Types", ""))
+            csv_first_dtype = csv_dtypes_str.split(";")[0].strip() if csv_dtypes_str else ""
+            if dtype_str != csv_first_dtype:
+                continue
+
+            if tc_N != csv_N or tc_D != csv_D:
+                continue
+
+            # sparse_mode exact match (skip if CSV lacks column or param)
+            if has_sparse_col and target_sparse is not None:
+                if int(row["Runtime sparse_mode"]) != target_sparse:
+                    continue
+
+            # num_kv_heads exact match (skip if CSV lacks column or param)
+            if has_kv_heads_col and target_kv_heads is not None:
+                if int(row["Runtime num_key_value_heads"]) != target_kv_heads:
+                    continue
+
+            if target_avg_seq != csv_avg_seq:
+                continue
+
+            # T dim: block-padding tolerance
+            tc_T = q_shape_3d[0]
+            csv_T = csv_q_3d[0]
+            if tc_T != csv_T:
+                if not _is_block_padded(tc_T, csv_T) and not _is_block_padded(csv_T, tc_T):
+                    continue
+
+            lat = float(row[latency_col])
+            logger.debug(
+                "HIT (attention by_params) %s: params=%s -> %.1f us",
+                kernel_type,
+                params,
+                lat,
+            )
+            return lat
+        return None
 
     def _lookup_comm_for_composite(
         self, op_invoke_info: "OpInvokeInfo", kernel_type: str
@@ -726,15 +1266,13 @@ class ProfilingDataSource(DataSource):
     def _lookup_attention(
         self, op_invoke_info: "OpInvokeInfo", mapping: dict
     ) -> Optional[QueryResult]:
-        """Look up attention op latency using FIA microbenchmark CSV.
+        """Query FIA enriched CSV: slot 0 Q shape + avg_seq_len column.
 
-        Attention CSV columns: batch_size, avg_seq_len, num_heads, head_dim,
-        dtype, Duration(us).
-
-        Attention op args layout (from tensor_cast/ops/attention.py):
-          args[0]: query  (num_tokens, hidden_size)
-          args[1]: key    (total_blocks, block_size, kv_heads, head_dim) or (*, kv_heads, head_dim)
-          args[6]: seq_lens (batch_size,) — per-request KV lengths
+        Matching: (N, D, dtype, sparse_mode, num_kv_heads) exact
+                  + avg_seq_len exact.
+        Q shape normalized to 3D via _normalize_fia_q_shape().
+        Returns None if avg_seq_len column is missing or -1.
+        sparse_mode / num_kv_heads are optional (backward compat with old CSV).
         """
         kernel_type = mapping.get("kernel_type")
         if not kernel_type:
@@ -746,102 +1284,154 @@ class ProfilingDataSource(DataSource):
             self.last_miss_reason = "csv_not_found"
             return None
 
-        # Check that CSV has the expected microbenchmark columns.
-        # Raw profiling CSVs have "Input Shapes" etc. and cannot be queried
-        # by structured attention fields — fall back to analytic.
-        required_cols = {"batch_size", "avg_seq_len", "num_heads", "head_dim"}
-        if not required_cols.issubset(df.columns):
-            logger.debug(
-                "MISS (attention) %s: CSV missing columns %s, "
-                "need microbenchmark format",
-                kernel_type,
-                required_cols - set(df.columns),
-            )
-            self.last_miss_reason = "csv_format_raw"
+        # Require enriched CSV with avg_seq_len column
+        # Unified column naming: prefer "Runtime avg_seq_len" (TCX enriched format),
+        # fall back to "avg_seq_len" for backward compatibility
+        avg_seq_col = None
+        if "Runtime avg_seq_len" in df.columns:
+            avg_seq_col = "Runtime avg_seq_len"
+        elif "avg_seq_len" in df.columns:
+            avg_seq_col = "avg_seq_len"
+        else:
+            self.last_miss_reason = "csv_missing_avg_seq_len"
             return None
 
-        # Extract seq_lens from args[6]
+        # Require raw profiling format (Input Shapes column)
+        if "Input Shapes" not in df.columns:
+            self.last_miss_reason = "csv_format_not_enriched"
+            return None
+
         args = op_invoke_info.args
         if len(args) < 7:
-            self.last_miss_reason = "invalid_args"
-            return None
-        seq_lens = args[6]
-        if not isinstance(seq_lens, torch.Tensor):
-            self.last_miss_reason = "invalid_args"
+            self.last_miss_reason = "insufficient_args"
             return None
 
-        # Compute batch_size and avg_seq_len from seq_lens tensor
-        batch_size = seq_lens.shape[0]
-        # Use .float().mean().item() — seq_lens must be on CPU (not meta)
-        try:
-            avg_seq_len = int(seq_lens.float().mean().item())
-        except Exception:
-            self.last_miss_reason = "invalid_args"
-            return None
-
-        # Extract head_dim and kv_heads from key tensor (args[1])
-        key = args[1]
-        if not isinstance(key, torch.Tensor) or key.ndim < 2:
-            self.last_miss_reason = "invalid_args"
-            return None
-        head_dim = key.shape[-1]
-        kv_heads = key.shape[-2]
-
-        # Compute num_heads from query hidden_size / head_dim
         query = args[0]
-        if not isinstance(query, torch.Tensor) or query.ndim < 2:
-            self.last_miss_reason = "invalid_args"
-            return None
-        hidden_size = query.shape[-1]
-        num_heads = hidden_size // head_dim
+        key = args[1]
+        seq_lens = args[6] if len(args) > 6 else None
+        query_lens = args[7] if len(args) > 7 else None
 
-        # Get dtype string
-        dtype_str = DTYPE_MAP.get(query.dtype)
-        if dtype_str is None:
-            self.last_miss_reason = "invalid_args"
+        if not isinstance(query, torch.Tensor):
+            self.last_miss_reason = "query_not_tensor"
             return None
 
-        # Match CSV rows on all 5 dimensions
-        mask = (
-            (df["batch_size"] == batch_size)
-            & (df["avg_seq_len"] == avg_seq_len)
-            & (df["num_heads"] == num_heads)
-            & (df["head_dim"] == head_dim)
-            & (df["dtype"] == dtype_str)
+        tc_dtype_str = DTYPE_MAP.get(query.dtype)
+        if tc_dtype_str is None:
+            self.last_miss_reason = "dtype_unmapped"
+            return None
+
+        # Get head_dim from key tensor
+        head_dim = key.shape[-1] if isinstance(key, torch.Tensor) and key.ndim >= 1 else 0
+
+        # Normalize TC query to 3D
+        tc_q_3d = _normalize_fia_q_shape(tuple(query.shape), head_dim)
+        if tc_q_3d is None:
+            self.last_miss_reason = "q_shape_normalize_failed"
+            return None
+        tc_N, tc_D = tc_q_3d[1], tc_q_3d[2]
+
+        # Compute avg_seq_len from seq_lens
+        if seq_lens is not None and isinstance(seq_lens, torch.Tensor):
+            try:
+                tc_avg_seq_len = int(seq_lens.float().mean().item())
+            except Exception:
+                self.last_miss_reason = "invalid_seq_lens"
+                return None
+        else:
+            self.last_miss_reason = "missing_seq_lens"
+            return None
+
+        # Infer sparse_mode from query_lens (TC does not pass it explicitly)
+        tc_sparse_mode = _infer_sparse_mode(query_lens)
+
+        # Extract num_kv_heads from key tensor: shape[-2] is kv_head_num
+        tc_num_kv_heads = (
+            key.shape[-2]
+            if isinstance(key, torch.Tensor) and key.ndim >= 2
+            else None
         )
-        matched = df[mask]
-        if matched.empty:
+
+        # Check if CSV has optional Runtime columns
+        has_sparse_mode_col = "Runtime sparse_mode" in df.columns
+        has_kv_heads_col = "Runtime num_key_value_heads" in df.columns
+
+        latency_col = self._latency_col(df)
+
+        for _, row in df.iterrows():
+            # Skip profiling-only rows (avg_seq_len == -1)
+            csv_avg_seq = int(row[avg_seq_col])
+            if csv_avg_seq < 0:
+                continue
+
+            # Parse and normalize CSV Q shape from slot 0
+            shapes_str = str(row.get("Input Shapes", "")).strip('"')
+            csv_q_raw = _parse_fia_q_shape(shapes_str)
+            if csv_q_raw is None:
+                continue
+            csv_q_3d = _normalize_fia_q_shape(csv_q_raw, head_dim)
+            if csv_q_3d is None:
+                continue
+
+            csv_N, csv_D = csv_q_3d[1], csv_q_3d[2]
+
+            # Check dtype
+            csv_dtypes_str = str(row.get("Input Data Types", ""))
+            csv_first_dtype = csv_dtypes_str.split(";")[0].strip() if csv_dtypes_str else ""
+            if tc_dtype_str != csv_first_dtype:
+                continue
+
+            # (N, D) exact match
+            if tc_N != csv_N or tc_D != csv_D:
+                continue
+
+            # sparse_mode exact match (skip if CSV lacks column)
+            if has_sparse_mode_col:
+                csv_sparse = int(row["Runtime sparse_mode"])
+                if tc_sparse_mode != csv_sparse:
+                    continue
+
+            # num_kv_heads exact match (skip if CSV lacks column)
+            if has_kv_heads_col and tc_num_kv_heads is not None:
+                csv_kv_heads = int(row["Runtime num_key_value_heads"])
+                if tc_num_kv_heads != csv_kv_heads:
+                    continue
+
+            # avg_seq_len exact match
+            if tc_avg_seq_len != csv_avg_seq:
+                continue
+
+            # First dim (T): block-padding tolerance
+            tc_T = tc_q_3d[0]
+            csv_T = csv_q_3d[0]
+            if tc_T != csv_T:
+                if not _is_block_padded(tc_T, csv_T) and not _is_block_padded(csv_T, tc_T):
+                    continue
+
+            lat = float(row[latency_col])
             logger.debug(
-                "MISS (attention) %s: batch=%d, avg_seq=%d, heads=%d, "
-                "head_dim=%d, dtype=%s",
+                "HIT (attention enriched) %s: Q=%s, avg_seq=%d, "
+                "sparse=%d, kv_heads=%s -> %.1f us",
                 kernel_type,
-                batch_size,
-                avg_seq_len,
-                num_heads,
-                head_dim,
-                dtype_str,
+                tc_q_3d,
+                tc_avg_seq_len,
+                tc_sparse_mode,
+                tc_num_kv_heads,
+                lat,
             )
-            self.last_miss_reason = "shape_mismatch"
-            return None
+            return QueryResult(
+                latency_us=lat,
+                confidence=0.9,
+                source=QuerySource.MEASURED,
+                details={
+                    "kernel_type": kernel_type,
+                    "avg_seq_len": tc_avg_seq_len,
+                    "sparse_mode": tc_sparse_mode,
+                    "num_kv_heads": tc_num_kv_heads,
+                },
+            )
 
-        row = matched.iloc[0]
-        latency = float(row[self._latency_col(df)])
-        logger.debug(
-            "HIT (attention) %s: batch=%d, avg_seq=%d, heads=%d, "
-            "head_dim=%d -> %.2f us",
-            kernel_type,
-            batch_size,
-            avg_seq_len,
-            num_heads,
-            head_dim,
-            latency,
-        )
-        return QueryResult(
-            latency_us=latency,
-            confidence=0.9,
-            source=QuerySource.MEASURED,
-            details={"kernel_type": kernel_type},
-        )
+        self.last_miss_reason = "shape_mismatch"
+        return None
 
     # ---- Elementwise op lookup (output-shape matching) ----
 
@@ -1136,8 +1726,21 @@ class ProfilingDataSource(DataSource):
             expected_dtype = DTYPE_MAP.get(tc_dtype)
             if expected_dtype is None or i >= len(csv_dtypes):
                 return False
-            if expected_dtype != csv_dtypes[i]:
-                return False
+            csv_dtype_i = csv_dtypes[i]
+            if expected_dtype != csv_dtype_i:
+                # Relaxed dtype matching for specific kernels (e.g. RoPE:
+                # NPU records K as FLOAT while TC dispatches BF16)
+                if kernel_type in _DTYPE_RELAXED_KERNELS:
+                    compat_expected = _DTYPE_COMPAT.get(expected_dtype)
+                    compat_csv = _DTYPE_COMPAT.get(csv_dtype_i)
+                    if (
+                        compat_expected is None
+                        or compat_csv is None
+                        or compat_expected != compat_csv
+                    ):
+                        return False
+                else:
+                    return False
 
             # Get CSV shape, restore FRACTAL_NZ if needed
             csv_shape = csv_shapes[i]
@@ -1183,9 +1786,7 @@ class ProfilingDataSource(DataSource):
                 shape_3d = (
                     tc_shape_stripped
                     if len(tc_shape_stripped) == 3
-                    else tc_shape
-                    if len(tc_shape) == 3
-                    else None
+                    else tc_shape if len(tc_shape) == 3 else None
                 )
                 if shape_3d is not None:
                     # Flatten first two dims: TC (B, M, D) → CSV (B*M, D)

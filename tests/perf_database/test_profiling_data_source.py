@@ -585,7 +585,80 @@ def test_triton_rope_tc_input_count_2_decode_miss(triton_rope_data_dir):
     assert result is None, "M=16 not in CSV — should miss (shape_coverage_gap)"
 
 
-# --- Composite decomposition tests ---
+# --- RoPE dtype relaxed matching (P-E2E-1: NPU FLOAT vs TC BF16) ---
+
+TRITON_ROPE_FLOAT_CSV = """\
+Input Shapes,Input Data Types,Input Formats,Output Shapes,Output Data Types,Output Formats,Average Duration(us)
+"336,4,128;336,1,128;81920,128","DT_BF16;FLOAT;DT_BF16","ND;ND;ND","336,4,128;336,1,128","DT_BF16;FLOAT","ND;ND",12.3
+"""
+
+
+@pytest.fixture
+def triton_rope_float_dir(tmp_path):
+    """_triton_rope CSV with FLOAT dtype for K (real production data pattern)."""
+    data_dir = tmp_path / "triton_rope_float"
+    data_dir.mkdir()
+    op_mapping = (
+        'version: "test"\n'
+        "operator_mappings:\n"
+        '  "tensor_cast.apply_rope.default":\n'
+        "    kernel_type: _triton_rope\n"
+        "    tc_input_count: 2\n"
+    )
+    (data_dir / "op_mapping.yaml").write_text(op_mapping)
+    (data_dir / "_triton_rope.csv").write_text(TRITON_ROPE_FLOAT_CSV.strip())
+    return data_dir
+
+
+def test_triton_rope_dtype_relaxed_hit(triton_rope_float_dir):
+    """CSV K dtype=FLOAT, TC K dtype=BF16 → relaxed match → HIT.
+
+    This is the P-E2E-1 fix: NPU _triton_rope profiling records K as FLOAT
+    (FP32) while TC dispatches BF16. Performance is identical.
+    """
+    ds = ProfilingDataSource(triton_rope_float_dir)
+    op = _make_op_info(
+        torch.ops.tensor_cast.apply_rope.default,
+        [
+            torch.empty(1, 1, 336, 128, device="meta", dtype=torch.bfloat16),  # Q
+            torch.empty(1, 4, 336, 128, device="meta", dtype=torch.bfloat16),  # K
+            torch.empty(1, 336, 128, device="meta", dtype=torch.bfloat16),  # cos
+            torch.empty(1, 336, 128, device="meta", dtype=torch.bfloat16),  # sin
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is not None, (
+        "RoPE dtype relaxed: BF16 vs FLOAT should match for _ROPE_KERNELS"
+    )
+    assert abs(result.latency_us - 12.3) < 0.01
+
+
+def test_non_rope_dtype_strict(tmp_path):
+    """Non-RoPE kernel: BF16 vs FLOAT still causes MISS (strict matching)."""
+    data_dir = tmp_path / "matmul_strict"
+    data_dir.mkdir()
+    (data_dir / "op_mapping.yaml").write_text(
+        'version: "test"\n'
+        "operator_mappings:\n"
+        '  "aten.mm.default":\n'
+        "    kernel_type: MatMulV2\n"
+    )
+    (data_dir / "MatMulV2.csv").write_text(
+        "Input Shapes,Input Data Types,Input Formats,Output Shapes,"
+        "Output Data Types,Output Formats,Average Duration(us)\n"
+        '"136,5120;5120,768","FLOAT;FLOAT","ND;ND",'
+        '"136,768","FLOAT","ND",45.0\n'
+    )
+    ds = ProfilingDataSource(data_dir)
+    op = _make_op_info(
+        torch.ops.aten.mm.default,
+        [
+            torch.empty(136, 5120, device="meta", dtype=torch.bfloat16),
+            torch.empty(5120, 768, device="meta", dtype=torch.bfloat16),
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is None, "MatMul: BF16 vs FLOAT should NOT match (strict)"
 
 COMPOSITE_MATMUL_CSV = """\
 Input Shapes,Input Data Types,Input Formats,Output Shapes,Output Data Types,Output Formats,Average Duration(us)
@@ -1144,14 +1217,42 @@ operator_mappings:
     query_mode: attention_special
 """
 
-# Design doc §4.8 microbenchmark format
-ATTN_FIA_CSV = """\
-batch_size,avg_seq_len,num_heads,head_dim,dtype,Duration(us)
-1,4096,4,128,DT_BF16,56.18
-2,3500,4,128,DT_BF16,98.50
-10,4500,4,128,DT_BF16,890.70
-1,4096,8,128,DT_BF16,112.36
-"""
+# Design doc §4.8 enriched CSV format with avg_seq_len + Input Shapes
+_ATTN_FIA_HEADER = (
+    "Input Shapes,Input Data Types,Input Formats,Output Shapes,"
+    "Output Data Types,Output Formats,Duration(us),avg_seq_len"
+)
+
+def _make_fia_row(q_shape_str, out_shape_str, duration, avg_seq_len):
+    """Build one enriched FIA CSV row with minimal slot data."""
+    return (
+        f'"{q_shape_str}"'
+        ',"DT_BF16;DT_BF16;DT_BF16;DT_UNDEFINED;DT_UNDEFINED;DT_UNDEFINED;'
+        "INT64;DT_UNDEFINED;DT_UNDEFINED;DT_UNDEFINED;DT_UNDEFINED;DT_UNDEFINED;"
+        "DT_UNDEFINED;DT_UNDEFINED;INT32;DT_UNDEFINED;DT_UNDEFINED;DT_UNDEFINED;"
+        "DT_UNDEFINED;DT_UNDEFINED;DT_UNDEFINED;DT_UNDEFINED;DT_UNDEFINED;"
+        "DT_UNDEFINED;DT_UNDEFINED;DT_UNDEFINED;DT_UNDEFINED;DT_UNDEFINED;"
+        'DT_UNDEFINED;DT_UNDEFINED;DT_UNDEFINED"'
+        ',"ND;ND;ND;NULL;NULL;NULL;ND;NULL;NULL;NULL;NULL;NULL;NULL;NULL;ND;'
+        'NULL;NULL;NULL;NULL;NULL;NULL;NULL;NULL;NULL;NULL;NULL;NULL;NULL;NULL;NULL;NULL"'
+        f',"""{out_shape_str}""","DT_BF16;FLOAT","ND;ND",{duration},{avg_seq_len}'
+    )
+
+ATTN_FIA_CSV = (
+    _ATTN_FIA_HEADER + "\n"
+    + _make_fia_row(
+        "7000,4,128;56,128,4,128;56,128,4,128;;;;7000;;;;;;;;7000,56;;;;;;;;;;;;;;",
+        "7000,4,128;", 98.50, 3500,
+    ) + "\n"
+    + _make_fia_row(
+        "10,4,128;360,128,4,128;360,128,4,128;;;;10;;;;;;;;10,36;;;;;;;;;;;;;;",
+        "10,4,128;", 890.70, 4500,
+    ) + "\n"
+    + _make_fia_row(
+        "1,8,128;32,128,8,128;32,128,8,128;;;;1;;;;;;;;1,32;;;;;;;;;;;;;;",
+        "1,8,128;", 112.36, 4096,
+    )
+)
 
 
 @pytest.fixture
