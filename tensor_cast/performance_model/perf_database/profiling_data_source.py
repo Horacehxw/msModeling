@@ -439,17 +439,22 @@ def _decompose_mla_common(
             ),
         ]
     else:
-        # Prefill: MatMulV2(kv_c@kv_b_proj) + RINGMLAPrefillBF16Kernel
-        # Design doc v1.5 §4.8.7, §9.2: DSV3 prefill uses RING kernel, not FIA.
-        # RING kernel CSV shapes differ by seqlen (K/V dim varies), so compute
-        # path _inputs_match can distinguish rows.
+        # Prefill: MatMulV2(kv_c@kv_b_proj) + FusedInferAttentionScore
+        # vllm-ascend v0.18.0: MLA prefill uses FIA (unified, RING kernel removed)
         kv_b_proj = args[8]  # (kv_lora_rank, num_heads*(qk_nope_head_dim+v_head_dim))
         if kv_b_proj is None:
             logger.debug("MLA prefill: kv_b_proj is None, fallback to analytic")
             return None
 
         kv_lora_rank = kv_b_proj.shape[0]
-        specs = [
+        try:
+            avg_seq_len = int(seq_lens.float().mean().item())
+        except (RuntimeError, ValueError):
+            avg_seq_len = 0
+        fia_q_raw = (batch_size, num_heads, 1, head_dim)
+        fia_q_normalized = _normalize_fia_q_shape(fia_q_raw, head_dim)
+
+        return [
             SubKernelSpec(
                 kernel_type="MatMulV2",
                 input_shapes=[
@@ -459,15 +464,19 @@ def _decompose_mla_common(
                 dtype=dtype_str,
             ),
             SubKernelSpec(
-                kernel_type="RINGMLAPrefillBF16Kernel",
-                input_shapes=[
-                    (num_tokens, num_heads, head_dim),
-                ],
+                kernel_type="FusedInferAttentionScore",
+                input_shapes=[],
                 dtype=dtype_str,
-                query_mode="compute",
+                query_mode="attention",
+                attention_params={
+                    "q_shape_3d": fia_q_normalized
+                    or (batch_size, num_heads, head_dim),
+                    "avg_seq_len": avg_seq_len,
+                    "sparse_mode": 0,
+                    "num_kv_heads": 1,
+                },
             ),
         ]
-        return specs
 
 
 def _decompose_mla(
