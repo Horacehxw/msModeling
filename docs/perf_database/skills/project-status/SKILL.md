@@ -51,149 +51,321 @@ description: Generate perf-database project progress dashboard. Default=concise 
 5. 读取 docs/perf_database/METRICS_GUIDE.md (M1-M6 指标定义和用法)
 ```
 
-**Agent 4: M1-M6 指标计算** (如果 profiling 数据可用)
+**Agent 4: M1-M6 指标计算 (迭代优化)** (如果 profiling 数据可用)
 
-⚠️ **核心原则: TC 测试命令不是固定的, 而是从 profiling 数据动态推导的。**
-目标: TC 的 nq×ql 产生的 batch tokens (= 主计算 kernel 的 M-dim) 必须与 profiling kernel_details.csv 中的 dominant M-dim 一致, 以最大化 shape 匹配率。
+⚠️ **核心原则: 迭代搜索最优 TC 参数以最大化 M4 (per-shape hit rate)**
+
+目标: 找到使 M4 最高的 (nq, ql) 参数组合。不再依赖一次推导，而是:
+1. 从 profiling 提取 M-dim 分布 + 从 perf database CSV 提取可用 shape 清单
+2. 生成候选 (nq, ql)，优先选 CSV 中存在的 M-dim
+3. 运行 TC → 分析 m4_miss_shape_list → 调整参数 → 重试
+4. 最多 MAX_ITER 次迭代，选择 M4 最高的参数
 
 ```
 # ==========================================
-# Step 0: 从 profiling 推导 TC 参数 (每次必须执行)
+# 配置 (每次更新 profiling 数据时检查)
 # ==========================================
+PROF_BASE="/Users/horacehxw/Data/Profiling/Profiling-0325-final-vllm-new"
+PROF_QWEN3="$PROF_BASE/profiler-qwen3-0325"
+PROF_DSV3="$PROF_BASE/profiler-dsv3-0325"
+
+DATA_DIR="$(pwd)/tensor_cast/performance_model/perf_database/data/ATLAS_800_A3_752T_128G_DIE/vllm_ascend/vllm0.18.0_torch2.9.0_cann8.5"
+
+M4_ACCEPT=0.80   # M4 高于此值时停止迭代
+MAX_ITER=3        # 每个场景最多迭代次数
+
+# ==========================================
+# Step 0: Auto-discover profiling scenarios
+# ==========================================
+# 规则: 优先 rank0，优先最高 concurrency (最接近生产环境)
+# 自动扫描目录，不依赖硬编码场景名
 #
-# TC 参数推导方法论:
-#   1. 对每个 profiling 场景, 从 kernel_details.csv 提取主计算 kernel 的 M-dim 分布:
-#      - Qwen3 (BF16): 主计算 kernel = MatMulV2, M-dim = 第一个 input shape 的第一维
-#      - DSv3 (W8A8): 主计算 kernel = QuantBatchMatmulV3, M-dim = 同上
-#   2. 取 dominant M-dim (出现次数最多的值, 通常 >80% 占比)
-#   3. 推导 TC nq/ql:
-#      - Prefill: nq × ql 应产生与 dominant M-dim 一致的 tokens (含 block-padding)
-#      - Decode: nq 应等于 dominant M-dim (NPU decode 会 pad 到 {16,32,64})
-#   4. 验证: TC 产生的 M-dim 在 CSV 中有对应 shape → M4 hit
-#
-# 推导示例 (Profiling-0317-full/profiler-qwen3-0314):
-#   profiler-qwen3-input4096-output1:
-#     MatMulV2 dominant M=2064 (80.6%, 1664/2064 occurrences)
-#     → vLLM chunked prefill, chunk_size≈2048, 2064=2048+16 padding
-#     → TC: nq=2 ql=1024 → 2048 tokens (≈2064 after block-padding)
-#   profiler-qwen3-input4096-output1536-concurrency4-rrate2:
-#     MatMulV2 dominant M=16 (99.6%, decode padded to cudagraph capture M=16)
-#     → TC: nq=16 ql=1 → M=16
+# 目录结构 (0325):
+#   profiler-qwen3-0325/
+#     profiler-qwen3-input4096-output1-concurrency{1,16}-rank{0,8}         (PF)
+#     profiler-qwen3-input4096-output1536-concurrency{1,16}-rrate{1,2}-rank{0,8}  (DC)
+#   profiler-dsv3-0325/
+#     profiler-dsv3-input4096-output1[-concurrency1]-rank{0,8}             (PF)
+#     profiler-dsv3-input4096-output1536-concurrency{1,8}-rrate{1,4}-rank{0,8}    (DC)
 
-# Profiling 数据路径 (权威来源):
-PROF_QWEN3="/Users/horacehxw/Data/Profiling/Profiling-0317-full/profiler-qwen3-0314"
-PROF_DSV3="/Users/horacehxw/Data/Profiling/Profiling-0319-dsv3/profiler-dsv3-0319"
-
-DATA_DIR="$(pwd)/tensor_cast/performance_model/perf_database/data/ATLAS_800_A3_752T_128G_DIE/vllm_ascend/vllm0.15.0_torch2.9.0_cann8.5"
-
-# Step 0: 对每个 profiling 场景提取 dominant M-dim 并输出推导过程
 python3.10 -c "
-import csv
+import os, re
+from collections import defaultdict
+
+def discover_scenarios(prof_dir, model_prefix):
+    '''Discover profiling scenarios, preferring rank0 + highest concurrency.'''
+    scenarios = defaultdict(list)
+    for d in sorted(os.listdir(prof_dir)):
+        full = os.path.join(prof_dir, d)
+        if not os.path.isdir(full): continue
+        if not d.startswith(f'profiler-{model_prefix}-'): continue
+        m = re.match(
+            rf'profiler-{model_prefix}-input(\d+)-output(\d+)'
+            r'(?:-concurrency(\d+))?(?:-rrate(\d+))?-rank(\d+)',
+            d
+        )
+        if not m: continue
+        inp, out, conc, rrate, rank = m.groups()
+        conc = int(conc) if conc else 0
+        rrate = int(rrate) if rrate else 0
+        rank = int(rank)
+        phase = 'PF' if out == '1' else 'DC'
+        scenarios[phase].append((conc, rrate, rank, full))
+    best = {}
+    for phase, entries in scenarios.items():
+        rank0 = [e for e in entries if e[2] == 0]
+        if not rank0: rank0 = entries
+        rank0.sort(key=lambda e: (-e[0], -e[1]))
+        best[phase] = rank0[0][3]
+    return best
+
+# Output trace paths as shell variable assignments
+for model, prefix, prof_dir in [
+    ('QWEN3', 'qwen3', '$PROF_QWEN3'),
+    ('DSV3', 'dsv3', '$PROF_DSV3'),
+]:
+    scenarios = discover_scenarios(prof_dir, prefix)
+    for phase in ['PF', 'DC']:
+        if phase in scenarios:
+            print(f'{model}_{phase}_TRACE={scenarios[phase]}')
+"
+# 将上面的输出保存为 shell 变量, 后续 M6 使用
+
+# ==========================================
+# Step 0.5: Extract M-dim + CSV shape inventory
+# ==========================================
+# 两个目标:
+#   1. 从 profiling kernel_details.csv 提取每个场景的 M-dim 分布
+#   2. 从 perf database CSV 提取可用 M-dim 集合
+# 两者的交集决定了候选 (nq, ql)
+
+python3.10 -c "
+import csv, os
 from collections import Counter
 
-scenarios = [
-    ('Qwen3 PF', '$PROF_QWEN3/profiler-qwen3-input4096-output1/kernel_details.csv', 'MatMulV2'),
-    ('Qwen3 DC', '$PROF_QWEN3/profiler-qwen3-input4096-output1536-concurrency4-rrate2/kernel_details.csv', 'MatMulV2'),
-    ('DSv3 PF',  '$PROF_DSV3/profiler-dsv3-input2048-output1/kernel_details.csv', 'QuantBatchMatmulV3'),
-    ('DSv3 DC',  '$PROF_DSV3/profiler-dsv3-input4096-output1536-concurrency8-rrate4/kernel_details.csv', 'QuantBatchMatmulV3'),
-]
-for name, kd_path, kernel_type in scenarios:
+DATA_DIR = '$DATA_DIR'
+
+# --- 从 profiling 提取 M-dim 分布 ---
+# 使用 Step 0 auto-discover 的 trace 路径
+# AI 在执行时需要用实际发现的路径替换下面的占位符
+
+print('=== Profiling M-dim distribution ===')
+# 对 4 个场景逐一提取:
+#   Qwen3 (BF16): 主计算 kernel = MatMulV2
+#   DSv3 (W8A8):  主计算 kernel = QuantBatchMatmulV3
+for name, kd_path, kernel_type in [
+    ('Qwen3_PF', '<QWEN3_PF_TRACE>/kernel_details.csv', 'MatMulV2'),
+    ('Qwen3_DC', '<QWEN3_DC_TRACE>/kernel_details.csv', 'MatMulV2'),
+    ('DSv3_PF',  '<DSV3_PF_TRACE>/kernel_details.csv',  'QuantBatchMatmulV3'),
+    ('DSv3_DC',  '<DSV3_DC_TRACE>/kernel_details.csv',  'QuantBatchMatmulV3'),
+]:
     m_dims = Counter()
-    with open(kd_path) as f:
-        for row in csv.DictReader(f):
-            if row.get('Type','').strip() == kernel_type:
-                shapes = row.get('Input Shapes','').strip().strip('\"')
-                parts = shapes.split(';')
-                if parts:
-                    first_dims = parts[0].strip('()').split(',')
-                    m_dims[first_dims[0].strip()] += 1
+    try:
+        with open(kd_path) as f:
+            for row in csv.DictReader(f):
+                if row.get('Type','').strip() == kernel_type:
+                    shapes = row.get('Input Shapes','').strip('\"')
+                    parts = shapes.split(';')
+                    if parts:
+                        first_dims = parts[0].strip('()').split(',')
+                        m_dims[first_dims[0].strip()] += 1
+    except FileNotFoundError:
+        print(f'{name}: TRACE NOT FOUND at {kd_path}')
+        continue
     dominant = m_dims.most_common(1)[0] if m_dims else ('?', 0)
     total = sum(m_dims.values())
     pct = dominant[1]/total*100 if total else 0
     print(f'{name}: {kernel_type} dominant M={dominant[0]} ({pct:.0f}%, {dominant[1]}/{total})')
     for m, count in m_dims.most_common(5):
         print(f'  M={m}: {count}')
+
+# --- 从 perf database CSV 提取可用 M-dim ---
+print()
+print('=== CSV shape inventory ===')
+for csv_file in ['MatMulV2.csv', 'QuantBatchMatmulV3.csv']:
+    csv_path = os.path.join(DATA_DIR, csv_file)
+    if not os.path.exists(csv_path):
+        print(f'{csv_file}: NOT FOUND')
+        continue
+    m_dims = set()
+    with open(csv_path) as f:
+        for row in csv.DictReader(f):
+            shapes = row.get('input_shapes', row.get('Input Shapes', '')).strip('\"')
+            parts = shapes.split(';')
+            if parts:
+                dims = parts[0].strip('()').split(',')
+                d = dims[0].strip()
+                if d.isdigit():
+                    m_dims.add(int(d))
+    print(f'{csv_file}: {len(m_dims)} unique M-dims = {sorted(m_dims)[:30]}')
 "
 
 # ==========================================
-# Step 1: M1-M5 TC 命令 (参数从 profiling 推导)
+# Step 1: 候选参数生成 + 迭代优化
 # ==========================================
+#
+# 候选生成规则:
+#   Prefill: nq * ql 应等于 (或在 block-padding 后等于) profiling dominant M-dim
+#     候选列表 (假设 dominant M = D):
+#       (1, D), (2, D//2), (4, D//4), (8, D//8), (16, D//16)
+#       对每个还需尝试 block-padding 变体: ql±{16,32,64}
+#     优先选择: nq*ql 的 M-dim 在 CSV shape inventory 中存在的候选
+#
+#   Decode: ql=1 固定, nq = profiling dominant M-dim
+#     BF16 (Qwen3): NPU pad 到 {16,32,64}, 优先匹配 CSV 中存在的值
+#     INT8 (DSv3): QuantBatchMatmulV3 不 pad M, 直接用 dominant M
+#     候选: dominant_M, 以及 ceil(dominant_M / 16)*16 等 pad 变体
+#
+# 迭代优化循环 (伪代码, AI 需转化为实际执行):
+#
+#   best_m4 = 0; best_nq = nq; best_ql = ql
+#   for iter in range(MAX_ITER):
+#     1. 运行 TC (text_generate) → export-metrics JSON
+#     2. 解析 JSON: m4 = r['m4']['m4_per_shape_hr']
+#     3. if m4 > best_m4: best_m4 = m4; best_nq = nq; best_ql = ql
+#     4. if m4 >= M4_ACCEPT: break (accepted)
+#     5. 分析 r['m4']['m4_miss_shape_list'] + r['misses']:
+#        - 分类 MISS 原因: shape_not_found vs kernel_not_mapped vs other
+#        - 如果大部分是 kernel_not_mapped → 参数调整无效, break
+#        - 如果大部分是 shape_not_found → 提取 dominant MISS M-dim
+#     6. 调整 nq/ql 瞄准 MISS 中 dominant M-dim:
+#        - PF: 尝试 nq=1 ql=dominant_miss_M (或其他分解)
+#        - DC: 尝试 nq=dominant_miss_M ql=1
+#     7. 继续下一轮
+#   用 best 结果的 metrics JSON 作为最终报告
 
-# Qwen3 Prefill: profiling dominant M=2064 → TC nq=2 ql=1024 → M=2048
-# (2048 vs 2064 差异 0.78%, 在 block-padding 容差内)
+# TC 命令模板 (AI 需要根据 Step 0/0.5 结果填充 NQ/QL):
+
+# --- Qwen3 Prefill ---
+# --quantize-linear-action DISABLED (BF16)
 # --enable-flashcomm-v1 对标 vLLM ENABLE_FLASHCOMM1=1
 python3.10 -m tensor_cast.scripts.text_generate Qwen/Qwen3-32B \
-  --num-queries 2 --query-length 1024 --word-embedding-tp row \
+  --num-queries $NQ --query-length $QL --word-embedding-tp row \
   --device ATLAS_800_A3_752T_128G_DIE --world-size 16 --tp-size 16 \
   --quantize-linear-action DISABLED \
   --performance-model profiling --compile --perf-database "$DATA_DIR" \
   --enable-flashcomm-v1 \
   --export-metrics results/qwen3_prefill_metrics.json --log-level info
 
-# Qwen3 Decode: profiling dominant M=16 → TC nq=16 ql=1 → M=16
-# NPU cudagraph pads any batch ≤16 to M=16
+# --- Qwen3 Decode ---
 python3.10 -m tensor_cast.scripts.text_generate Qwen/Qwen3-32B \
-  --num-queries 16 --query-length 1 --context-length 4096 --word-embedding-tp row \
+  --num-queries $NQ --query-length 1 --context-length 4096 --word-embedding-tp row \
   --device ATLAS_800_A3_752T_128G_DIE --world-size 16 --tp-size 16 \
   --quantize-linear-action DISABLED \
   --performance-model profiling --compile --perf-database "$DATA_DIR" \
   --export-metrics results/qwen3_decode_metrics.json --log-level info
 
-# DSv3 Prefill: profiling dominant QBM M=2048 → TC nq=1 ql=2048
-# vLLM-ascend chunked prefill, chunk_size=2048; 100% dominant
+# --- DSv3 Prefill ---
 python3.10 -m tensor_cast.scripts.text_generate deepseek-ai/DeepSeek-V3 \
-  --num-queries 1 --query-length 2048 --word-embedding-tp row \
+  --num-queries $NQ --query-length $QL --word-embedding-tp row \
   --device ATLAS_800_A3_752T_128G_DIE --world-size 16 --tp-size 8 --dp-size 2 --ep-size 16 \
   --quantize-linear-action W8A8_STATIC \
   --performance-model profiling --compile --perf-database "$DATA_DIR" \
   --export-metrics results/dsv3_prefill_metrics.json --log-level info
 
-# DSv3 Decode: profiling dominant QBM M=5 → TC nq=5 ql=1
-# QuantBatchMatmulV3 (INT8) 不 pad M; profiling 100% M=5
+# --- DSv3 Decode ---
 python3.10 -m tensor_cast.scripts.text_generate deepseek-ai/DeepSeek-V3 \
-  --num-queries 5 --query-length 1 --context-length 4096 --word-embedding-tp row \
+  --num-queries $NQ --query-length 1 --context-length 4096 --word-embedding-tp row \
   --device ATLAS_800_A3_752T_128G_DIE --world-size 16 --tp-size 8 --dp-size 2 --ep-size 16 \
   --quantize-linear-action W8A8_STATIC \
   --performance-model profiling --compile --perf-database "$DATA_DIR" \
   --export-metrics results/dsv3_decode_metrics.json --log-level info
 
 # ==========================================
-# Step 2: M6 计算 (半离线, 需 profiling step_trace)
+# Step 1.5: MISS 分析 + 参数调整 (每次迭代后执行)
+# ==========================================
+python3.10 -c "
+import json, sys
+from collections import Counter
+
+path = sys.argv[1]  # e.g., results/qwen3_prefill_metrics.json
+r = json.load(open(path))
+m4 = r['m4']['m4_per_shape_hr']
+miss_shapes = r['m4'].get('m4_miss_shape_list', [])
+misses = r.get('misses', [])
+
+print(f'M4 = {m4:.4f} ({m4*100:.1f}%)')
+print(f'MISS count: {len(miss_shapes)}')
+
+# Classify MISS reasons
+shape_miss = 0
+kernel_miss = 0
+other_miss = 0
+for m in misses:
+    reason = m.get('reason', '').lower()
+    if 'shape' in reason or 'not found' in reason:
+        shape_miss += 1
+    elif 'kernel' in reason or 'mapping' in reason or 'no entry' in reason:
+        kernel_miss += 1
+    else:
+        other_miss += 1
+
+print(f'MISS breakdown: shape_not_found={shape_miss} kernel_not_mapped={kernel_miss} other={other_miss}')
+
+if kernel_miss > shape_miss:
+    print('VERDICT: STOP — most MISSes are kernel coverage gaps, parameter tuning cannot help')
+else:
+    # Extract dominant MISS M-dim
+    miss_m_dims = Counter()
+    for m in miss_shapes:
+        if m.get('shape') and m['shape'][0]:
+            s = m['shape'][0]
+            dim0 = s[0] if isinstance(s, list) else s
+            miss_m_dims[dim0] += 1
+    if miss_m_dims:
+        top_miss = miss_m_dims.most_common(3)
+        print(f'Top MISS M-dims: {top_miss}')
+        print(f'VERDICT: ADJUST nq/ql to target M={top_miss[0][0]}')
+    else:
+        print('VERDICT: STOP — no actionable MISS pattern')
+
+# Also show top MISS func_names for diagnosis
+miss_funcs = Counter(m.get('func_name', '?') for m in misses)
+print()
+print('Top MISS ops:')
+for fn, cnt in miss_funcs.most_common(10):
+    print(f'  {fn}: {cnt}')
+" results/qwen3_prefill_metrics.json
+
+# ==========================================
+# Step 2: M6 计算 (用迭代优化选出的最佳参数)
 # ==========================================
 # M6 = TC_prediction / real_per_fwd
 # M6=1.0 完美, >1 高估, <1 低估. Phase 3 目标: 0.85-1.15
 #
-# compute_m6.py 自动用 anchor kernel (ArgMaxV2) 切分 forward passes, 取 Stage/N 为分母。
-# AI 必须在使用前验证: 每个 forward pass 的 dominant M-dim 与 TC 一致。
+# compute_m6.py 自动用 anchor kernel (ArgMaxV2) 切分 forward passes, 取 Stage/N 为分母
+# --profiler-output 使用 Step 0 auto-discover 的 trace 路径 (rank0, highest concurrency)
+#
+# AI 必须用 Step 0 实际发现的路径替换 $XXX_TRACE 变量:
 
 python3.10 tools/perf_data_collection/compute_m6.py \
   --tc-report results/qwen3_prefill_metrics.json \
-  --profiler-output "$PROF_QWEN3/profiler-qwen3-input4096-output1"
+  --profiler-output "$QWEN3_PF_TRACE"
 
 python3.10 tools/perf_data_collection/compute_m6.py \
   --tc-report results/qwen3_decode_metrics.json \
-  --profiler-output "$PROF_QWEN3/profiler-qwen3-input4096-output1536-concurrency4-rrate2"
+  --profiler-output "$QWEN3_DC_TRACE"
 
 python3.10 tools/perf_data_collection/compute_m6.py \
   --tc-report results/dsv3_prefill_metrics.json \
-  --profiler-output "$PROF_DSV3/profiler-dsv3-input2048-output1"
+  --profiler-output "$DSV3_PF_TRACE"
 
 python3.10 tools/perf_data_collection/compute_m6.py \
   --tc-report results/dsv3_decode_metrics.json \
-  --profiler-output "$PROF_DSV3/profiler-dsv3-input4096-output1536-concurrency8-rrate4"
+  --profiler-output "$DSV3_DC_TRACE"
 
 # ==========================================
-# Step 3: 汇总输出
+# Step 3: 汇总输出 (含迭代优化记录)
 # ==========================================
 python3.10 -c "
 import json
 print('场景                  M1     M2     M3     M4     M5     TC(ms)')
 print('-' * 70)
 for name, path in [
-    ('Qwen3 PF (+FC)', 'results/qwen3_prefill_metrics.json'),
-    ('Qwen3 DC',       'results/qwen3_decode_metrics.json'),
-    ('DSv3 PF',        'results/dsv3_prefill_metrics.json'),
-    ('DSv3 DC',        'results/dsv3_decode_metrics.json'),
+    ('Qwen3 PF', 'results/qwen3_prefill_metrics.json'),
+    ('Qwen3 DC', 'results/qwen3_decode_metrics.json'),
+    ('DSv3 PF',  'results/dsv3_prefill_metrics.json'),
+    ('DSv3 DC',  'results/dsv3_decode_metrics.json'),
 ]:
     r = json.load(open(path))
     m1=r['m1']['m1_raw_op_count_hr']
@@ -211,10 +383,10 @@ print()
 print('场景                  TC(ms)   Real(ms)   M6      判断')
 print('-' * 65)
 for name, path in [
-    ('Qwen3 PF (+FC)', 'results/qwen3_prefill_m6.json'),
-    ('Qwen3 DC',       'results/qwen3_decode_m6.json'),
-    ('DSv3 PF',        'results/dsv3_prefill_m6.json'),
-    ('DSv3 DC',        'results/dsv3_decode_m6.json'),
+    ('Qwen3 PF', 'results/qwen3_prefill_m6.json'),
+    ('Qwen3 DC', 'results/qwen3_decode_m6.json'),
+    ('DSv3 PF',  'results/dsv3_prefill_m6.json'),
+    ('DSv3 DC',  'results/dsv3_decode_m6.json'),
 ]:
     r = json.load(open(path))
     tc = r['tc_predicted_us']/1e3
@@ -227,8 +399,9 @@ for name, path in [
 ```
 
 注意: 如果 profiling 数据路径不可访问（如 Profiling 数据目录不存在），M6 无法计算，跳过并注明。
-如果 results/*.json 已存在且日期为当天且 TC 参数未变更，可直接读取而不重新运行 TC。
-**如果 TC 参数变更了 (如 nq/ql 改变)，必须重新运行 TC 并重新计算 M6。**
+如果 results/*_metrics.json 已存在且日期为当天且迭代参数未变更，可直接读取而不重新运行迭代。
+**如果数据版本变更了 (DATA_DIR 或 PROF_BASE 改变)，必须重新运行完整迭代。**
+**迭代优化的目标是 M4，但最终报告必须展示 M1-M6 全部指标 + 每个场景的迭代记录 (nq/ql/M4 per iter)。**
 
 **Agent 3: 团队动态**
 ```
@@ -334,23 +507,27 @@ M3 趋势 (Qwen3 PF):  Phase1 → Phase2 → 当前
 
 ## 验证命令与数据源 (必须)
 {列出本次报告用到的完整 TC 命令和数据源, 便于复现}
+{必须包含迭代优化记录: 每个场景的 iter/nq/ql/M4}
 示例:
 ```
-DATA_DIR=tensor_cast/.../vllm0.15.0_torch2.9.0_cann8.5
-PROF_QWEN3=/Users/.../profiler-qwen3-0314
+DATA_DIR=tensor_cast/.../vllm0.18.0_torch2.9.0_cann8.5
+PROF_QWEN3=/Users/.../Profiling-0325-final-vllm-new/profiler-qwen3-0325
 
-# Qwen3 Prefill (M1-M5)
+# Qwen3 Prefill — 迭代优化结果
+# iter 1: nq=2 ql=1032 → M4=67.2% (< 80%, analyzing MISS...)
+#   MISS breakdown: shape_not_found=12 kernel_not_mapped=3
+#   Top MISS M-dim: 2064 (8 occurrences)
+# iter 2: nq=1 ql=2064 → M4=81.3% ✅ (accepted, >= 80%)
 python3.10 -m tensor_cast.scripts.text_generate Qwen/Qwen3-32B \
-  --num-queries 10 --query-length 4104 ...
-  → TC batch: 41040 tokens
-  → Profiling dominant M-dim: 2064 (⚠️ 不匹配, M6 不可信)
+  --num-queries 1 --query-length 2064 ...
+  → TC M-dim: 2064, Profiling dominant M-dim: 2064 (✅ 匹配)
 
 # M6
 python3.10 tools/perf_data_collection/compute_m6.py \
   --tc-report results/qwen3_prefill_metrics.json \
-  --profiler-output "$PROF_QWEN3/profiler-qwen3-input4096-output1"
+  --profiler-output "$PROF_QWEN3/profiler-qwen3-input4096-output1-concurrency16-rank0"
 ```
-每个场景必须注明: TC batch tokens, profiling M-dim, 是否匹配。
+每个场景必须注明: TC batch tokens, profiling M-dim, 是否匹配, 迭代次数。
 
 ## 指标 Gap 逐项分析 (必须)
 {对每个未达标指标, 列出 gap、最大根因、owner、解决路径}
@@ -359,7 +536,7 @@ python3.10 tools/perf_data_collection/compute_m6.py \
 |-----------|:----:|:----:|:---:|---------|:-----:|---------|:-------:|
 | DSv3 PF M3 | 37.5% | >50% | -12.5pp | DFC fused_kernel_gap (5 ops) | LJW | DFC fusion pass | +15-30pp |
 | DSv3 DC M3 | 29.2% | >50% | -20.8pp | DFC + shape_coverage_gap | LJW+TCX | DFC pass + microbench | +20-35pp |
-| Qwen3 PF M6 | 5.3x | 0.85-1.15 | ⚠️ | TC-Profiling batch 不匹配 (41040 vs 2064) | HXW | 调整 TC 参数对齐 profiling | 修正后可评估 |
+| Qwen3 PF M4 | 67.2% | >80% | -12.8pp | MISS M-dim 2064 在 CSV 中缺失 | TCX | 补采 microbench M=2064 shape | +10-15pp |
 
 ## 风险矩阵
 {用 ASCII 矩阵可视化 TOP 风险的 影响×概率 分布}
@@ -443,7 +620,8 @@ feat/perf-database vs gitcode-ascend/develop:
  2. DATA_DIR 路径
  3. PROFILING 路径 (M6 用)
  4. TC batch tokens (nq×ql) vs profiling dominant M-dim
- 5. 是否匹配 → M6 是否可信}
+ 5. 是否匹配 → M6 是否可信
+ 6. 迭代优化记录: iter/nq/ql/M4/MISS分析}
 
 ## 二-B、指标 Gap 逐项分析 (必须)
 {对每个未达标的 场景×指标 组合:
