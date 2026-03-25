@@ -380,10 +380,13 @@ operator_mappings:
   "tensor_cast.add_rms_norm2.default":
     kernel_type: AddRmsNormBias
     alternate_kernel_types: [AddRmsNorm]
+    tc_input_count: 3
     notes: >
       [HIGH] 同 add_rms_norm, 第 3 返回值 x_out 也使用.
       CANN 8.5: AddRmsNormBias (vllm-ascend 自定义 op).
       CANN 8.3 alternate: AddRmsNorm.
+      tc_input_count=3: TC has 3 tensor inputs (x, residual, weight);
+      CSV AddRmsNormBias has 4 inputs (extra NPU-internal param).
 
   "tensor_cast.swiglu.default":
     kernel_type: SwiGlu
