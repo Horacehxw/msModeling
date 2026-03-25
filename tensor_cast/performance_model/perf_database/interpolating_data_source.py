@@ -4,25 +4,32 @@ When exact lookup misses, tries interpolation on the varying dimension:
 - Compute ops: interpolate on first dim of first input (seq_len/num_tokens)
 - Comm ops: interpolate on message_bytes
 - Attention ops: interpolate on avg_seq_len (with optional sqrt transform)
+- Composite ops: decompose into sub-kernels, interpolate each, sum
 
 Design doc reference: S4.4 (InterpolatingDataSource)
 """
 
 import logging
 import math
-from typing import List, Optional, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 import torch
 
 from .data_source import DataSource, QueryResult, QuerySource
 from .profiling_data_source import (
+    COMPOSITE_DECOMPOSERS,
+    DTYPE_MAP,
+    ProfilingDataSource,
+    SubKernelSpec,
     _dtype_byte_size,
+    _infer_sparse_mode,
+    _is_block_padded,
+    _normalize_fia_q_shape,
     _normalize_func_name,
+    _parse_fia_q_shape,
     _parse_shape_str,
     _parse_str_list,
     _strip_batch_dim,
-    DTYPE_MAP,
-    ProfilingDataSource,
 )
 
 if TYPE_CHECKING:
@@ -76,12 +83,17 @@ class InterpolatingDataSource(DataSource):
         if mapping is None:
             return None
 
-        # Don't interpolate zero_cost or composite ops
-        if mapping.get("zero_cost") or mapping.get("composite"):
+        # Don't interpolate zero_cost ops
+        if mapping.get("zero_cost"):
             return None
 
+        # Composite ops: decompose into sub-kernels, interpolate each
+        if mapping.get("composite"):
+            return self._interpolate_composite(op_invoke_info, mapping, func_str)
+
         if mapping.get("category") == "communication":
-            return self._interpolate_comm(op_invoke_info, mapping)
+            # Comm interpolation handled by base's _query_comm_csv alpha-beta model
+            return None
         if mapping.get("query_mode") == "attention_special":
             return self._interpolate_attention(op_invoke_info, mapping)
         if mapping.get("query_mode") == "elementwise":
@@ -111,14 +123,15 @@ class InterpolatingDataSource(DataSource):
         if not tc_inputs:
             return None
 
+        # Respect tc_input_count truncation (Issue #8: match base lookup behavior)
+        tc_input_count = mapping.get("tc_input_count")
+        if tc_input_count is not None:
+            tc_inputs = tc_inputs[:tc_input_count]
+
         # Target: first dim of first input (typically seq_len)
         target_dim = tc_inputs[0][0][0]
 
-        latency_col = (
-            "Average Duration(us)"
-            if "Average Duration(us)" in df.columns
-            else "Duration(us)"
-        )
+        latency_col = self.base._latency_col(df)
 
         # Find CSV rows where all dims/dtypes match except first dim of first input
         candidates: List[Tuple[float, float]] = []  # (first_dim_value, duration)
@@ -170,66 +183,21 @@ class InterpolatingDataSource(DataSource):
 
     # ---- Communication interpolation ----
 
-    def _interpolate_comm(
-        self, op_invoke_info: "OpInvokeInfo", mapping: dict
-    ) -> Optional[QueryResult]:
-        """Interpolate communication ops on message_bytes."""
-        kernel_type = mapping.get("kernel_type")
-        if not kernel_type:
-            return None
-
-        df = self.base._load_csv(kernel_type)
-        if df is None:
-            return None
-
-        # Extract message_bytes and num_devices (same logic as ProfilingDataSource)
-        tensor = op_invoke_info.args[0]
-        if not isinstance(tensor, torch.Tensor):
-            return None
-        message_bytes = tensor.nelement() * tensor.element_size()
-
-        rank_group = op_invoke_info.args[-1]
-        if not isinstance(rank_group, (list, tuple)):
-            return None
-        num_devices = len(rank_group)
-
-        # reduce_scatter: TC args[0] is the full input tensor (sendBuf), but
-        # bench CSV message_bytes follows HCCL API convention where recvCount
-        # is the per-rank output size.  Divide by num_devices to align.
-        func_str = _normalize_func_name(op_invoke_info.func)
-        if func_str == "tensor_cast.reduce_scatter.default" and num_devices > 1:
-            message_bytes = message_bytes // num_devices
-
-        latency_col = (
-            "Average Duration(us)"
-            if "Average Duration(us)" in df.columns
-            else "Duration(us)"
-        )
-
-        # Filter by num_devices, collect (message_bytes, duration)
-        mask = df["num_devices"] == num_devices
-        matched = df[mask]
-        if matched.empty:
-            return None
-
-        candidates: List[Tuple[float, float]] = []
-        for _, row in matched.iterrows():
-            candidates.append((float(row["message_bytes"]), float(row[latency_col])))
-
-        if len(candidates) < 2:
-            return None
-
-        candidates.sort(key=lambda x: x[0])
-        return self._interpolate_from_candidates(
-            candidates, float(message_bytes), kernel_type
-        )
+    # Communication interpolation is handled by ProfilingDataSource._query_comm_csv
+    # which has built-in alpha-beta least-squares interpolation. If base.lookup()
+    # returns None for a comm op, there's no data to interpolate against.
 
     # ---- Attention interpolation ----
 
     def _interpolate_attention(
         self, op_invoke_info: "OpInvokeInfo", mapping: dict
     ) -> Optional[QueryResult]:
-        """Interpolate attention ops on avg_seq_len with optional sqrt transform."""
+        """Interpolate attention ops on avg_seq_len using enriched CSV.
+
+        Filters by (N, D, dtype, sparse_mode, num_kv_heads) exact match on
+        normalized Q shape from slot 0, collects (avg_seq_len, latency)
+        candidates, applies sqrt transform if kernel_overrides specifies it.
+        """
         kernel_type = mapping.get("kernel_type")
         if not kernel_type:
             return None
@@ -238,64 +206,104 @@ class InterpolatingDataSource(DataSource):
         if df is None:
             return None
 
-        # Extract attention parameters (same logic as ProfilingDataSource._lookup_attention)
+        # Require enriched CSV format — unified column naming
+        avg_seq_col = None
+        if "Runtime avg_seq_len" in df.columns:
+            avg_seq_col = "Runtime avg_seq_len"
+        elif "avg_seq_len" in df.columns:
+            avg_seq_col = "avg_seq_len"
+        else:
+            return None
+        if "Input Shapes" not in df.columns:
+            return None
+
         args = op_invoke_info.args
         if len(args) < 7:
             return None
 
+        query = args[0]
+        key = args[1]
         seq_lens = args[6]
-        if not isinstance(seq_lens, torch.Tensor):
+        query_lens = args[7] if len(args) > 7 else None
+        if not isinstance(query, torch.Tensor) or not isinstance(seq_lens, torch.Tensor):
             return None
 
-        batch_size = seq_lens.shape[0]
+        head_dim = key.shape[-1] if isinstance(key, torch.Tensor) and key.ndim >= 1 else 0
+        tc_q_3d = _normalize_fia_q_shape(tuple(query.shape), head_dim)
+        if tc_q_3d is None:
+            return None
+        tc_N, tc_D = tc_q_3d[1], tc_q_3d[2]
+
         try:
             avg_seq_len = int(seq_lens.float().mean().item())
         except Exception:
             return None
 
-        key = args[1]
-        if not isinstance(key, torch.Tensor) or key.ndim < 2:
-            return None
-        head_dim = key.shape[-1]
-        kv_heads = key.shape[-2]
-
-        query = args[0]
-        if not isinstance(query, torch.Tensor) or query.ndim < 2:
-            return None
-        hidden_size = query.shape[-1]
-        num_heads = hidden_size // head_dim
-
         dtype_str = DTYPE_MAP.get(query.dtype)
         if dtype_str is None:
             return None
 
-        latency_col = (
-            "Average Duration(us)"
-            if "Average Duration(us)" in df.columns
-            else "Duration(us)"
+        # Infer sparse_mode and num_kv_heads from TC args
+        tc_sparse_mode = _infer_sparse_mode(query_lens)
+        tc_num_kv_heads = (
+            key.shape[-2]
+            if isinstance(key, torch.Tensor) and key.ndim >= 2
+            else None
         )
 
-        # Filter by batch_size + num_heads + head_dim + dtype
-        mask = (
-            (df["batch_size"] == batch_size)
-            & (df["num_heads"] == num_heads)
-            & (df["head_dim"] == head_dim)
-            & (df["dtype"] == dtype_str)
-        )
-        matched = df[mask]
-        if matched.empty:
-            return None
+        has_sparse_col = "Runtime sparse_mode" in df.columns
+        has_kv_heads_col = "Runtime num_key_value_heads" in df.columns
 
+        latency_col = self.base._latency_col(df)
+
+        # Collect candidates: filter by (N, D, dtype, sparse_mode, kv_heads),
+        # vary avg_seq_len
         candidates: List[Tuple[float, float]] = []
-        for _, row in matched.iterrows():
-            candidates.append((float(row["avg_seq_len"]), float(row[latency_col])))
+        for _, row in df.iterrows():
+            csv_avg_seq = int(row[avg_seq_col])
+            if csv_avg_seq < 0:
+                continue
+
+            shapes_str = str(row.get("Input Shapes", "")).strip('"')
+            csv_q_raw = _parse_fia_q_shape(shapes_str)
+            if csv_q_raw is None:
+                continue
+            csv_q_3d = _normalize_fia_q_shape(csv_q_raw, head_dim)
+            if csv_q_3d is None:
+                continue
+
+            csv_dtypes_str = str(row.get("Input Data Types", ""))
+            csv_first_dtype = csv_dtypes_str.split(";")[0].strip() if csv_dtypes_str else ""
+            if dtype_str != csv_first_dtype:
+                continue
+
+            if tc_N != csv_q_3d[1] or tc_D != csv_q_3d[2]:
+                continue
+
+            # T (token count) filter: must match exactly or within block-padding
+            csv_T = csv_q_3d[0]
+            tc_T = tc_q_3d[0]
+            if tc_T != csv_T:
+                if not _is_block_padded(tc_T, csv_T) and not _is_block_padded(csv_T, tc_T):
+                    continue
+
+            # sparse_mode filter (skip if CSV lacks column)
+            if has_sparse_col:
+                if tc_sparse_mode != int(row["Runtime sparse_mode"]):
+                    continue
+
+            # num_kv_heads filter (skip if CSV lacks column)
+            if has_kv_heads_col and tc_num_kv_heads is not None:
+                if tc_num_kv_heads != int(row["Runtime num_key_value_heads"]):
+                    continue
+
+            candidates.append((float(csv_avg_seq), float(row[latency_col])))
 
         if len(candidates) < 2:
             return None
 
         candidates.sort(key=lambda x: x[0])
 
-        # Check for sqrt transform in kernel_overrides
         override = self._kernel_overrides.get(kernel_type, {})
         transform = override.get("shape_transform")
 
@@ -306,6 +314,232 @@ class InterpolatingDataSource(DataSource):
         return self._interpolate_from_candidates(
             candidates, float(avg_seq_len), kernel_type
         )
+
+    # ---- Composite interpolation ----
+
+    def _interpolate_composite(
+        self, op_invoke_info: "OpInvokeInfo", mapping: dict, func_str: str
+    ) -> Optional[QueryResult]:
+        """Interpolate composite ops by decomposing into sub-kernels.
+
+        Uses registered decomposers to get sub-kernel specs, then interpolates
+        each sub-kernel individually and sums the results.
+        """
+        decomposer = COMPOSITE_DECOMPOSERS.get(func_str)
+        if decomposer is None:
+            return None
+
+        specs = decomposer(op_invoke_info, mapping)
+        if not specs:
+            return None
+
+        total_latency = 0.0
+        hit_kernels = []
+
+        for spec in specs:
+            lat = None
+
+            # First try exact match via base ProfilingDataSource
+            if spec.query_mode == "attention" and spec.attention_params:
+                lat = self.base._lookup_attention_by_params(
+                    spec.kernel_type, spec.attention_params, spec.dtype
+                )
+            else:
+                lat = self.base._lookup_compute_by_shapes(
+                    spec.kernel_type, spec.input_shapes, spec.dtype
+                )
+
+            # If exact miss, try interpolation
+            if lat is None:
+                if spec.query_mode == "attention" and spec.attention_params:
+                    lat = self._interpolate_attention_by_params(
+                        spec.kernel_type, spec.attention_params, spec.dtype
+                    )
+                else:
+                    lat = self._interpolate_compute_by_shapes(
+                        spec.kernel_type, spec.input_shapes, spec.dtype
+                    )
+
+            if lat is None:
+                return None
+
+            total_latency += lat
+            hit_kernels.append(spec.kernel_type)
+
+        logger.debug(
+            "INTERPOLATED (composite) %s: sub_kernels=%s, total=%.1f us",
+            func_str,
+            hit_kernels,
+            total_latency,
+        )
+        return QueryResult(
+            latency_us=total_latency,
+            confidence=0.5,
+            source=QuerySource.INTERPOLATED,
+            details={
+                "kernel_type": hit_kernels,
+                "composite": True,
+                "method": "decomposed_interpolation",
+            },
+        )
+
+    def _interpolate_compute_by_shapes(
+        self,
+        kernel_type: str,
+        input_shapes: List[Tuple[int, ...]],
+        dtype_str: str,
+    ) -> Optional[float]:
+        """Interpolate a compute sub-kernel by explicit shapes.
+
+        Same logic as _interpolate_compute but takes shapes directly
+        instead of extracting from OpInvokeInfo.
+        """
+        df = self.base._load_csv(kernel_type)
+        if df is None:
+            return None
+
+        if not input_shapes:
+            return None
+
+        target_dim = float(input_shapes[0][0])
+
+        latency_col = self.base._latency_col(df)
+
+        # Find CSV rows where all dims/dtypes match except first dim of first input
+        candidates: List[Tuple[float, float]] = []
+
+        for _, row in df.iterrows():
+            csv_shapes = _parse_shape_str(str(row.get("Input Shapes", "")))
+            csv_dtypes = _parse_str_list(str(row.get("Input Data Types", "")))
+
+            if len(csv_shapes) != len(input_shapes):
+                continue
+
+            # Check dtype of first input
+            if not csv_dtypes or csv_dtypes[0] != dtype_str:
+                continue
+
+            # Check all dims match except first dim of first input
+            all_match = True
+            for i, shape in enumerate(input_shapes):
+                csv_shape = csv_shapes[i]
+                if i == 0:
+                    if len(shape) != len(csv_shape):
+                        all_match = False
+                        break
+                    if shape[1:] != csv_shape[1:]:
+                        all_match = False
+                        break
+                else:
+                    if shape != csv_shape:
+                        all_match = False
+                        break
+            if all_match:
+                candidates.append((float(csv_shapes[0][0]), float(row[latency_col])))
+
+        if len(candidates) < 2:
+            return None
+
+        candidates.sort(key=lambda x: x[0])
+        result = self._interpolate_from_candidates(candidates, target_dim, kernel_type)
+        return result.latency_us if result else None
+
+    def _interpolate_attention_by_params(
+        self,
+        kernel_type: str,
+        params: Dict,
+        dtype_str: str,
+    ) -> Optional[float]:
+        """Interpolate attention sub-kernel using enriched CSV by explicit params.
+
+        params: {q_shape_3d, avg_seq_len, sparse_mode?, num_kv_heads?}
+        """
+        df = self.base._load_csv(kernel_type)
+        if df is None:
+            return None
+
+        # Unified column naming
+        avg_seq_col = None
+        if "Runtime avg_seq_len" in df.columns:
+            avg_seq_col = "Runtime avg_seq_len"
+        elif "avg_seq_len" in df.columns:
+            avg_seq_col = "avg_seq_len"
+        else:
+            return None
+        if "Input Shapes" not in df.columns:
+            return None
+
+        q_shape_3d = params.get("q_shape_3d")
+        target_avg_seq = params.get("avg_seq_len")
+        if q_shape_3d is None or target_avg_seq is None:
+            return None
+
+        target_sparse = params.get("sparse_mode")
+        target_kv_heads = params.get("num_kv_heads")
+        has_sparse_col = "Runtime sparse_mode" in df.columns
+        has_kv_heads_col = "Runtime num_key_value_heads" in df.columns
+
+        tc_N, tc_D = q_shape_3d[1], q_shape_3d[2]
+        head_dim = tc_D
+        latency_col = self.base._latency_col(df)
+
+        candidates: List[Tuple[float, float]] = []
+        for _, row in df.iterrows():
+            csv_avg_seq = int(row[avg_seq_col])
+            if csv_avg_seq < 0:
+                continue
+
+            shapes_str = str(row.get("Input Shapes", "")).strip('"')
+            csv_q_raw = _parse_fia_q_shape(shapes_str)
+            if csv_q_raw is None:
+                continue
+            csv_q_3d = _normalize_fia_q_shape(csv_q_raw, head_dim)
+            if csv_q_3d is None:
+                continue
+
+            csv_dtypes_str = str(row.get("Input Data Types", ""))
+            csv_first_dtype = csv_dtypes_str.split(";")[0].strip() if csv_dtypes_str else ""
+            if dtype_str != csv_first_dtype:
+                continue
+
+            if tc_N != csv_q_3d[1] or tc_D != csv_q_3d[2]:
+                continue
+
+            # T (token count) filter: must match exactly or within block-padding
+            csv_T = csv_q_3d[0]
+            tc_T = q_shape_3d[0]
+            if tc_T != csv_T:
+                if not _is_block_padded(tc_T, csv_T) and not _is_block_padded(csv_T, tc_T):
+                    continue
+
+            # sparse_mode filter
+            if has_sparse_col and target_sparse is not None:
+                if int(row["Runtime sparse_mode"]) != target_sparse:
+                    continue
+
+            # num_kv_heads filter
+            if has_kv_heads_col and target_kv_heads is not None:
+                if int(row["Runtime num_key_value_heads"]) != target_kv_heads:
+                    continue
+
+            candidates.append((float(csv_avg_seq), float(row[latency_col])))
+
+        if len(candidates) < 2:
+            return None
+
+        candidates.sort(key=lambda x: x[0])
+        target = float(target_avg_seq)
+
+        override = self._kernel_overrides.get(kernel_type, {})
+        transform = override.get("shape_transform")
+
+        if transform == "sqrt":
+            result = self._interpolate_from_candidates_sqrt(
+                candidates, target, kernel_type
+            )
+        else:
+            result = self._interpolate_from_candidates(candidates, target, kernel_type)
+        return result.latency_us if result else None
 
     # ---- Elementwise interpolation ----
 

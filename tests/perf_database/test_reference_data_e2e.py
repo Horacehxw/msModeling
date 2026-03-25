@@ -117,12 +117,11 @@ def test_rmsnorm_head_hit(ds):
     assert result.details["kernel_type"] == "RmsNorm"
 
 
-def test_rope_miss_shape_mismatch(ds):
-    """RoPE: TC dispatches [K(1,1,S,128), Q(1,4,S,128), cos, sin] → _triton_rope.
+def test_rope_dtype_relaxed_hit(ds):
+    """RoPE: TC BF16 vs CSV FLOAT → relaxed dtype match → HIT.
 
-    CSV has 3 inputs (Q,K,cos_cache) while TC sends 4 (K,Q,cos,sin).
-    With tc_input_count=2 only first 2 TC inputs are matched, but CSV
-    still has 3 inputs → shape_mismatch. This is a known gap.
+    CSV _triton_rope has K dtype=FLOAT (NPU internal upcast), TC sends BF16.
+    With dtype relaxed matching for _ROPE_KERNELS, this now matches.
     """
     op = _make_op(
         torch.ops.tensor_cast.apply_rope.default,
@@ -132,7 +131,9 @@ def test_rope_miss_shape_mismatch(ds):
         (1, 336, 128),
     )
     result = ds.lookup(op)
-    assert result is None
+    assert result is not None, "RoPE should HIT with dtype relaxed matching"
+    assert result.latency_us > 0
+    assert result.details["kernel_type"] == "_triton_rope"
 
 
 def test_add_elementwise_hit(ds):
@@ -202,12 +203,14 @@ def test_embedding_miss_input_count(ds):
     assert result is None
 
 
-def test_copy_miss_shape_mismatch(ds):
-    """copy_: mapped to TensorMove but KV cache shape doesn't match CSV."""
+def test_copy_zero_cost(ds):
+    """copy_: marked as zero_cost in op_mapping, returns 0 latency."""
     op = _make_op(
         torch.ops.aten.copy_.default,
         (2, 2, 128, 1, 128),
         (2, 2, 128, 1, 128),
     )
     result = ds.lookup(op)
-    assert result is None
+    assert result is not None
+    assert result.latency_us == 0.0
+    assert result.details.get("zero_cost") is True
