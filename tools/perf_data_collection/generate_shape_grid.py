@@ -7,11 +7,17 @@ import csv
 import math
 import os
 import random
-import re
 import stat
 import sys
 from pathlib import Path
 from typing import Iterable
+
+CURRENT_DIR = Path(__file__).resolve().parent
+OP_REPLAY_DIR = CURRENT_DIR / "op_replay"
+if str(OP_REPLAY_DIR) not in sys.path:
+    sys.path.insert(0, str(OP_REPLAY_DIR))
+
+from common import SUPPORTED_DEVICES, check_version, normalize_device_name, normalize_vllm_ascend_version
 
 
 DEFAULT_DATA_DIR = (
@@ -24,16 +30,6 @@ DEFAULT_DATA_DIR = (
 DEFAULT_ROWS = 10_000
 DEFAULT_MIN = 1
 DEFAULT_MAX = 20_000
-SUPPORTED_DEVICES = [
-    "TEST_DEVICE",
-    "ATLAS_800_A2_376T_64G",
-    "ATLAS_800_A2_313T_64G",
-    "ATLAS_800_A2_280T_64G",
-    "ATLAS_800_A2_280T_64G_PCIE",
-    "ATLAS_800_A2_280T_32G_PCIE",
-    "ATLAS_800_A3_752T_128G_DIE",
-    "ATLAS_800_A3_560T_128G_DIE",
-]
 KEEP_COLUMNS = {
     "OP State",
     "Accelerator Core",
@@ -120,27 +116,6 @@ def print_progress(
 
 def clear_progress() -> None:
     print("\r" + " " * 160 + "\r", end="", file=sys.stderr, flush=True)
-
-
-def check_version(value: str) -> str:
-    version = value.strip()
-    if not re.fullmatch(r"[0-9A-Za-z]+(?:[._-][0-9A-Za-z]+)*", version):
-        raise argparse.ArgumentTypeError(
-            f"Invalid --vllm-ascend-version: {value!r}. "
-            "Expected value like 0.9.2 or vllm0.13.0_torch2.8.0_cann8.3"
-        )
-    return version
-
-
-def normalize_device_name(device: str) -> str:
-    return device.strip()
-
-
-def normalize_vllm_ascend_version(version: str) -> str:
-    normalized = version.strip()
-    if not normalized.startswith("v"):
-        normalized = f"v{normalized}"
-    return normalized
 
 
 def resolve_data_dir(

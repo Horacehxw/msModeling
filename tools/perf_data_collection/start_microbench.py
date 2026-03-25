@@ -57,6 +57,8 @@ BASE_COLUMNS = [
 ]
 LEGACY_MICROBENCH_DURATION = "MicroBench Duration(us)"
 MICROBENCH_DURATION = "Average Duration(us)"
+MICROBENCH_TASK_DURATION = "MicroBench Task Duration(us)"
+MICROBENCH_KERNEL_DURATION = "MicroBench Kernel Duration(us)"
 PROFILING_AVERAGE_DURATION = "Profiling Average Duration(us)"
 PROFILING_MEDIAN_DURATION = "Profiling Median Duration(us)"
 PROFILING_STD_DURATION = "Profiling Std Duration(us)"
@@ -277,6 +279,25 @@ def find_op_summary_files(prof_dirs: set[Path]) -> list[Path]:
     return op_summary_files
 
 
+def find_kernel_details_files(prof_dirs: set[Path]) -> list[Path]:
+    kernel_details_files = []
+    for prof_dir in sorted(prof_dirs):
+        output_dir = prof_dir / "mindstudio_profiler_output"
+        current_files = sorted(output_dir.glob("kernel_details*.csv"))
+        if not current_files:
+            current_files = sorted(prof_dir.glob("kernel_details*.csv"))
+        kernel_details_files.extend(current_files)
+    return kernel_details_files
+
+
+def find_task_time_files(prof_dirs: set[Path]) -> list[Path]:
+    task_time_files = []
+    for prof_dir in sorted(prof_dirs):
+        output_dir = prof_dir / "mindstudio_profiler_output"
+        task_time_files.extend(sorted(output_dir.glob("task_time_*.csv")))
+    return task_time_files
+
+
 def resolve_prof_dirs(prof_path: str | None) -> set[Path]:
     if not prof_path:
         return set()
@@ -371,13 +392,19 @@ def aggregate_op_summary(op_summary_files: list[Path]) -> dict[str, list[dict[st
                         "count": 0,
                         "row": row,
                         "microbench_sum": 0.0,
+                        "task_duration_sum": 0.0,
+                        "task_duration_count": 0,
                         "metric_sums": defaultdict(float),
                     },
                 )
+                # Seed both duration columns from op_summary. MICROBENCH_DURATION is the
+                # default value and may later be overridden by task_time/kernel_details,
+                # while MICROBENCH_TASK_DURATION preserves the raw Task Duration(us).
+                task_duration = parse_float(row.get("Task Duration(us)", ""))
                 current["count"] = int(current["count"]) + 1
-                current["microbench_sum"] = float(current["microbench_sum"]) + parse_float(
-                    row.get("Task Duration(us)", "")
-                )
+                current["microbench_sum"] = float(current["microbench_sum"]) + task_duration
+                current["task_duration_sum"] = float(current["task_duration_sum"]) + task_duration
+                current["task_duration_count"] = int(current["task_duration_count"]) + 1
                 for source_col in OP_SUMMARY_TO_DB_COLUMN:
                     current["metric_sums"][source_col] += parse_float(row.get(source_col, ""))
 
@@ -395,12 +422,140 @@ def aggregate_op_summary(op_summary_files: list[Path]) -> dict[str, list[dict[st
             "Output Data Types": (source_row.get("Output Data Types", "") or "").strip(),
             "Output Formats": (source_row.get("Output Formats", "") or "").strip(),
             MICROBENCH_DURATION: format_float(float(item["microbench_sum"]) / count),
+            MICROBENCH_TASK_DURATION: format_float(float(item["task_duration_sum"]) / int(item["task_duration_count"])),
         }
         for source_col, microbench_col in MICROBENCH_EXTRA_COLUMN_MAP.items():
             aggregated_row[microbench_col] = format_float(item["metric_sums"][source_col] / count)
         result[op_type].append(aggregated_row)
 
     return result
+
+
+def aggregate_task_time(
+    op_summary_files: list[Path],
+    task_time_files: list[Path],
+) -> dict[tuple[str, tuple[str, ...]], float]:
+    if not task_time_files:
+        return {}
+
+    task_time_by_parent: dict[Path, list[Path]] = defaultdict(list)
+    for csv_path in task_time_files:
+        task_time_by_parent[csv_path.parent].append(csv_path)
+
+    grouped_rows: dict[tuple[str, tuple[str, ...]], dict[str, object]] = {}
+    for op_summary_path in op_summary_files:
+        output_dir = op_summary_path.parent
+        candidate_task_files = task_time_by_parent.get(output_dir, [])
+        if not candidate_task_files:
+            continue
+
+        op_index: dict[tuple[str, str], tuple[str, tuple[str, ...]]] = {}
+        with op_summary_path.open("r", encoding="utf-8-sig", newline="") as csv_file:
+            reader = csv.DictReader(csv_file)
+            for row in reader:
+                op_type = (row.get("OP Type", "") or "").strip()
+                task_id = (row.get("Task ID", "") or "").strip()
+                stream_id = (row.get("Stream ID", "") or "").strip()
+                if not op_type or not task_id:
+                    continue
+                op_index[(task_id, stream_id)] = (op_type, build_signature(row))
+
+        for task_time_path in candidate_task_files:
+            with task_time_path.open("r", encoding="utf-8-sig", newline="") as csv_file:
+                reader = csv.DictReader(csv_file)
+                for row in reader:
+                    task_id = (row.get("task_id", "") or "").strip()
+                    stream_id = (row.get("stream_id", "") or "").strip()
+                    if not task_id:
+                        continue
+                    matched = op_index.get((task_id, stream_id))
+                    if matched is None:
+                        continue
+                    group_key = matched
+                    current = grouped_rows.setdefault(
+                        group_key,
+                        {
+                            "count": 0,
+                            "duration_sum": 0.0,
+                        },
+                    )
+                    current["count"] = int(current["count"]) + 1
+                    current["duration_sum"] = float(current["duration_sum"]) + parse_float(
+                        row.get("task_time(us)", "")
+                    )
+
+    result: dict[tuple[str, tuple[str, ...]], float] = {}
+    for group_key, item in grouped_rows.items():
+        count = int(item["count"])
+        if count <= 0:
+            continue
+        result[group_key] = float(item["duration_sum"]) / count
+    return result
+
+
+def aggregate_kernel_details(kernel_details_files: list[Path]) -> dict[tuple[str, tuple[str, ...]], float]:
+    grouped_rows: dict[tuple[str, tuple[str, ...]], dict[str, object]] = {}
+
+    for csv_path in kernel_details_files:
+        with csv_path.open("r", encoding="utf-8-sig", newline="") as csv_file:
+            reader = csv.DictReader(csv_file)
+            for row in reader:
+                op_type = (row.get("Type", "") or "").strip()
+                if not op_type:
+                    continue
+                signature = build_signature(row)
+                group_key = (op_type, signature)
+                current = grouped_rows.setdefault(
+                    group_key,
+                    {
+                        "count": 0,
+                        "duration_sum": 0.0,
+                    },
+                )
+                current["count"] = int(current["count"]) + 1
+                current["duration_sum"] = float(current["duration_sum"]) + parse_float(
+                    row.get("Duration(us)", "")
+                )
+
+    result: dict[tuple[str, tuple[str, ...]], float] = {}
+    for group_key, item in grouped_rows.items():
+        count = int(item["count"])
+        if count <= 0:
+            continue
+        result[group_key] = float(item["duration_sum"]) / count
+    return result
+
+
+def attach_task_durations(
+    aggregated_rows: dict[str, list[dict[str, str]]],
+    task_duration_map: dict[tuple[str, tuple[str, ...]], float],
+) -> dict[str, list[dict[str, str]]]:
+    # task_time is the first override source for MICROBENCH_DURATION. It replaces
+    # the op_summary-derived default when a per-signature task_time average exists.
+    for op_type, rows in aggregated_rows.items():
+        for row in rows:
+            key = (op_type, build_signature(row))
+            task_duration = task_duration_map.get(key)
+            if task_duration is not None:
+                row[MICROBENCH_DURATION] = format_float(task_duration)
+    return aggregated_rows
+
+
+def attach_kernel_durations(
+    aggregated_rows: dict[str, list[dict[str, str]]],
+    kernel_duration_map: dict[tuple[str, tuple[str, ...]], float],
+) -> dict[str, list[dict[str, str]]]:
+    # kernel_details has the highest priority. When present, it overwrites the
+    # current MICROBENCH_DURATION value (possibly sourced from task_time) and also
+    # records the same value in MICROBENCH_KERNEL_DURATION.
+    for op_type, rows in aggregated_rows.items():
+        for row in rows:
+            key = (op_type, build_signature(row))
+            kernel_duration = kernel_duration_map.get(key)
+            if kernel_duration is not None:
+                row[MICROBENCH_KERNEL_DURATION] = format_float(kernel_duration)
+                row[MICROBENCH_DURATION] = format_float(kernel_duration)
+    return aggregated_rows
 
 
 def filter_aggregated_rows(
@@ -420,6 +575,8 @@ def filter_aggregated_rows(
 def get_default_columns() -> list[str]:
     columns = list(BASE_COLUMNS)
     columns.append(MICROBENCH_DURATION)
+    columns.append(MICROBENCH_TASK_DURATION)
+    columns.append(MICROBENCH_KERNEL_DURATION)
     columns.append(PROFILING_AVERAGE_DURATION)
     columns.append(PROFILING_MEDIAN_DURATION)
     columns.append(PROFILING_STD_DURATION)
@@ -440,6 +597,20 @@ def ensure_microbench_column(fieldnames: list[str]) -> list[str]:
     elif MICROBENCH_DURATION not in columns:
         columns = BASE_COLUMNS + [MICROBENCH_DURATION] + [col for col in columns if col not in BASE_COLUMNS]
 
+    if MICROBENCH_TASK_DURATION not in columns and PROFILING_AVERAGE_DURATION in columns:
+        insert_index = columns.index(PROFILING_AVERAGE_DURATION)
+        columns.insert(insert_index, MICROBENCH_TASK_DURATION)
+    elif MICROBENCH_TASK_DURATION not in columns:
+        insert_index = columns.index(MICROBENCH_DURATION) + 1 if MICROBENCH_DURATION in columns else len(BASE_COLUMNS)
+        columns.insert(insert_index, MICROBENCH_TASK_DURATION)
+
+    if MICROBENCH_KERNEL_DURATION not in columns and PROFILING_AVERAGE_DURATION in columns:
+        insert_index = columns.index(PROFILING_AVERAGE_DURATION)
+        columns.insert(insert_index, MICROBENCH_KERNEL_DURATION)
+    elif MICROBENCH_KERNEL_DURATION not in columns:
+        insert_index = columns.index(MICROBENCH_DURATION) + 1 if MICROBENCH_DURATION in columns else len(BASE_COLUMNS)
+        columns.insert(insert_index, MICROBENCH_KERNEL_DURATION)
+
     for profiling_col in PROFILING_AVERAGE_EXTRA_COLUMNS:
         microbench_col = to_microbench_column(profiling_col)
         if profiling_col in columns and microbench_col not in columns:
@@ -456,7 +627,7 @@ def normalize_row_for_columns(row: dict[str, str], columns: list[str]) -> dict[s
 
 
 def build_gap_record(csv_path: Path, row: dict[str, str]) -> GapRecord | None:
-    microbench_us = parse_float(row.get(MICROBENCH_DURATION, ""))
+    microbench_us = parse_float(row.get(MICROBENCH_KERNEL_DURATION, "")) or parse_float(row.get(MICROBENCH_DURATION, ""))
     profiling_us = parse_float(row.get(PROFILING_AVERAGE_DURATION, ""))
     if microbench_us <= 0.0 or profiling_us <= 0.0:
         return None
@@ -496,6 +667,10 @@ def update_op_csv(csv_path: Path, rows_to_merge: list[dict[str, str]]) -> Update
                     existing_row[MICROBENCH_DURATION] = existing_row.get(LEGACY_MICROBENCH_DURATION, "")
                 old_microbench = existing_row.get(MICROBENCH_DURATION, "")
                 existing_row[MICROBENCH_DURATION] = new_row.get(MICROBENCH_DURATION, "")
+                if MICROBENCH_TASK_DURATION in new_row:
+                    existing_row[MICROBENCH_TASK_DURATION] = new_row.get(MICROBENCH_TASK_DURATION, "")
+                if MICROBENCH_KERNEL_DURATION in new_row:
+                    existing_row[MICROBENCH_KERNEL_DURATION] = new_row.get(MICROBENCH_KERNEL_DURATION, "")
                 for microbench_col in MICROBENCH_EXTRA_COLUMN_MAP.values():
                     if microbench_col in new_row:
                         existing_row[microbench_col] = new_row[microbench_col]
@@ -730,7 +905,14 @@ def main() -> None:
                 selected_ops=selected_ops,
             )
         op_summary_files = find_op_summary_files(prof_dirs)
+        task_time_files = find_task_time_files(prof_dirs)
+        kernel_details_files = find_kernel_details_files(prof_dirs)
         aggregated_rows = aggregate_op_summary(op_summary_files)
+        task_time_duration_map = aggregate_task_time(op_summary_files, task_time_files)
+        # Duration priority: op_summary default < task_time < kernel_details.
+        aggregated_rows = attach_task_durations(aggregated_rows, task_time_duration_map)
+        kernel_duration_map = aggregate_kernel_details(kernel_details_files)
+        aggregated_rows = attach_kernel_durations(aggregated_rows, kernel_duration_map)
         aggregated_rows = filter_aggregated_rows(aggregated_rows, selected_ops)
         results = update_database(
             device=args.device,
