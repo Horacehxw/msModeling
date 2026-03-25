@@ -611,11 +611,11 @@ operator_mappings:
       query_mode=elementwise: output-shape matching with byte-ratio dtype scaling.
 
   "aten.div.Tensor":
-    kernel_type: RealDiv
-    alternate_kernel_types: [Div]
-    query_mode: elementwise
+    zero_cost: true
     notes: >
-      [MEDIUM] op-plugin: DivKernelNpuOpApi.cpp → aclnnDiv. CANN kernel Type = RealDiv (not "Div").
+      [LOW→zero_cost] MoE softmax 归一化。NPU 融合至 MoeGatingTopK。
+      所有场景 < 0.002ms (< 0.01% 总耗时)。
+      原 kernel: RealDiv (op-plugin: DivKernelNpuOpApi.cpp → aclnnDiv).
       0325 profiling: Qwen3 RealDiv(6-382x), DSv3 RealDiv(4-130x). "Div" never appears.
       query_mode=elementwise: output-shape matching with byte-ratio dtype scaling.
 
@@ -639,20 +639,18 @@ operator_mappings:
       NPU fuses conditional selection into MoeGatingTopK/DispatchFFNCombine.
 
   "aten.gather.default":
-    kernel_type: GatherV2
-    alternate_kernel_types: [GatherV2AiCore]
-    tc_input_count: 2
+    zero_cost: true
     notes: >
-      [LOW] op-plugin: GatherKernelNpuOpApi.cpp → aclnnGather.
-      v0.18.0: Decode 分派至 GatherV2AiCore. 0325: DSv3 DC GatherV2AiCore(65x).
-      tc_input_count=2: CSV has 3 inputs (data, indices, axis); TC has 2 tensors (self, index).
+      [LOW→zero_cost] MoE expert selection gather。NPU 融合至 MoeGatingTopK/DispatchFFNCombine。
+      所有场景 < 0.01ms (< 0.01% 总耗时)。
+      原 kernel: GatherV2/GatherV2AiCore (op-plugin: GatherKernelNpuOpApi.cpp → aclnnGather).
 
   "aten.scatter.value":
-    kernel_type: ScatterElementsV2
-    alternate_kernel_types: [ScatterElements]
-    tc_input_count: 2
+    zero_cost: true
     notes: >
-      [HIGH] op-plugin: ScatterKernelNpuOpApi.cpp → aclnnInplaceScatterValue.
+      [LOW→zero_cost] MoE routing scatter。NPU 融合至 MoeGatingTopK。
+      所有场景 < 0.003ms (< 0.01% 总耗时)。
+      原 kernel: ScatterElementsV2 (op-plugin: ScatterKernelNpuOpApi.cpp → aclnnInplaceScatterValue).
       CANN 8.5: 同时产生 LinearIndex 子 kernel (24x, 1:1 对应 ScatterElementsV2).
       tc_input_count=2: CSV has 3 inputs (self, index, axis); TC has 2 tensors (self, index).
 
@@ -664,16 +662,18 @@ operator_mappings:
       TC's moe_gating_topk op already captures this latency.
 
   "aten.clone.default":
-    kernel_type: TensorMove
+    zero_cost: true
     notes: >
-      [LOW] op-plugin: clone → aclnnInplaceCopy/contiguous copy.
+      [LOW→zero_cost] MoE routing clone。NPU 融合至 MoeGatingTopK/DispatchFFNCombine。
+      所有场景 < 0.014ms (< 0.01% 总耗时)。
+      原 kernel: TensorMove (op-plugin: clone → aclnnInplaceCopy/contiguous copy).
 
   "aten.bitwise_not.default":
-    kernel_type: LogicalNot
-    alternate_kernel_types: [LogicalNotAiCore, Invert]
+    zero_cost: true
     notes: >
-      [LOW] op-plugin: BitwiseNotKernelNpu.cpp (acl_op path). bool input → LogicalNot;
-      non-bool → Invert. vLLM 推理中 bitwise_not 用于 bool mask → LogicalNot.
+      [LOW→zero_cost] MoE routing bool mask invert。NPU 融合至 MoeGatingTopK。
+      所有场景 < 0.005ms (< 0.01% 总耗时)。
+      原 kernel: LogicalNot/LogicalNotAiCore (op-plugin: BitwiseNotKernelNpu.cpp).
       0325: Qwen3 LogicalNot(3x PF), LogicalNotAiCore(191x DC).
 
   "aten.index.Tensor":
