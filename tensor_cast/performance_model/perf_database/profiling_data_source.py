@@ -1519,6 +1519,16 @@ class ProfilingDataSource(DataSource):
                 or self._shapes_match_with_padding(tc_output_shape, csv_shape)
                 or self._shapes_match_with_padding(tc_output_shape, csv_shape_stripped)
             )
+            # 3D→2D flatten: TC keeps batch dim (B,S,D) but profiling
+            # flattens to (B*S,D).  Try merging first two dims.
+            if not shape_matched and len(tc_output_shape) == 3 and len(csv_shape) == 2:
+                flat = (tc_output_shape[0] * tc_output_shape[1], tc_output_shape[2])
+                shape_matched = (
+                    flat == csv_shape
+                    or flat == csv_shape_stripped
+                    or self._shapes_match_with_padding(flat, csv_shape)
+                    or self._shapes_match_with_padding(flat, csv_shape_stripped)
+                )
             if not shape_matched:
                 continue
 
