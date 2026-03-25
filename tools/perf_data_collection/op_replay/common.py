@@ -79,9 +79,10 @@ def get_runtime_modules():
 
 def check_version(value: str) -> str:
     version = value.strip()
-    if not re.fullmatch(r"[0-9]+(?:\.[0-9A-Za-z_-]+)*", version):
+    if not re.fullmatch(r"[0-9A-Za-z]+(?:[._-][0-9A-Za-z]+)*", version):
         raise argparse.ArgumentTypeError(
-            f"Invalid --vllm-ascend-version: {value!r}. Expected value like 0.9.2"
+            f"Invalid --vllm-ascend-version: {value!r}. "
+            "Expected value like 0.9.2 or vllm0.13.0_torch2.8.0_cann8.3"
         )
     return version
 
@@ -198,6 +199,14 @@ def iter_csv_rows(target_data_dir: Path, csv_name: str):
     for csv_path in sorted(target_data_dir.rglob(csv_name)):
         with csv_path.open("r", encoding="utf-8-sig", newline="") as csv_file:
             reader = csv.DictReader(csv_file)
+            fieldnames = list(reader.fieldnames or [])
+            if fieldnames and fieldnames[0].startswith("version https://git-lfs.github.com/spec/"):
+                raise RuntimeError(
+                    f"{csv_path} is a Git LFS pointer, not the real CSV content. "
+                    "Run `git lfs pull` in the repository and retry."
+                )
+            if not fieldnames:
+                raise RuntimeError(f"{csv_path} is empty or missing a CSV header.")
             for row_index, row in enumerate(reader, start=2):
                 yield csv_path, row_index, row
 

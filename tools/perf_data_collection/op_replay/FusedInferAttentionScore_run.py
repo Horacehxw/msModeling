@@ -22,6 +22,9 @@ Notes:
 from __future__ import annotations
 
 import math
+import os
+from pathlib import Path
+import sys
 
 from common import (
     build_input_tensor,
@@ -32,6 +35,13 @@ from common import (
     iter_csv_rows,
     parse_shape,
 )
+
+CURRENT_DIR = Path(__file__).resolve().parent
+PARENT_DIR = CURRENT_DIR.parent
+if str(PARENT_DIR) not in sys.path:
+    sys.path.insert(0, str(PARENT_DIR))
+
+from fia_common import parse_runtime_int, parse_runtime_int_list, shape_numel, split_metadata_field
 
 
 DTYPE_ALIASES = {
@@ -57,6 +67,31 @@ ACTUAL_SEQ_LENGTHS_KV_INDEX = 6
 BLOCK_TABLE_INDEX = 14
 QUERY_ROPE_INDEX = 24
 KEY_ROPE_INDEX = 25
+REPLAY_REPEAT_COUNT = 10
+REPLAY_REPEAT_COUNT_ENV = "MSMODELING_FIA_REPLAY_REPEAT_COUNT"
+RUNTIME_ACTUAL_SEQ_LENGTHS_VALUES = "Runtime actual_seq_lengths_values"
+RUNTIME_ACTUAL_SEQ_LENGTHS_KV_VALUES = "Runtime actual_seq_lengths_kv_values"
+RUNTIME_NUM_HEADS = "Runtime num_heads"
+RUNTIME_NUM_KEY_VALUE_HEADS = "Runtime num_key_value_heads"
+RUNTIME_SPARSE_MODE = "Runtime sparse_mode"
+RUNTIME_INPUT_LAYOUT = "Runtime input_layout"
+RUNTIME_BLOCK_SIZE = "Runtime block_size"
+ZERO_TENSOR_DTYPE_ATTRS = {
+    "DT_BOOL": "bool",
+    "DT_INT8": "int8",
+    "DT_UINT8": "uint8",
+    "DT_INT16": "int16",
+    "DT_INT32": "int32",
+    "DT_INT64": "int64",
+    "DT_FLOAT16": "float16",
+    "DT_BF16": "bfloat16",
+    "DT_FLOAT": "float32",
+    "DT_DOUBLE": "float64",
+}
+CAUSAL_MASK_DTYPE_ATTRS = {
+    "DT_INT8": "int8",
+    "DT_UINT8": "uint8",
+}
 
 
 def normalize_dtype_name(dtype_name: str) -> str:
@@ -65,25 +100,10 @@ def normalize_dtype_name(dtype_name: str) -> str:
         return normalized
     return DTYPE_ALIASES.get(normalized, normalized)
 
-
-def split_metadata_field(raw_value: str) -> list[str]:
-    cleaned = raw_value.strip().strip('"')
-    return [item.strip() for item in cleaned.split(";")]
-
-
 def parse_shape_or_none(raw_shape: str):
     if not raw_shape.strip():
         return None
     return parse_shape(raw_shape)
-
-
-def shape_numel(shape: tuple[int, ...] | None) -> int:
-    if not shape:
-        return 0
-    numel = 1
-    for dim in shape:
-        numel *= dim
-    return numel
 
 
 def distribute_total(total: int, bucket_count: int, *, min_value: int) -> list[int]:
@@ -116,18 +136,8 @@ def cumulative_lengths(lengths: list[int]) -> list[int]:
 
 def build_zero_tensor(shape: tuple[int, ...], dtype_name: str):
     runtime_torch, _ = get_runtime_modules()
-    dtype = {
-        "DT_BOOL": runtime_torch.bool,
-        "DT_INT8": runtime_torch.int8,
-        "DT_UINT8": runtime_torch.uint8,
-        "DT_INT16": runtime_torch.int16,
-        "DT_INT32": runtime_torch.int32,
-        "DT_INT64": runtime_torch.int64,
-        "DT_FLOAT16": runtime_torch.float16,
-        "DT_BF16": runtime_torch.bfloat16,
-        "DT_FLOAT": runtime_torch.float32,
-        "DT_DOUBLE": runtime_torch.float64,
-    }.get(dtype_name)
+    dtype_attr = ZERO_TENSOR_DTYPE_ATTRS.get(dtype_name)
+    dtype = None if dtype_attr is None else getattr(runtime_torch, dtype_attr)
     if dtype is None:
         raise ValueError(f"Unsupported zero tensor dtype: {dtype_name}")
     return runtime_torch.zeros(shape, dtype=dtype).npu()
@@ -153,10 +163,13 @@ def build_causal_mask(shape: tuple[int, ...], dtype_name: str):
 
     if dtype_name == "DT_BOOL":
         return mask.npu()
-    return mask.to({
-        "DT_INT8": runtime_torch.int8,
-        "DT_UINT8": runtime_torch.uint8,
-    }[dtype_name]).npu()
+    return mask.to(getattr(runtime_torch, CAUSAL_MASK_DTYPE_ATTRS[dtype_name])).npu()
+
+
+def build_default_sparse_mode_3_mask():
+    # FIA causal replay commonly uses the optimized 2048x2048 INT8 mask when
+    # the profiling bundle does not expose an explicit atten_mask slot.
+    return build_causal_mask((2048, 2048), "DT_INT8")
 
 
 def build_scalar_length_list(length_shape: tuple[int, ...] | None) -> int | None:
@@ -165,23 +178,34 @@ def build_scalar_length_list(length_shape: tuple[int, ...] | None) -> int | None
     return shape_numel(length_shape)
 
 
-def infer_case_args(shapes: list[tuple[int, ...] | None]):
+def infer_case_args(
+    shapes: list[tuple[int, ...] | None],
+    runtime_row: dict[str, str],
+):
     query_shape = shapes[QUERY_INDEX]
     key_shape = shapes[KEY_INDEX]
     block_table_shape = shapes[BLOCK_TABLE_INDEX]
     query_rope_shape = shapes[QUERY_ROPE_INDEX]
 
+    runtime_input_layout = (runtime_row.get(RUNTIME_INPUT_LAYOUT, "") or "").strip()
+    runtime_num_heads = parse_runtime_int(runtime_row.get(RUNTIME_NUM_HEADS, ""))
+    runtime_num_key_value_heads = parse_runtime_int(runtime_row.get(RUNTIME_NUM_KEY_VALUE_HEADS, ""))
+
     if query_shape is None or key_shape is None:
         raise ValueError("FusedInferAttentionScore requires query/key/value shapes")
 
     if len(query_shape) == 3:
-        input_layout = "TND"
-        num_heads = query_shape[1]
+        input_layout = runtime_input_layout or "TND"
+        num_heads = runtime_num_heads if runtime_num_heads is not None else query_shape[1]
         if block_table_shape is None:
-            num_key_value_heads = key_shape[1]
+            num_key_value_heads = (
+                runtime_num_key_value_heads if runtime_num_key_value_heads is not None else key_shape[1]
+            )
             scale_dim = query_shape[-1]
         else:
-            num_key_value_heads = 1
+            num_key_value_heads = (
+                runtime_num_key_value_heads if runtime_num_key_value_heads is not None else 1
+            )
             scale_dim = query_shape[-1]
         return {
             "input_layout": input_layout,
@@ -191,9 +215,9 @@ def infer_case_args(shapes: list[tuple[int, ...] | None]):
         }
 
     if len(query_shape) == 4 and query_rope_shape is not None:
-        input_layout = "BNSD_NBSD"
-        num_heads = query_shape[1]
-        num_key_value_heads = 1
+        input_layout = runtime_input_layout or "BNSD_NBSD"
+        num_heads = runtime_num_heads if runtime_num_heads is not None else query_shape[1]
+        num_key_value_heads = runtime_num_key_value_heads if runtime_num_key_value_heads is not None else 1
         scale_dim = query_shape[-1] + query_rope_shape[-1]
         return {
             "input_layout": input_layout,
@@ -209,19 +233,23 @@ def infer_case_args(shapes: list[tuple[int, ...] | None]):
     )
 
 
-def infer_sparse_mode(atten_mask_shape: tuple[int, ...] | None) -> int:
+def infer_sparse_mode(atten_mask_shape: tuple[int, ...] | None, runtime_row: dict[str, str]) -> int:
+    runtime_sparse_mode = parse_runtime_int(runtime_row.get(RUNTIME_SPARSE_MODE, ""))
+    if runtime_sparse_mode is not None:
+        return runtime_sparse_mode
     if atten_mask_shape is None:
         return 0
-    if len(atten_mask_shape) >= 2 and atten_mask_shape[-2:] == (2048, 2048):
-        # The profiled database uses the optimized 2048 causal mask path.
-        return 3
-    return 0
+    return 3
 
 
 def infer_block_size(
     key_shape: tuple[int, ...],
     block_table_shape: tuple[int, ...] | None,
+    runtime_row: dict[str, str],
 ) -> int:
+    runtime_block_size = parse_runtime_int(runtime_row.get(RUNTIME_BLOCK_SIZE, ""))
+    if runtime_block_size is not None:
+        return runtime_block_size
     if block_table_shape is None:
         return 0
     if len(key_shape) == 3:
@@ -264,7 +292,11 @@ def infer_seq_lens_kv(
     key_shape: tuple[int, ...],
     batch_size: int | None,
     block_table_shape: tuple[int, ...] | None,
+    runtime_row: dict[str, str],
 ):
+    runtime_values = parse_runtime_int_list(runtime_row.get(RUNTIME_ACTUAL_SEQ_LENGTHS_KV_VALUES, ""))
+    if runtime_values is not None:
+        return runtime_values
     if batch_size is None:
         return None
 
@@ -362,6 +394,8 @@ def build_row_case(row: dict[str, str]):
         dtype_name=input_dtypes[VALUE_INDEX],
     )
 
+    sparse_mode = infer_sparse_mode(input_shapes[ATTEN_MASK_INDEX], row)
+
     atten_mask = None
     if input_shapes[ATTEN_MASK_INDEX] is not None:
         if input_shapes[ATTEN_MASK_INDEX][-2:] == (2048, 2048):
@@ -374,14 +408,18 @@ def build_row_case(row: dict[str, str]):
                 input_shapes[ATTEN_MASK_INDEX],
                 input_dtypes[ATTEN_MASK_INDEX],
             )
+    elif sparse_mode == 3:
+        atten_mask = build_default_sparse_mode_3_mask()
 
+    runtime_query_lens = parse_runtime_int_list(row.get(RUNTIME_ACTUAL_SEQ_LENGTHS_VALUES, ""))
     query_lens_batch = build_scalar_length_list(input_shapes[ACTUAL_SEQ_LENGTHS_INDEX])
     seq_lens_batch = build_scalar_length_list(input_shapes[ACTUAL_SEQ_LENGTHS_KV_INDEX])
-    query_lens = infer_query_lens(input_shapes[QUERY_INDEX], query_lens_batch)
+    query_lens = runtime_query_lens if runtime_query_lens is not None else infer_query_lens(input_shapes[QUERY_INDEX], query_lens_batch)
     seq_lens_kv = infer_seq_lens_kv(
         input_shapes[KEY_INDEX],
         seq_lens_batch,
         input_shapes[BLOCK_TABLE_INDEX],
+        row,
     )
 
     block_table = build_block_table_tensor(
@@ -406,7 +444,7 @@ def build_row_case(row: dict[str, str]):
             dtype_name=input_dtypes[KEY_ROPE_INDEX],
         )
 
-    inferred = infer_case_args(input_shapes)
+    inferred = infer_case_args(input_shapes, row)
     return {
         "query": query,
         "key": key,
@@ -421,10 +459,11 @@ def build_row_case(row: dict[str, str]):
         "num_heads": inferred["num_heads"],
         "num_key_value_heads": inferred["num_key_value_heads"],
         "scale": inferred["scale"],
-        "sparse_mode": infer_sparse_mode(input_shapes[ATTEN_MASK_INDEX]),
+        "sparse_mode": sparse_mode,
         "block_size": infer_block_size(
             input_shapes[KEY_INDEX],
             input_shapes[BLOCK_TABLE_INDEX],
+            row,
         ),
         "softmax_lse_flag": len(output_shapes) >= 2 and output_shapes[1] is not None,
         "expected_output_shapes": output_shapes,
@@ -432,8 +471,20 @@ def build_row_case(row: dict[str, str]):
     }
 
 
+def get_repeat_count(args_repeat_count: int | None) -> int:
+    if args_repeat_count is not None:
+        return args_repeat_count
+    raw_env = os.environ.get(REPLAY_REPEAT_COUNT_ENV, "").strip()
+    if not raw_env:
+        return REPLAY_REPEAT_COUNT
+    repeat_count = int(raw_env)
+    if repeat_count <= 0:
+        raise ValueError(f"{REPLAY_REPEAT_COUNT_ENV} must be positive, got {raw_env!r}")
+    return repeat_count
+
+
 def build_argparser():
-    return build_standard_argparser(
+    parser = build_standard_argparser(
         description=(
             "Run FusedInferAttentionScore workload replay on Ascend NPU.\n"
             "The script reads FusedInferAttentionScore.csv under the selected\n"
@@ -450,37 +501,57 @@ def build_argparser():
         ],
         version_help="vLLM-Ascend version, e.g. 0.13.0.",
     )
+    parser.add_argument(
+        "--repeat-count",
+        type=int,
+        help=(
+            "Repeat each replay row this many times. Defaults to "
+            f"{REPLAY_REPEAT_COUNT} or ${REPLAY_REPEAT_COUNT_ENV} when set."
+        ),
+    )
+    return parser
 
 
-def run_row(csv_path, row_index: int, row: dict[str, str]) -> None:
+def run_row(
+    csv_path,
+    row_index: int,
+    row: dict[str, str],
+    repeat_count: int,
+) -> None:
     runtime_torch, runtime_torch_npu = get_runtime_modules()
     case = build_row_case(row)
 
-    output, softmax_lse = runtime_torch_npu.npu_fused_infer_attention_score(
-        case["query"],
-        case["key"],
-        case["value"],
-        atten_mask=case["atten_mask"],
-        actual_seq_lengths=case["actual_seq_lengths"],
-        actual_seq_lengths_kv=case["actual_seq_lengths_kv"],
-        block_table=case["block_table"],
-        query_rope=case["query_rope"],
-        key_rope=case["key_rope"],
-        num_heads=case["num_heads"],
-        scale=case["scale"],
-        pre_tokens=65535,
-        next_tokens=65535,
-        input_layout=case["input_layout"],
-        num_key_value_heads=case["num_key_value_heads"],
-        sparse_mode=case["sparse_mode"],
-        block_size=case["block_size"],
-        softmax_lse_flag=case["softmax_lse_flag"],
-    )
-    runtime_torch.npu.synchronize()
+    output = None
+    softmax_lse = None
+    for repeat_index in range(repeat_count):
+        output, softmax_lse = runtime_torch_npu.npu_fused_infer_attention_score(
+            case["query"],
+            case["key"],
+            case["value"],
+            atten_mask=case["atten_mask"],
+            actual_seq_lengths=case["actual_seq_lengths"],
+            actual_seq_lengths_kv=case["actual_seq_lengths_kv"],
+            block_table=case["block_table"],
+            query_rope=case["query_rope"],
+            key_rope=case["key_rope"],
+            num_heads=case["num_heads"],
+            scale=case["scale"],
+            input_layout=case["input_layout"],
+            num_key_value_heads=case["num_key_value_heads"],
+            sparse_mode=case["sparse_mode"],
+            block_size=case["block_size"],
+            softmax_lse_flag=case["softmax_lse_flag"],
+        )
+        runtime_torch.npu.synchronize()
+        print(
+            f"[RUN] {csv_path}:{row_index} "
+            f"repeat={repeat_index + 1}/{repeat_count}"
+        )
 
     softmax_shape = None if softmax_lse is None else tuple(softmax_lse.shape)
     print(
         f"[OK] {csv_path}:{row_index} "
+        f"repeat={repeat_count} "
         f"layout={case['input_layout']} heads={case['num_heads']} "
         f"kv_heads={case['num_key_value_heads']} sparse_mode={case['sparse_mode']} "
         f"block_size={case['block_size']} output={tuple(output.shape)} "
@@ -501,6 +572,7 @@ def run_row(csv_path, row_index: int, row: dict[str, str]) -> None:
 def main() -> None:
     args = build_argparser().parse_args()
     ensure_npu_available()
+    repeat_count = get_repeat_count(args.repeat_count)
 
     target_data_dir = get_target_data_dir(
         device=args.device,
@@ -511,7 +583,7 @@ def main() -> None:
         target_data_dir,
         "FusedInferAttentionScore.csv",
     ):
-        run_row(csv_path, row_index, row)
+        run_row(csv_path, row_index, row, repeat_count)
         total_rows += 1
 
     if total_rows == 0:

@@ -1,23 +1,21 @@
 import argparse
 import csv
+from dataclasses import dataclass
 import math
 import statistics
 import re
 from collections import defaultdict
 from pathlib import Path
+import sys
 from typing import Dict, List, Tuple
 
+CURRENT_DIR = Path(__file__).resolve().parent
+OP_REPLAY_DIR = CURRENT_DIR / "op_replay"
+if str(OP_REPLAY_DIR) not in sys.path:
+    sys.path.insert(0, str(OP_REPLAY_DIR))
 
-SUPPORTED_DEVICES = [
-    "TEST_DEVICE",
-    "ATLAS_800_A2_376T_64G",
-    "ATLAS_800_A2_313T_64G",
-    "ATLAS_800_A2_280T_64G",
-    "ATLAS_800_A2_280T_64G_PCIE",
-    "ATLAS_800_A2_280T_32G_PCIE",
-    "ATLAS_800_A3_752T_128G_DIE",
-    "ATLAS_800_A3_560T_128G_DIE",
-]
+from common import SUPPORTED_DEVICES, check_version, normalize_device_name, normalize_vllm_ascend_version
+from fia_common import parse_shape_or_none, shape_numel, shape_to_text, split_metadata_field
 
 INPUT_SHAPES = "Input Shapes"
 INPUT_DTYPES = "Input Data Types"
@@ -59,6 +57,57 @@ EXTRA_NUMERIC_COLUMNS = [
     "aiv_icache_miss_rate",
     "cube_utilization(%)",
 ]
+FIA_OP_TYPE = "FusedInferAttentionScore"
+FIA_RUNTIME_COLUMNS = [
+    "Runtime source_profile",
+    "Runtime actual_seq_lengths_shape",
+    "Runtime actual_seq_lengths_values",
+    "Runtime actual_seq_lengths_kv_shape",
+    "Runtime actual_seq_lengths_kv_values",
+    "Runtime avg_seq_len",
+    "Runtime block_table_shape",
+    "Runtime block_table_valid_blocks",
+    "Runtime num_heads",
+    "Runtime num_key_value_heads",
+    "Runtime sparse_mode",
+    "Runtime input_layout",
+    "Runtime block_size",
+    "Runtime attn_state",
+    "Runtime kv_cache_mode",
+    "Runtime metadata_completeness",
+]
+
+
+@dataclass
+class ProfilingBundle:
+    # operator_details_files and trace_view_files are retained for FIA profiling
+    # bundle inspection and future metadata extraction steps.
+    root_dir: Path
+    kernel_details_files: List[Path]
+    operator_details_files: List[Path]
+    trace_view_files: List[Path]
+
+
+@dataclass
+class FiaRuntimeMetadata:
+    source_profile: str
+    input_shapes: str
+    output_shapes: str
+    actual_seq_lengths_shape: str
+    actual_seq_lengths_values: str
+    actual_seq_lengths_kv_shape: str
+    actual_seq_lengths_kv_values: str
+    avg_seq_len: str
+    block_table_shape: str
+    block_table_valid_blocks: str
+    num_heads: str
+    num_key_value_heads: str
+    sparse_mode: str
+    input_layout: str
+    block_size: str
+    attn_state: str
+    kv_cache_mode: str
+    metadata_completeness: str
 
 
 def _render_progress(current: int, total: int, width: int = 30) -> str:
@@ -85,26 +134,104 @@ def profiling_column_name(column: str) -> str:
     return f"Profiling {column}"
 
 
-def check_version(value: str) -> str:
-    version = value.strip()
-    if not re.fullmatch(r"[0-9A-Za-z]+(?:[._-][0-9A-Za-z]+)*", version):
-        raise argparse.ArgumentTypeError(
-            f"Invalid --vllm-ascend-version: {value!r}. "
-            "Expected value like 0.9.2 or vllm0.13.0_torch2.8.0_cann8.3"
-        )
-    return version
+def infer_avg_seq_len(actual_seq_lengths_kv_values: str) -> str:
+    cleaned = (actual_seq_lengths_kv_values or "").strip()
+    if not cleaned:
+        return ""
+    parts = [item.strip() for item in re.split(r"[;,]", cleaned) if item.strip()]
+    if not parts:
+        return ""
+    try:
+        values = [int(item) for item in parts]
+    except ValueError:
+        return ""
+    return f"{statistics.mean(values):.6f}"
 
 
-def normalize_device_name(device: str) -> str:
-    return device.strip()
+def infer_fia_runtime_metadata(
+    input_shapes_text: str,
+    output_shapes_text: str,
+    source_profile: str,
+) -> FiaRuntimeMetadata:
+    input_shapes = [parse_shape_or_none(item) for item in split_metadata_field(input_shapes_text)]
+    output_shapes = [parse_shape_or_none(item) for item in split_metadata_field(output_shapes_text)]
+    while len(input_shapes) < 31:
+        input_shapes.append(None)
 
+    query_shape = input_shapes[0]
+    key_shape = input_shapes[1]
+    atten_mask_shape = input_shapes[4]
+    actual_seq_lengths_shape = input_shapes[5]
+    actual_seq_lengths_kv_shape = input_shapes[6]
+    block_table_shape = input_shapes[14]
+    query_rope_shape = input_shapes[24]
 
-def normalize_vllm_ascend_version(version: str) -> str:
-    normalized = version.strip()
-    if not normalized.startswith("v"):
-        normalized = f"v{normalized}"
-    return normalized
+    input_layout = ""
+    num_heads = ""
+    num_key_value_heads = ""
+    block_size = ""
+    sparse_mode = ""
+    kv_cache_mode = "unknown"
+    attn_state = "unknown"
+    metadata_completeness = "partial"
 
+    if query_shape is not None:
+        if len(query_shape) == 3:
+            input_layout = "TND"
+            num_heads = str(query_shape[1])
+            if block_table_shape is None and key_shape is not None and len(key_shape) >= 2:
+                num_key_value_heads = str(key_shape[1])
+                kv_cache_mode = "non_paged_direct"
+                attn_state = "prefill_no_cache"
+            else:
+                num_key_value_heads = "1"
+                kv_cache_mode = "paged_cache_pool"
+                attn_state = "paged_runtime"
+        elif len(query_shape) == 4 and query_rope_shape is not None:
+            input_layout = "BNSD_NBSD"
+            num_heads = str(query_shape[1])
+            num_key_value_heads = "1"
+            kv_cache_mode = "paged_cache_pool"
+            attn_state = "mla_paged_runtime"
+
+    if block_table_shape is not None:
+        if key_shape is not None:
+            if len(key_shape) == 3:
+                block_size = str(key_shape[1])
+            elif len(key_shape) == 4:
+                block_size = str(key_shape[2])
+
+    # FIA profiling often omits the runtime mask tensor from the 31-slot kernel
+    # signature, especially for paged/MLA paths. For these cases, treating
+    # "mask missing" as sparse_mode=0 is wrong and makes replay select a
+    # different execution path. Prefer causal sparse mode for paged FIA.
+    if block_table_shape is not None or query_rope_shape is not None:
+        sparse_mode = "3"
+    elif atten_mask_shape is not None:
+        sparse_mode = "3"
+    else:
+        sparse_mode = "0"
+
+    return FiaRuntimeMetadata(
+        source_profile=source_profile,
+        input_shapes=input_shapes_text,
+        output_shapes=output_shapes_text,
+        actual_seq_lengths_shape=shape_to_text(actual_seq_lengths_shape),
+        actual_seq_lengths_values="",
+        actual_seq_lengths_kv_shape=shape_to_text(actual_seq_lengths_kv_shape),
+        actual_seq_lengths_kv_values="",
+        avg_seq_len="",
+        block_table_shape=shape_to_text(block_table_shape),
+        block_table_valid_blocks="",
+        num_heads=num_heads,
+        num_key_value_heads=num_key_value_heads,
+        sparse_mode=sparse_mode,
+        input_layout=input_layout,
+        block_size=block_size,
+        attn_state=attn_state,
+        kv_cache_mode=kv_cache_mode,
+        metadata_completeness=metadata_completeness,
+    )
 
 class KernelDetailsParser:
     """Parse one or more kernel_details*.csv files and export aggregated op stats by op type."""
@@ -125,24 +252,41 @@ class KernelDetailsParser:
             / "vllm_ascend"
             / self.vllm_ascend_version
         )
+        self.bundle = self._resolve_profiling_bundle()
 
-    def _resolve_kernel_details_files(self) -> List[Path]:
+    def _resolve_profiling_bundle(self) -> ProfilingBundle:
         if not self.kernel_details_path.exists():
             raise FileNotFoundError(
                 f"kernel_details source path not found: {self.kernel_details_path}"
             )
         if self.kernel_details_path.is_file():
-            return [self.kernel_details_path]
-        files = sorted(
-            path
-            for path in self.kernel_details_path.rglob("*.csv")
+            return ProfilingBundle(
+                root_dir=self.kernel_details_path.parent,
+                kernel_details_files=[self.kernel_details_path],
+                operator_details_files=[],
+                trace_view_files=[],
+            )
+
+        kernel_details_files = sorted(
+            path for path in self.kernel_details_path.rglob("*.csv")
             if "kernel_details" in path.stem.lower()
         )
-        if not files:
+        if not kernel_details_files:
             raise FileNotFoundError(
                 f"No CSV files with 'kernel_details' in the filename found under: {self.kernel_details_path}"
             )
-        return files
+        operator_details_files = sorted(
+            path for path in self.kernel_details_path.rglob("operator_details.csv")
+        )
+        trace_view_files = sorted(
+            path for path in self.kernel_details_path.rglob("trace_view.json")
+        )
+        return ProfilingBundle(
+            root_dir=self.kernel_details_path,
+            kernel_details_files=kernel_details_files,
+            operator_details_files=operator_details_files,
+            trace_view_files=trace_view_files,
+        )
 
     @staticmethod
     def _parse_duration(value: str) -> float:
@@ -179,7 +323,7 @@ class KernelDetailsParser:
 
     def _load_rows(self) -> List[Dict[str, str]]:
         rows: List[Dict[str, str]] = []
-        kernel_details_files = self._resolve_kernel_details_files()
+        kernel_details_files = self.bundle.kernel_details_files
         required_columns = {
             TYPE_COL,
             OP_STATE,
@@ -218,8 +362,36 @@ class KernelDetailsParser:
     def _shape_key(row: Dict[str, object]) -> Tuple[str, str]:
         return (str(row.get(INPUT_SHAPES, "")), str(row.get(OUTPUT_SHAPES, "")))
 
+    def _build_fia_runtime_index(self) -> dict[tuple[str, str], FiaRuntimeMetadata]:
+        runtime_index: dict[tuple[str, str], FiaRuntimeMetadata] = {}
+        for csv_path in self.bundle.kernel_details_files:
+            with csv_path.open("r", encoding="utf-8-sig", newline="") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    op_type = self._safe_cell(row, TYPE_COL)
+                    if op_type != FIA_OP_TYPE:
+                        continue
+                    input_shapes = self._safe_cell(row, INPUT_SHAPES)
+                    output_shapes = self._safe_cell(row, OUTPUT_SHAPES)
+                    key = (input_shapes, output_shapes)
+                    if key in runtime_index:
+                        continue
+                    runtime_index[key] = infer_fia_runtime_metadata(
+                        input_shapes_text=input_shapes,
+                        output_shapes_text=output_shapes,
+                        source_profile=csv_path.parent.name,
+                    )
+        return runtime_index
+
+    @staticmethod
+    def _compute_fia_metadata_completeness(runtime_metadata: FiaRuntimeMetadata) -> str:
+        if runtime_metadata.actual_seq_lengths_values or runtime_metadata.actual_seq_lengths_kv_values:
+            return "runtime_values"
+        return "inferred_only"
+
     def parse_and_export(self) -> List[Path]:
         rows = self._load_rows()
+        fia_runtime_index = self._build_fia_runtime_index()
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         grouped: Dict[
@@ -314,9 +486,34 @@ class KernelDetailsParser:
                     **{k: f"{v:.6f}" for k, v in avg_extra.items()},
                 }
             )
+            if op_type == FIA_OP_TYPE:
+                runtime_metadata = fia_runtime_index.get((input_shapes, output_shapes))
+                if runtime_metadata is not None:
+                    runtime_metadata.avg_seq_len = infer_avg_seq_len(
+                        runtime_metadata.actual_seq_lengths_kv_values
+                    )
+                    runtime_metadata.metadata_completeness = self._compute_fia_metadata_completeness(runtime_metadata)
+                    rows_by_type[op_type][-1].update({
+                        "Runtime source_profile": runtime_metadata.source_profile,
+                        "Runtime actual_seq_lengths_shape": runtime_metadata.actual_seq_lengths_shape,
+                        "Runtime actual_seq_lengths_values": runtime_metadata.actual_seq_lengths_values,
+                        "Runtime actual_seq_lengths_kv_shape": runtime_metadata.actual_seq_lengths_kv_shape,
+                        "Runtime actual_seq_lengths_kv_values": runtime_metadata.actual_seq_lengths_kv_values,
+                        "Runtime avg_seq_len": runtime_metadata.avg_seq_len,
+                        "Runtime block_table_shape": runtime_metadata.block_table_shape,
+                        "Runtime block_table_valid_blocks": runtime_metadata.block_table_valid_blocks,
+                        "Runtime num_heads": runtime_metadata.num_heads,
+                        "Runtime num_key_value_heads": runtime_metadata.num_key_value_heads,
+                        "Runtime sparse_mode": runtime_metadata.sparse_mode,
+                        "Runtime input_layout": runtime_metadata.input_layout,
+                        "Runtime block_size": runtime_metadata.block_size,
+                        "Runtime attn_state": runtime_metadata.attn_state,
+                        "Runtime kv_cache_mode": runtime_metadata.kv_cache_mode,
+                        "Runtime metadata_completeness": runtime_metadata.metadata_completeness,
+                    })
 
         output_files: List[Path] = []
-        ordered_columns = [
+        base_ordered_columns = [
             OP_STATE,
             ACCELERATOR_CORE,
             INPUT_SHAPES,
@@ -329,10 +526,15 @@ class KernelDetailsParser:
             MEDIAN_DURATION_US,
             STD_DURATION_US,
         ]
-        ordered_columns.extend([profiling_column_name(f"Average {col}") for col in EXTRA_NUMERIC_COLUMNS])
+        base_ordered_columns.extend(
+            [profiling_column_name(f"Average {col}") for col in EXTRA_NUMERIC_COLUMNS]
+        )
         total_output_files = len(rows_by_type)
         for file_index, (op_type, type_rows) in enumerate(rows_by_type.items(), start=1):
             output_path = self.output_dir / f"{self._sanitize_filename(op_type)}.csv"
+            ordered_columns = list(base_ordered_columns)
+            if op_type == FIA_OP_TYPE:
+                ordered_columns.extend(FIA_RUNTIME_COLUMNS)
             normalized_rows = []
             for row in type_rows:
                 normalized_rows.append({col: row.get(col, "") for col in ordered_columns})
