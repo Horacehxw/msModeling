@@ -52,27 +52,86 @@ description: Generate perf-database project progress dashboard. Default=concise 
 ```
 
 **Agent 4: M1-M6 指标计算** (如果 profiling 数据可用)
+
+⚠️ **核心原则: TC 测试命令不是固定的, 而是从 profiling 数据动态推导的。**
+目标: TC 的 nq×ql 产生的 batch tokens (= 主计算 kernel 的 M-dim) 必须与 profiling kernel_details.csv 中的 dominant M-dim 一致, 以最大化 shape 匹配率。
+
 ```
-运行 4 个场景的 TC profiling 命令，采集 M1-M6 全量指标:
+# ==========================================
+# Step 0: 从 profiling 推导 TC 参数 (每次必须执行)
+# ==========================================
+#
+# TC 参数推导方法论:
+#   1. 对每个 profiling 场景, 从 kernel_details.csv 提取主计算 kernel 的 M-dim 分布:
+#      - Qwen3 (BF16): 主计算 kernel = MatMulV2, M-dim = 第一个 input shape 的第一维
+#      - DSv3 (W8A8): 主计算 kernel = QuantBatchMatmulV3, M-dim = 同上
+#   2. 取 dominant M-dim (出现次数最多的值, 通常 >80% 占比)
+#   3. 推导 TC nq/ql:
+#      - Prefill: nq × ql 应产生与 dominant M-dim 一致的 tokens (含 block-padding)
+#      - Decode: nq 应等于 dominant M-dim (NPU decode 会 pad 到 {16,32,64})
+#   4. 验证: TC 产生的 M-dim 在 CSV 中有对应 shape → M4 hit
+#
+# 推导示例 (Profiling-0317-full/profiler-qwen3-0314):
+#   profiler-qwen3-input4096-output1:
+#     MatMulV2 dominant M=2064 (80.6%, 1664/2064 occurrences)
+#     → vLLM chunked prefill, chunk_size≈2048, 2064=2048+16 padding
+#     → TC: nq=2 ql=1024 → 2048 tokens (≈2064 after block-padding)
+#   profiler-qwen3-input4096-output1536-concurrency4-rrate2:
+#     MatMulV2 dominant M=16 (99.6%, decode padded to cudagraph capture M=16)
+#     → TC: nq=16 ql=1 → M=16
+
+# Profiling 数据路径 (权威来源):
+PROF_QWEN3="/Users/horacehxw/Data/Profiling/Profiling-0317-full/profiler-qwen3-0314"
+PROF_DSV3="/Users/horacehxw/Data/Profiling/Profiling-0319-dsv3/profiler-dsv3-0319"
 
 DATA_DIR="$(pwd)/tensor_cast/performance_model/perf_database/data/ATLAS_800_A3_752T_128G_DIE/vllm_ascend/vllm0.15.0_torch2.9.0_cann8.5"
 
-# M1-M5 (在线): 4 个场景各跑一次 TC profiling + --export-metrics
+# Step 0: 对每个 profiling 场景提取 dominant M-dim 并输出推导过程
+python3.10 -c "
+import csv
+from collections import Counter
 
-# Qwen3 Prefill: --enable-flashcomm-v1 对标 vLLM ENABLE_FLASHCOMM1=1
-# FlashComm 将 all_reduce→rms_norm 替换为 reduce_scatter→rms_norm→all_gather
-# 效果: M3 33%→50%, M5 62%→88%, 但 reduce_scatter CSV 有膨胀风险 (35ms/call vs 真实 ~2ms)
+scenarios = [
+    ('Qwen3 PF', '$PROF_QWEN3/profiler-qwen3-input4096-output1/kernel_details.csv', 'MatMulV2'),
+    ('Qwen3 DC', '$PROF_QWEN3/profiler-qwen3-input4096-output1536-concurrency4-rrate2/kernel_details.csv', 'MatMulV2'),
+    ('DSv3 PF',  '$PROF_DSV3/profiler-dsv3-input2048-output1/kernel_details.csv', 'QuantBatchMatmulV3'),
+    ('DSv3 DC',  '$PROF_DSV3/profiler-dsv3-input4096-output1536-concurrency8-rrate4/kernel_details.csv', 'QuantBatchMatmulV3'),
+]
+for name, kd_path, kernel_type in scenarios:
+    m_dims = Counter()
+    with open(kd_path) as f:
+        for row in csv.DictReader(f):
+            if row.get('Type','').strip() == kernel_type:
+                shapes = row.get('Input Shapes','').strip().strip('\"')
+                parts = shapes.split(';')
+                if parts:
+                    first_dims = parts[0].strip('()').split(',')
+                    m_dims[first_dims[0].strip()] += 1
+    dominant = m_dims.most_common(1)[0] if m_dims else ('?', 0)
+    total = sum(m_dims.values())
+    pct = dominant[1]/total*100 if total else 0
+    print(f'{name}: {kernel_type} dominant M={dominant[0]} ({pct:.0f}%, {dominant[1]}/{total})')
+    for m, count in m_dims.most_common(5):
+        print(f'  M={m}: {count}')
+"
+
+# ==========================================
+# Step 1: M1-M5 TC 命令 (参数从 profiling 推导)
+# ==========================================
+
+# Qwen3 Prefill: profiling dominant M=2064 → TC nq=2 ql=1024 → M=2048
+# (2048 vs 2064 差异 0.78%, 在 block-padding 容差内)
+# --enable-flashcomm-v1 对标 vLLM ENABLE_FLASHCOMM1=1
 python3.10 -m tensor_cast.scripts.text_generate Qwen/Qwen3-32B \
-  --num-queries 10 --query-length 4104 --word-embedding-tp row \
+  --num-queries 2 --query-length 1024 --word-embedding-tp row \
   --device ATLAS_800_A3_752T_128G_DIE --world-size 16 --tp-size 16 \
   --quantize-linear-action DISABLED \
   --performance-model profiling --compile --perf-database "$DATA_DIR" \
   --enable-flashcomm-v1 \
   --export-metrics results/qwen3_prefill_metrics.json --log-level info
 
-# Qwen3 Decode: 暂不加 --enable-flashcomm-v1
-# 原因: vLLM cudagraph FULL_DECODE_ONLY 模式下 decode 可能不走 flashcomm 路径
-# decode profiling 中是否有 hcom_reduceScatter_ 待确认, 如有则加此 flag
+# Qwen3 Decode: profiling dominant M=16 → TC nq=16 ql=1 → M=16
+# NPU cudagraph pads any batch ≤16 to M=16
 python3.10 -m tensor_cast.scripts.text_generate Qwen/Qwen3-32B \
   --num-queries 16 --query-length 1 --context-length 4096 --word-embedding-tp row \
   --device ATLAS_800_A3_752T_128G_DIE --world-size 16 --tp-size 16 \
@@ -80,9 +139,8 @@ python3.10 -m tensor_cast.scripts.text_generate Qwen/Qwen3-32B \
   --performance-model profiling --compile --perf-database "$DATA_DIR" \
   --export-metrics results/qwen3_decode_metrics.json --log-level info
 
-# DSv3 Prefill: 对标 profiler-dsv3-input2048-output1 (QBM batch=2048)
-# 参数推导: profiling kernel_details 中 QuantBatchMatmulV3 batch dim=2048
-# vLLM max-num-batched-tokens=2048, 单请求 ISL=2048 → nq=1 ql=2048
+# DSv3 Prefill: profiling dominant QBM M=2048 → TC nq=1 ql=2048
+# vLLM-ascend chunked prefill, chunk_size=2048; 100% dominant
 python3.10 -m tensor_cast.scripts.text_generate deepseek-ai/DeepSeek-V3 \
   --num-queries 1 --query-length 2048 --word-embedding-tp row \
   --device ATLAS_800_A3_752T_128G_DIE --world-size 16 --tp-size 8 --dp-size 2 --ep-size 16 \
@@ -90,42 +148,24 @@ python3.10 -m tensor_cast.scripts.text_generate deepseek-ai/DeepSeek-V3 \
   --performance-model profiling --compile --perf-database "$DATA_DIR" \
   --export-metrics results/dsv3_prefill_metrics.json --log-level info
 
-# DSv3 Decode: 对标 profiler-dsv3-input4096-output1536-concurrency8 (QBM batch=5)
-# 参数推导: profiling kernel_details 中 QuantBatchMatmulV3 batch dim=5
-# vLLM max-num-seqs=8, DP=2 → per-rank ~5 queries → nq=10 (dp_size=2, 10/2=5)
+# DSv3 Decode: profiling dominant QBM M=5 → TC nq=5 ql=1
+# QuantBatchMatmulV3 (INT8) 不 pad M; profiling 100% M=5
 python3.10 -m tensor_cast.scripts.text_generate deepseek-ai/DeepSeek-V3 \
-  --num-queries 10 --query-length 1 --context-length 4096 --word-embedding-tp row \
+  --num-queries 5 --query-length 1 --context-length 4096 --word-embedding-tp row \
   --device ATLAS_800_A3_752T_128G_DIE --world-size 16 --tp-size 8 --dp-size 2 --ep-size 16 \
   --quantize-linear-action W8A8_STATIC \
   --performance-model profiling --compile --perf-database "$DATA_DIR" \
   --export-metrics results/dsv3_decode_metrics.json --log-level info
 
-# M6 (半离线): TC Prediction Ratio = tc_full_prediction / real_per_fwd
+# ==========================================
+# Step 2: M6 计算 (半离线, 需 profiling step_trace)
+# ==========================================
+# M6 = TC_prediction / real_per_fwd
 # M6=1.0 完美, >1 高估, <1 低估. Phase 3 目标: 0.85-1.15
 #
-# M6 计算方法论 (2026-03-20 修正):
-#   分子: TC 全量预测 (empirical + analytic fallback), 从 --export-metrics JSON 的
-#         m6_input.tc_predicted_total_s 获取
-#   分母: 真实单个 forward pass 耗时, 通过以下步骤获取:
-#     1. 从 kernel_details.csv 中识别 forward pass 边界 (寻找每 forward pass 出现恰好一次的
-#        anchor kernel, 如 ArgMaxV2/ApplyTopKTopPCustom 等 sampling kernel, 或
-#        DispatchFFNCombine/FusedInferAttentionScore 等模型特有 kernel)
-#     2. AI 分析每个 forward pass 的结构 (batch dim, kernel 组成)
-#     3. 确认所有 forward pass 结构一致后, 用 Stage / n_forward_passes 作为分母
-#     4. 如不一致, 需找到与 TC 仿真参数匹配的那一个 forward pass
-#
-# TC 参数推导方法论:
-#   1. 从 profiling kernel_details.csv 的 QuantBatchMatmulV3 (主计算 kernel) 读 batch dim
-#   2. 根据 batch dim 和 DP/TP 配置反推 TC 的 nq/ql 参数
-#   3. 用 anchor kernel 切分 forward passes, 验证每个 pass 结构是否一致
-#
-# Qwen3 profiling 数据 (0314, 权威来源):
-PROF_QWEN3="/Users/horacehxw/Data/Profiling/Profiling-0317-full/profiler-qwen3-0314"
-# DSv3 profiling 数据 (0319, 权威来源):
-PROF_DSV3="/Users/horacehxw/Data/Profiling/Profiling-0320-DSv3/profiler-dsv3-0319"
-# 注意: 不再使用 Profiling-0313-phase1-e2e-test (旧基线), Qwen3/DSv3 统一用上面的路径
+# compute_m6.py 自动用 anchor kernel (ArgMaxV2) 切分 forward passes, 取 Stage/N 为分母。
+# AI 必须在使用前验证: 每个 forward pass 的 dominant M-dim 与 TC 一致。
 
-# Qwen3 M6: 使用 0314 profiling 数据
 python3.10 tools/perf_data_collection/compute_m6.py \
   --tc-report results/qwen3_prefill_metrics.json \
   --profiler-output "$PROF_QWEN3/profiler-qwen3-input4096-output1"
@@ -134,7 +174,6 @@ python3.10 tools/perf_data_collection/compute_m6.py \
   --tc-report results/qwen3_decode_metrics.json \
   --profiler-output "$PROF_QWEN3/profiler-qwen3-input4096-output1536-concurrency4-rrate2"
 
-# DSv3 M6: 使用 0319 profiling 数据
 python3.10 tools/perf_data_collection/compute_m6.py \
   --tc-report results/dsv3_prefill_metrics.json \
   --profiler-output "$PROF_DSV3/profiler-dsv3-input2048-output1"
@@ -143,7 +182,9 @@ python3.10 tools/perf_data_collection/compute_m6.py \
   --tc-report results/dsv3_decode_metrics.json \
   --profiler-output "$PROF_DSV3/profiler-dsv3-input4096-output1536-concurrency8-rrate4"
 
-# 汇总 M1-M5
+# ==========================================
+# Step 3: 汇总输出
+# ==========================================
 python3.10 -c "
 import json
 print('场景                  M1     M2     M3     M4     M5     TC(ms)')
@@ -164,37 +205,6 @@ for name, path in [
     print(f'{name:<22} {m1:>5.1%} {m2:>5.1%} {m3:>5.1%} {m4:>5.1%} {m5:>5.1%} {tc:>8.1f}')
 "
 
-# ==========================================
-# M6 计算: AI 分析 profiling forward pass
-# ==========================================
-# compute_m6.py 会自动寻找 anchor kernel (默认 ArgMaxV2) 做 forward pass 切分并取平均。
-# 但 **必须** 由 AI (即你) 在使用前先验证:
-#
-# 步骤 1: 分析 profiling 中每个 forward pass 的结构
-#   对每个 profiling 场景, 用 kernel_details.csv 做以下分析:
-#   - 识别 anchor kernel 做 forward pass 边界切分 (每 fwd 恰好出现一次的 kernel type)
-#   - 检查每个 forward pass 的 kernel 组成 (DFC/QBM/FIA/RING_MLA 数量)
-#   - 提取每个 forward pass 的 QuantBatchMatmulV3 batch dim (= 实际 batch size)
-#   - 确认: 所有 forward pass 结构是否一致 (batch dim, kernel 数量, 算子类型)
-#
-# 步骤 2: 匹配 TC 仿真的 forward pass
-#   - 如果所有 forward pass 结构一致 → 可以用 Stage/N 作为 M6 分母
-#   - 如果不一致 (混合 prefill+decode, 不同 batch size):
-#     → 找到 batch dim 匹配 TC 参数的那一个 forward pass
-#     → 用该 forward pass 的 kernel duration sum 作为 M6 分母
-#     → 注意: kernel sum 含 compute-comm overlap, 应优先用 step_trace Stage/N
-#
-# 步骤 3: 计算 M6
-#   M6 = TC_prediction / real_per_fwd
-#   - 分子: m6_input.tc_predicted_total_s (混合预测: empirical for HIT + analytic for MISS)
-#   - 分母: AI 确认后的单个 forward pass 真实耗时
-#
-# 示例 (已验证的 forward pass 结构):
-#   DSv3 PF (input2048): 12 个一致的纯 prefill pass, QBM batch=2048, Stage/12=295ms
-#   DSv3 DC (c8): 62 个一致的纯 decode pass, QBM batch=5, Stage/62=51ms
-#   Qwen3 PF (input4096): 5 个纯 prefill pass, Stage/5=1147ms
-
-# 自动计算 (仅在 AI 确认 forward pass 结构后使用):
 python3.10 -c "
 import json
 print()
@@ -213,14 +223,12 @@ for name, path in [
     flag = 'OK' if 0.85 <= m6 <= 1.15 else ('HIGH' if m6 > 1.15 else 'LOW')
     n_fwd = r.get('n_forward_passes', '?')
     print(f'{name:<22} {tc:>8.1f} {real:>8.1f} {m6:>6.3f}   {flag}  (N={n_fwd})')
-print()
-print('注意: M6 因 microbench CSV 膨胀 (R10) 暂不可信。Phase 3 验收以 M3+M5 为主指标。')
-print('      如果 forward pass 结构未经 AI 验证, M6 分母可能不准确。')
 "
 ```
 
 注意: 如果 profiling 数据路径不可访问（如 Profiling 数据目录不存在），M6 无法计算，跳过并注明。
-如果 results/*.json 已存在且日期为当天，可直接读取而不重新运行 TC。
+如果 results/*.json 已存在且日期为当天且 TC 参数未变更，可直接读取而不重新运行 TC。
+**如果 TC 参数变更了 (如 nq/ql 改变)，必须重新运行 TC 并重新计算 M6。**
 
 **Agent 3: 团队动态**
 ```
@@ -250,6 +258,23 @@ print('      如果 forward pass 结构未经 AI 验证, M6 分母可能不准�
    - M5 vs >80% 目标 (Phase 3)
    - M6 vs 0.85-1.15 目标 (Phase 3): M6<1 说明覆盖不足（需更多 microbench 数据），M6>1 说明 microbench 偏高
    - M4 MISS shape list → 指导 microbench 数据采集优先级
+5. **TC-Profiling 对齐验证** (M6 可信度):
+   - 从 profiling kernel_details.csv 提取 MatMulV2 dominant M-dim (= 实际 batch tokens)
+   - 与 TC 命令的 nq×ql (= TC 仿真 batch tokens) 对比
+   - 如不一致, M6 不可信, 需标注原因和修正建议
+
+### Step 2.5: 指标 Gap 逐项分析 (必须)
+
+**对每个场景的每个 MISS 指标**, 逐一分析:
+1. 列出该指标的 **当前值 vs 目标值** 和 **gap 大小**
+2. 识别 **最大 gap** 的根因 (哪些算子/shape MISS? 是数据缺失、融合 gap、还是建模不支持?)
+3. 检查 **是否有对应的人在解决** (对照 Work Plan 任务分配 + 日报)
+4. 给出 **应该怎么解决** (补数据? 新 pass? 改查询逻辑? 上游修复?)
+
+输出格式:
+```
+| 场景+指标 | 当前 | 目标 | Gap | 最大根因 | Owner | 解决路径 | 预期增益 |
+```
 
 ### Step 3: 按模式生成输出
 
@@ -306,6 +331,35 @@ M3 趋势 (Qwen3 PF):  Phase1 → Phase2 → 当前
 
 **摘要规则**: 摘要/速览中必须展示 **M2-M6** (5 个指标), M1 因 zero_cost 膨胀可省略。
 完整看板的指标表必须展示 **M1-M6** 全部 6 个指标。
+
+## 验证命令与数据源 (必须)
+{列出本次报告用到的完整 TC 命令和数据源, 便于复现}
+示例:
+```
+DATA_DIR=tensor_cast/.../vllm0.15.0_torch2.9.0_cann8.5
+PROF_QWEN3=/Users/.../profiler-qwen3-0314
+
+# Qwen3 Prefill (M1-M5)
+python3.10 -m tensor_cast.scripts.text_generate Qwen/Qwen3-32B \
+  --num-queries 10 --query-length 4104 ...
+  → TC batch: 41040 tokens
+  → Profiling dominant M-dim: 2064 (⚠️ 不匹配, M6 不可信)
+
+# M6
+python3.10 tools/perf_data_collection/compute_m6.py \
+  --tc-report results/qwen3_prefill_metrics.json \
+  --profiler-output "$PROF_QWEN3/profiler-qwen3-input4096-output1"
+```
+每个场景必须注明: TC batch tokens, profiling M-dim, 是否匹配。
+
+## 指标 Gap 逐项分析 (必须)
+{对每个未达标指标, 列出 gap、最大根因、owner、解决路径}
+示例:
+| 场景+指标 | 当前 | 目标 | Gap | 最大根因 | Owner | 解决路径 | 预期增益 |
+|-----------|:----:|:----:|:---:|---------|:-----:|---------|:-------:|
+| DSv3 PF M3 | 37.5% | >50% | -12.5pp | DFC fused_kernel_gap (5 ops) | LJW | DFC fusion pass | +15-30pp |
+| DSv3 DC M3 | 29.2% | >50% | -20.8pp | DFC + shape_coverage_gap | LJW+TCX | DFC pass + microbench | +20-35pp |
+| Qwen3 PF M6 | 5.3x | 0.85-1.15 | ⚠️ | TC-Profiling batch 不匹配 (41040 vs 2064) | HXW | 调整 TC 参数对齐 profiling | 修正后可评估 |
 
 ## 风险矩阵
 {用 ASCII 矩阵可视化 TOP 风险的 影响×概率 分布}
@@ -383,6 +437,22 @@ feat/perf-database vs gitcode-ascend/develop:
 {M6 需要 ASCEND_PROFILER_OUTPUT 数据 + --export-metrics JSON，如不可用则注明}
 {Phase 目标进度 + 收益路径估算}
 
+## 二-A、验证命令与数据源 (必须)
+{列出每个场景用到的:
+ 1. 完整 TC 命令 (含所有参数)
+ 2. DATA_DIR 路径
+ 3. PROFILING 路径 (M6 用)
+ 4. TC batch tokens (nq×ql) vs profiling dominant M-dim
+ 5. 是否匹配 → M6 是否可信}
+
+## 二-B、指标 Gap 逐项分析 (必须)
+{对每个未达标的 场景×指标 组合:
+ 1. 当前值 vs 目标值, gap 大小
+ 2. 最大 gap 根因 (哪些算子 MISS? 哪种 root cause?)
+ 3. 是否有对应 owner 在解决 (对照 Work Plan + 日报)
+ 4. 应该怎么解决 (补数据/新 pass/改查询/上游修复)
+ 5. 预期增益 (解决后 M3/M5 能提升多少 pp)}
+
 ## 三、TOP 风险 (按影响排序)
 {风险表: #/风险/影响/状态/缓解}
 
@@ -421,6 +491,7 @@ feat/perf-database vs gitcode-ascend/develop:
 ## 全局状态 (所有人需知)
 {2-3 句话: 当前 Phase, 距交付天数, 核心矛盾}
 {M1-M6 指标表 (精简, 4 场景)}
+{未达标指标 Gap 摘要: 最大 gap + 对应 owner + 解决路径}
 
 ## 你的任务状态
 | 任务 | 截止 | 状态 | 说明 |
