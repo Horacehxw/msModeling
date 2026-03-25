@@ -164,8 +164,8 @@ class TestDecomposeMLA:
         # attn_out @ W_UV: (16, 16, 512) @ (16, 512, 128)
         assert specs[2].input_shapes == [(16, 16, 512), (16, 512, 128)]
 
-    def test_prefill_decomposes_to_matmul_and_ring(self):
-        """Prefill decomposes to MatMulV2 + RINGMLAPrefillBF16Kernel (v1.5 §4.8.7)."""
+    def test_prefill_decomposes_to_matmul_and_fia(self):
+        """Prefill decomposes to MatMulV2 + FIA (v0.18.0: unified FIA)."""
         args = _make_mla_prefill_args()
         op = _make_op_info(
             torch.ops.tensor_cast.multihead_latent_attention.default, args
@@ -177,10 +177,10 @@ class TestDecomposeMLA:
         # kv_c @ kv_b_proj: (136, 512) @ (512, 16*(128+128))
         assert specs[0].input_shapes[0] == (136, 512)
         assert specs[0].input_shapes[1][0] == 512
-        assert specs[1].kernel_type == "RINGMLAPrefillBF16Kernel"
+        assert specs[1].kernel_type == "FusedInferAttentionScore"
 
-    def test_prefill_ring_kernel_shapes(self):
-        """Prefill RING kernel spec has correct Q shape (v1.5 §4.8.7)."""
+    def test_prefill_fia_has_attention_params(self):
+        """Prefill FIA spec has attention_params (v0.18.0)."""
         args = _make_mla_prefill_args(num_tokens=136, kv_lora_rank=512)
         op = _make_op_info(
             torch.ops.tensor_cast.multihead_latent_attention.default, args
@@ -188,9 +188,9 @@ class TestDecomposeMLA:
         specs = _decompose_mla(op, {})
         assert specs is not None
         assert len(specs) == 2
-        assert specs[1].kernel_type == "RINGMLAPrefillBF16Kernel"
-        # Q shape: (num_tokens, num_heads, head_dim)
-        assert specs[1].input_shapes[0][0] == 136
+        assert specs[1].kernel_type == "FusedInferAttentionScore"
+        assert specs[1].attention_params is not None
+        assert specs[1].attention_params["num_kv_heads"] == 1
 
     def test_insufficient_args_returns_none(self):
         op = _make_op_info(
@@ -224,8 +224,8 @@ class TestDecomposeMLAQuant:
         assert specs is not None
         assert specs[0].kernel_type == "QuantBatchMatmulV3"
 
-    def test_prefill_decomposes_to_matmul_and_ring(self):
-        """Quant prefill decomposes to MatMulV2 + RINGMLAPrefillBF16Kernel."""
+    def test_prefill_decomposes_to_matmul_and_fia(self):
+        """Quant prefill decomposes to MatMulV2 + FIA (v0.18.0)."""
         args = _make_mla_prefill_args()
         op = _make_op_info(
             torch.ops.tensor_cast.multihead_latent_attention_quant.default, args
@@ -234,7 +234,7 @@ class TestDecomposeMLAQuant:
         assert specs is not None
         assert len(specs) == 2
         assert specs[0].kernel_type == "MatMulV2"
-        assert specs[1].kernel_type == "RINGMLAPrefillBF16Kernel"
+        assert specs[1].kernel_type == "FusedInferAttentionScore"
 
 
 
@@ -1008,8 +1008,8 @@ class TestMLADecomposeWithAttentionParams:
         assert fia_spec.query_mode == "attention"
         assert fia_spec.attention_params is not None
 
-    def test_e3_mla_prefill_ring_kernel(self):
-        """MLA prefill: decomposes to MatMulV2 + RINGMLAPrefillBF16Kernel (v1.5 §4.8.7)."""
+    def test_e3_mla_prefill_fia(self):
+        """MLA prefill: decomposes to MatMulV2 + FIA (v0.18.0)."""
         args = _make_mla_prefill_args(num_tokens=256, num_heads=16, kv_lora_rank=512)
         op = _make_op_info(
             torch.ops.tensor_cast.multihead_latent_attention.default, args
@@ -1018,7 +1018,7 @@ class TestMLADecomposeWithAttentionParams:
         assert specs is not None
         assert len(specs) == 2
         assert specs[0].kernel_type == "MatMulV2"
-        assert specs[1].kernel_type == "RINGMLAPrefillBF16Kernel"
+        assert specs[1].kernel_type == "FusedInferAttentionScore"
 
     def test_e4_mla_quant_decode_attention_params(self):
         """MLA quant decode also produces attention_params."""
@@ -1032,8 +1032,8 @@ class TestMLADecomposeWithAttentionParams:
         assert fia_spec.attention_params is not None
         assert fia_spec.query_mode == "attention"
 
-    def test_e5_mla_quant_prefill_ring_kernel(self):
-        """MLA quant prefill: decomposes to MatMulV2 + RINGMLAPrefillBF16Kernel."""
+    def test_e5_mla_quant_prefill_fia(self):
+        """MLA quant prefill: decomposes to MatMulV2 + FIA (v0.18.0)."""
         args = _make_mla_prefill_args(num_tokens=256, num_heads=16, kv_lora_rank=512)
         op = _make_op_info(
             torch.ops.tensor_cast.multihead_latent_attention_quant.default, args
@@ -1042,7 +1042,7 @@ class TestMLADecomposeWithAttentionParams:
         assert specs is not None
         assert len(specs) == 2
         assert specs[0].kernel_type == "MatMulV2"
-        assert specs[1].kernel_type == "RINGMLAPrefillBF16Kernel"
+        assert specs[1].kernel_type == "FusedInferAttentionScore"
 
 
 # ---- 10. Interpolation linearity verification ----

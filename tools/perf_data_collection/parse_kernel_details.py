@@ -315,6 +315,7 @@ class KernelDetailsParser:
     #   for decode vs prefill). Merge into one CSV.
     _KERNEL_NAME_NORMALIZE: Dict[str, str] = {
         "split_qkv_rmsnorm_rope_kernel_0": "split_qkv_rmsnorm_rope_kernel",
+        "muls_add_kernel_1": "muls_add_kernel",
     }
 
     @classmethod
