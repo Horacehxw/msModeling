@@ -408,9 +408,14 @@ operator_mappings:
       [MEDIUM] op-plugin: npu_add_rms_norm_quant. aclnn: aclnnAddRmsNormQuant/V2.
 
   "tensor_cast.add_rms_norm_quant2.default":
-    kernel_type: AddRmsNormQuant
+    kernel_type: AddRmsNormDynamicQuant
+    alternate_kernel_types: [AddRmsNormDynamicQuantAiCore]
+    tc_input_count: 3
     notes: >
       [MEDIUM] 同 add_rms_norm_quant; '2' 使用 residual.
+      CANN 8.5: AddRmsNormDynamicQuant (原 AddRmsNormQuant CSV 不存在).
+      tc_input_count=3: TC has 3 tensor inputs (x, residual, weight);
+      CSV has additional NPU-internal params.
 
 
   # ========== 11. Norm + Dynamic Quant Symmetric ==========
