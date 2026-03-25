@@ -165,6 +165,18 @@ class KernelDetailsParser:
         normalized = value.strip().strip('"').upper()
         return normalized == "N/A"
 
+    # Kernel name normalization: map variant names to canonical kernel type.
+    # - split_qkv_rmsnorm_rope_kernel_0: Triton JIT grid-config variant of
+    #   split_qkv_rmsnorm_rope_kernel (same CANN kernel, different launch config
+    #   for decode vs prefill). Merge into one CSV.
+    _KERNEL_NAME_NORMALIZE: Dict[str, str] = {
+        "split_qkv_rmsnorm_rope_kernel_0": "split_qkv_rmsnorm_rope_kernel",
+    }
+
+    @classmethod
+    def _normalize_kernel_type(cls, op_type: str) -> str:
+        return cls._KERNEL_NAME_NORMALIZE.get(op_type, op_type)
+
     def _load_rows(self) -> List[Dict[str, str]]:
         rows: List[Dict[str, str]] = []
         kernel_details_files = self._resolve_kernel_details_files()
@@ -231,7 +243,7 @@ class KernelDetailsParser:
         total_rows = len(rows)
         progress_interval = max(1, total_rows // 100) if total_rows else 1
         for row_index, row in enumerate(rows, start=1):
-            op_type = self._safe_cell(row, TYPE_COL)
+            op_type = self._normalize_kernel_type(self._safe_cell(row, TYPE_COL))
             input_shapes = self._safe_cell(row, INPUT_SHAPES)
             output_shapes = self._safe_cell(row, OUTPUT_SHAPES)
             if self._is_na_shape(input_shapes) or self._is_na_shape(output_shapes):
