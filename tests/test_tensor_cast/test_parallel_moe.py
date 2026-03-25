@@ -226,6 +226,7 @@ class _FakeFusedMoE(torch.nn.Module):
         ep_group=None,
         num_external_shared_experts=0,
         num_global_experts=None,
+        global_tp_size=1,
     ):
         super().__init__()
         self.moe_config = moe_config
@@ -293,8 +294,11 @@ def test_parallel_moe_ep_route_before_tp_slice_smoke():
         output = parallel_moe(hidden_states)
 
     assert output.shape == (1, 6, 16)
-    assert gate.seen_shape == (8, 16)
+    # With _get_dp_alignment = tp_size = 2, 6 tokens need no padding (6 % 2 == 0).
+    # Gate sees all tokens before TP slice.
+    assert gate.seen_shape == (6, 16)
 
     fused_moe = _FakeFusedMoE.last_instance
     assert fused_moe is not None
-    assert fused_moe.forward_inputs == [((4, 16), (4, 2), (4, 2))]
+    # After TP slice (world_size=2): 6/2 = 3 tokens per rank.
+    assert fused_moe.forward_inputs == [((3, 16), (3, 2), (3, 2))]

@@ -176,6 +176,7 @@ class ParallelMoELayer(ModelWrapperBase):
             self.ep_group,
             num_external_shared_experts=num_external_shared_experts,
             num_global_experts=num_routing_experts + num_redundant_experts,
+            global_tp_size=global_tp_group.world_size,
         )
 
         self.global_dp_group = global_dp_group
@@ -190,18 +191,14 @@ class ParallelMoELayer(ModelWrapperBase):
     def _get_dp_alignment(self):
         """Get the alignment divisor for MoE DP domain transformations.
 
-        For EP: num_experts * tp_size — ensures that after slice by tp_size
-        AND expert dispatch, each expert's token count is still divisible
-        by tp_size (needed by RowParallelLinear.gather_slice_data path).
+        Returns tp_size for all cases — sufficient for TP slice/all_gather.
 
-        For non-EP: tp_size — sufficient for all_gather/slice operations.
+        Per-expert TP alignment (needed by RowParallelLinear.gather_slice_data
+        in the serial expert loop) is handled locally inside
+        FusedMoETensorCast.forward() via per-expert padding, matching how
+        real vLLM pads only to ceil(N/tp)*tp at the global level.
         """
-        tp_size = self.global_tp_group.world_size
-        if self.has_ep:
-            num_experts = self._inner.fused_moe.num_global_experts
-            return num_experts * tp_size
-        else:
-            return tp_size
+        return self.global_tp_group.world_size
 
     def forward(self, hidden_states: torch.Tensor):
         if self.transform_dp_group:
@@ -264,6 +261,7 @@ class FusedMoETensorCast(FusedMoEBase):
         ep_group: Optional[ParallelGroup] = _DEFAULT_PG,
         num_external_shared_experts: int = 0,
         num_global_experts: Optional[int] = None,
+        global_tp_size: int = 1,
     ):
         super().__init__(
             moe_config, experts, shared_experts, shared_experts_gate, top_k
@@ -273,6 +271,9 @@ class FusedMoETensorCast(FusedMoEBase):
             num_global_experts if num_global_experts else len(self.experts)
         )
         self.num_external_shared_experts = num_external_shared_experts
+        # Global TP size for per-expert local padding.
+        # RowParallelLinear.gather_slice_data needs token dim % global_tp == 0.
+        self._global_tp_size = global_tp_size
 
         if self.experts is not None:
             expert_idx_start, num_local_experts = assign_experts(
@@ -472,9 +473,21 @@ class FusedMoETensorCast(FusedMoEBase):
         else:
             assert len(dispatched_hidden_states) == len(self.experts)
             for expert_idx in range(len(self.experts)):
-                expert_output = self.experts[expert_idx](
-                    dispatched_hidden_states[expert_idx]
-                )
+                expert_input = dispatched_hidden_states[expert_idx]
+                num_expert_tokens = expert_input.shape[0]
+                # Per-expert local padding: RowParallelLinear with
+                # gather_slice_data requires token dim % global_tp_size == 0.
+                # Real vLLM handles this inside grouped_matmul; TC pads
+                # each expert's tokens individually to avoid inflating the
+                # global MoE batch to num_experts * tp_size.
+                pad_size = (-num_expert_tokens) % self._global_tp_size
+                if pad_size > 0:
+                    expert_input = torch.nn.functional.pad(
+                        expert_input, (0, 0, 0, pad_size)
+                    )
+                expert_output = self.experts[expert_idx](expert_input)
+                if pad_size > 0:
+                    expert_output = expert_output[:num_expert_tokens]
                 experts_hidden_states.append(expert_output)
 
         combined_hidden_states = self.combine_tokens(
