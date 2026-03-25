@@ -89,9 +89,9 @@ def _(
         hidden_states: (num_tokens, hidden_size) activations entering MLA.
         cos/sin: rotary embedding caches shaped (1, seq_len, qk_rope_head_dim).
         q_a_proj_weight / q_b_proj_weight: LoRA weights with shapes
-            (hidden_size, q_lora_rank) and (q_lora_rank, num_heads * qk_head_dim).
+            (q_lora_rank, hidden_size) and (num_heads * qk_head_dim, q_lora_rank).
         q_a_layernorm_weight: RMSNorm scale for the LoRA branch (q_lora_rank,).
-        kv_a_proj_weight: (hidden_size, kv_lora_rank + qk_rope_head_dim) matrix
+        kv_a_proj_weight: (kv_lora_rank + qk_rope_head_dim, hidden_size) matrix
             producing compressed key/value streams; kv_a_layernorm_weight matches
             its last dimension.
         num_heads/qk_* dims/kv_lora_rank/q_lora_rank: structural scalars that

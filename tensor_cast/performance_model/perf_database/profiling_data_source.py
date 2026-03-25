@@ -503,9 +503,10 @@ def _decompose_mlapo(
 
     Args layout (tensor_cast/ops/mla.py):
         args[0]: hidden_states (num_tokens, hidden_size)
-        args[3]: q_a_proj_weight (hidden_size, q_lora_rank) — Optional
-        args[5]: q_b_proj_weight (q_lora_rank, num_heads*qk_head_dim) — Optional
-        args[6]: kv_a_proj_weight (hidden_size, kv_lora_rank+rope_dim) — Optional
+        args[3]: q_a_proj_weight (q_lora_rank, hidden_size) — Optional
+            F.linear convention: (out_features, in_features)
+        args[5]: q_b_proj_weight (num_heads*qk_head_dim, q_lora_rank) — Optional
+        args[6]: kv_a_proj_weight (kv_lora_rank+rope_dim, hidden_size) — Optional
         args[7]: kv_a_layernorm_weight (kv_lora_rank,)
         args[12]: kv_lora_rank (int)
     """
@@ -514,9 +515,9 @@ def _decompose_mlapo(
         return None
 
     hidden_states = args[0]  # (num_tokens, hidden_size)
-    q_a_proj = args[3]  # (hidden_size, q_lora_rank)
-    q_b_proj = args[5]  # (q_lora_rank, num_heads*qk_head_dim)
-    kv_a_proj = args[6]  # (hidden_size, kv_lora_rank+rope_dim)
+    q_a_proj = args[3]  # (q_lora_rank, hidden_size)
+    q_b_proj = args[5]  # (num_heads*qk_head_dim, q_lora_rank)
+    kv_a_proj = args[6]  # (kv_lora_rank+rope_dim, hidden_size)
 
     if hidden_states is None or q_a_proj is None or q_b_proj is None or kv_a_proj is None:
         return None
@@ -527,8 +528,8 @@ def _decompose_mlapo(
 
     num_tokens = hidden_states.shape[0]
     hidden_size = hidden_states.shape[1]
-    q_lora_rank = q_a_proj.shape[1]
-    kv_proj_dim = kv_a_proj.shape[1]  # kv_lora_rank + rope_dim
+    q_lora_rank = q_a_proj.shape[0]  # out_features of q_a_proj
+    kv_proj_dim = kv_a_proj.shape[0]  # out_features: kv_lora_rank + rope_dim
 
     return [
         # Op1: hidden @ q_a_proj
@@ -561,15 +562,18 @@ def _decompose_mlapo(
 def _decompose_mlapo_quant(
     op_invoke_info: "OpInvokeInfo", mapping: dict
 ) -> Optional[List[SubKernelSpec]]:
-    """Decompose mlapo_quant — same structure, QuantBatchMatmulV3 for projections."""
+    """Decompose mlapo_quant — same structure, QuantBatchMatmulV3 for projections.
+
+    Weight shapes follow F.linear convention: (out_features, in_features).
+    """
     args = op_invoke_info.args
     if len(args) < 20:
         return None
 
-    hidden_states = args[0]
-    q_a_proj = args[3]
-    q_b_proj = args[5]
-    kv_a_proj = args[6]
+    hidden_states = args[0]  # (num_tokens, hidden_size)
+    q_a_proj = args[3]  # (q_lora_rank, hidden_size)
+    q_b_proj = args[5]  # (num_heads*qk_head_dim, q_lora_rank)
+    kv_a_proj = args[6]  # (kv_lora_rank+rope_dim, hidden_size)
 
     if hidden_states is None or q_a_proj is None or q_b_proj is None or kv_a_proj is None:
         return None
@@ -580,8 +584,8 @@ def _decompose_mlapo_quant(
 
     num_tokens = hidden_states.shape[0]
     hidden_size = hidden_states.shape[1]
-    q_lora_rank = q_a_proj.shape[1]
-    kv_proj_dim = kv_a_proj.shape[1]
+    q_lora_rank = q_a_proj.shape[0]  # out_features of q_a_proj
+    kv_proj_dim = kv_a_proj.shape[0]  # out_features: kv_lora_rank + rope_dim
 
     return [
         SubKernelSpec(

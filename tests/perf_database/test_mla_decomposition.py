@@ -15,6 +15,8 @@ from tensor_cast.performance_model.perf_database.profiling_data_source import (
     SubKernelSpec,
     _decompose_mla,
     _decompose_mla_quant,
+    _decompose_mlapo,
+    _decompose_mlapo_quant,
     _is_decode_mla,
 )
 
@@ -1095,3 +1097,192 @@ class TestInterpolationLinearity:
         result = ds.lookup(op)
         assert result is not None
         assert abs(result.latency_us - 43.75) < 0.1
+
+
+# ---- 11. MLAPO decomposition: weight dimension direction (bugfix 2618b0b) ----
+
+
+def _make_mlapo_args(
+    num_tokens=136,
+    hidden_size=5120,
+    q_lora_rank=1536,
+    num_heads_x_qk_head_dim=3072,
+    kv_proj_dim=576,  # kv_lora_rank + rope_dim
+    kv_lora_rank=512,
+):
+    """Build args for mlapo op.
+
+    Weight shapes follow F.linear convention: (out_features, in_features).
+    Critically, q_lora_rank != hidden_size and kv_proj_dim != hidden_size,
+    so using shape[1] (in_features) instead of shape[0] (out_features) would
+    produce wrong intermediate activation shapes.
+    """
+    hidden_states = torch.empty(
+        num_tokens, hidden_size, device="meta", dtype=torch.bfloat16
+    )
+    # args[1], args[2]: norms (unused by decomposer but need placeholders)
+    q_a_layernorm = torch.empty(q_lora_rank, device="meta", dtype=torch.bfloat16)
+    q_a_scale = None
+    # args[3]: q_a_proj (out_features=q_lora_rank, in_features=hidden_size)
+    q_a_proj = torch.empty(
+        q_lora_rank, hidden_size, device="meta", dtype=torch.bfloat16
+    )
+    q_a_proj_scale = None
+    # args[5]: q_b_proj (out_features=num_heads*qk_head_dim, in_features=q_lora_rank)
+    q_b_proj = torch.empty(
+        num_heads_x_qk_head_dim, q_lora_rank, device="meta", dtype=torch.bfloat16
+    )
+    # args[6]: kv_a_proj (out_features=kv_proj_dim, in_features=hidden_size)
+    kv_a_proj = torch.empty(
+        kv_proj_dim, hidden_size, device="meta", dtype=torch.bfloat16
+    )
+    # args[7]: kv_a_layernorm_weight
+    kv_a_layernorm = torch.empty(kv_lora_rank, device="meta", dtype=torch.bfloat16)
+    # Pad to 20 args (decomposer checks len(args) >= 14 for mlapo, >= 20 for quant)
+    args = [
+        hidden_states,  # 0
+        q_a_layernorm,  # 1
+        q_a_scale,  # 2
+        q_a_proj,  # 3
+        q_a_proj_scale,  # 4
+        q_b_proj,  # 5
+        kv_a_proj,  # 6
+        kv_a_layernorm,  # 7
+        None,  # 8
+        None,  # 9
+        None,  # 10
+        None,  # 11
+        kv_lora_rank,  # 12
+        None,  # 13
+        None,  # 14
+        None,  # 15
+        None,  # 16
+        None,  # 17
+        None,  # 18
+        None,  # 19
+    ]
+    return args
+
+
+class TestDecomposeMlapo:
+    """Tests for _decompose_mlapo weight dimension direction (bugfix 2618b0b).
+
+    The bug: q_lora_rank and kv_proj_dim were read from shape[1] (in_features)
+    instead of shape[0] (out_features). With F.linear convention
+    weight=(out_features, in_features), shape[1]=hidden_size, which is wrong.
+    """
+
+    def test_returns_4_specs(self):
+        args = _make_mlapo_args()
+        op = _make_op_info(torch.ops.tensor_cast.mlapo.default, args)
+        specs = _decompose_mlapo(op, {})
+        assert specs is not None
+        assert len(specs) == 4
+
+    def test_kernel_types(self):
+        args = _make_mlapo_args()
+        op = _make_op_info(torch.ops.tensor_cast.mlapo.default, args)
+        specs = _decompose_mlapo(op, {})
+        assert specs[0].kernel_type == "MatMulV2"
+        assert specs[1].kernel_type == "MatMulV2"
+        assert specs[2].kernel_type == "MatMulV2"
+        assert specs[3].kernel_type == "KvRmsNormRopeCache"
+
+    def test_q_lora_rank_from_out_features(self):
+        """q_compressed @ q_b_proj: activation shape must use q_lora_rank (shape[0]),
+        not hidden_size (shape[1]). This is the core regression test."""
+        args = _make_mlapo_args(
+            num_tokens=136, hidden_size=5120, q_lora_rank=1536
+        )
+        op = _make_op_info(torch.ops.tensor_cast.mlapo.default, args)
+        specs = _decompose_mlapo(op, {})
+        # Op2: q_compressed @ q_b_proj → input_shapes[0] = (num_tokens, q_lora_rank)
+        # Bug would produce (136, 5120) instead of (136, 1536)
+        assert specs[1].input_shapes[0] == (136, 1536)
+
+    def test_kv_proj_dim_from_out_features(self):
+        """KvRmsNormRopeCache shape must use kv_proj_dim (shape[0]),
+        not hidden_size (shape[1]). This is the core regression test."""
+        args = _make_mlapo_args(
+            num_tokens=136, hidden_size=5120, kv_proj_dim=576
+        )
+        op = _make_op_info(torch.ops.tensor_cast.mlapo.default, args)
+        specs = _decompose_mlapo(op, {})
+        # Op4: KvRmsNormRopeCache → input_shapes[0] = (num_tokens, kv_proj_dim)
+        # Bug would produce (136, 5120) instead of (136, 576)
+        assert specs[3].input_shapes[0] == (136, 576)
+
+    def test_q_a_proj_full_weight_shape_passed(self):
+        """Op1: hidden @ q_a_proj passes full weight shape (q_lora_rank, hidden_size)."""
+        args = _make_mlapo_args(
+            num_tokens=100, hidden_size=5120, q_lora_rank=1536
+        )
+        op = _make_op_info(torch.ops.tensor_cast.mlapo.default, args)
+        specs = _decompose_mlapo(op, {})
+        # Op1: (num_tokens, hidden_size) @ q_a_proj(q_lora_rank, hidden_size)
+        assert specs[0].input_shapes == [(100, 5120), (1536, 5120)]
+
+    def test_kv_a_proj_full_weight_shape_passed(self):
+        """Op3: hidden @ kv_a_proj passes full weight shape (kv_proj_dim, hidden_size)."""
+        args = _make_mlapo_args(
+            num_tokens=100, hidden_size=5120, kv_proj_dim=576
+        )
+        op = _make_op_info(torch.ops.tensor_cast.mlapo.default, args)
+        specs = _decompose_mlapo(op, {})
+        # Op3: (num_tokens, hidden_size) @ kv_a_proj(kv_proj_dim, hidden_size)
+        assert specs[2].input_shapes == [(100, 5120), (576, 5120)]
+
+    def test_insufficient_args_returns_none(self):
+        op = _make_op_info(
+            torch.ops.tensor_cast.mlapo.default,
+            [torch.empty(136, 5120, device="meta", dtype=torch.bfloat16)],
+        )
+        assert _decompose_mlapo(op, {}) is None
+
+    def test_none_weight_returns_none(self):
+        args = _make_mlapo_args()
+        args[3] = None  # q_a_proj = None
+        op = _make_op_info(torch.ops.tensor_cast.mlapo.default, args)
+        assert _decompose_mlapo(op, {}) is None
+
+
+class TestDecomposeMlapoQuant:
+    """Tests for _decompose_mlapo_quant weight dimension direction (bugfix 2618b0b)."""
+
+    def test_returns_4_specs_with_quant_kernel(self):
+        args = _make_mlapo_args()
+        op = _make_op_info(torch.ops.tensor_cast.mlapo_quant.default, args)
+        specs = _decompose_mlapo_quant(op, {})
+        assert specs is not None
+        assert len(specs) == 4
+        # Quant variant uses QuantBatchMatmulV3 for projections
+        assert specs[0].kernel_type == "QuantBatchMatmulV3"
+        assert specs[1].kernel_type == "QuantBatchMatmulV3"
+        assert specs[2].kernel_type == "QuantBatchMatmulV3"
+        assert specs[3].kernel_type == "KvRmsNormRopeCache"
+
+    def test_q_lora_rank_from_out_features_quant(self):
+        """Same bugfix regression: q_lora_rank must come from shape[0]."""
+        args = _make_mlapo_args(
+            num_tokens=136, hidden_size=5120, q_lora_rank=1536
+        )
+        op = _make_op_info(torch.ops.tensor_cast.mlapo_quant.default, args)
+        specs = _decompose_mlapo_quant(op, {})
+        # Bug would produce (136, 5120) instead of (136, 1536)
+        assert specs[1].input_shapes[0] == (136, 1536)
+
+    def test_kv_proj_dim_from_out_features_quant(self):
+        """Same bugfix regression: kv_proj_dim must come from shape[0]."""
+        args = _make_mlapo_args(
+            num_tokens=136, hidden_size=5120, kv_proj_dim=576
+        )
+        op = _make_op_info(torch.ops.tensor_cast.mlapo_quant.default, args)
+        specs = _decompose_mlapo_quant(op, {})
+        # Bug would produce (136, 5120) instead of (136, 576)
+        assert specs[3].input_shapes[0] == (136, 576)
+
+    def test_insufficient_args_returns_none(self):
+        """mlapo_quant requires len(args) >= 20."""
+        args = _make_mlapo_args()[:15]  # truncate to < 20
+        op = _make_op_info(torch.ops.tensor_cast.mlapo_quant.default, args)
+        assert _decompose_mlapo_quant(op, {}) is None
