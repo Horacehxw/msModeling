@@ -81,7 +81,7 @@ class MoELayer(torch.nn.Module):
             self.top_k,
         )
 
-    def forward(self, hidden_states: torch.Tensor):
+    def route(self, hidden_states: torch.Tensor):
         if self.moe_config.gate_returns_raw_logits:
             if self.top_k is None:
                 raise ValueError(
@@ -121,6 +121,10 @@ class MoELayer(torch.nn.Module):
                 *hidden_states.shape[:-1], topk_weights.shape[-1]
             )
 
+        return topk_indices, topk_weights
+
+    def forward(self, hidden_states: torch.Tensor):
+        topk_indices, topk_weights = self.route(hidden_states)
         hidden_states = self.fused_moe(hidden_states, topk_indices, topk_weights)
         return hidden_states
 
@@ -219,11 +223,18 @@ class ParallelMoELayer(ModelWrapperBase):
             )
 
             if self.has_ep:
+                topk_indices, topk_weights = self._inner.route(hidden_states)
                 hidden_states = self.global_tp_group.slice(hidden_states, dim=0)
+                topk_indices = self.global_tp_group.slice(topk_indices, dim=0)
+                topk_weights = self.global_tp_group.slice(topk_weights, dim=0)
+                hidden_states = self._inner.fused_moe(
+                    hidden_states, topk_indices, topk_weights
+                )
             else:
                 hidden_states = self.global_dp_group.all_gather(hidden_states, dim=0)
-
-        hidden_states = self._inner(hidden_states)
+                hidden_states = self._inner(hidden_states)
+        else:
+            hidden_states = self._inner(hidden_states)
 
         if self.transform_dp_group:
             if self.has_ep:

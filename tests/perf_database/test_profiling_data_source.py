@@ -633,9 +633,9 @@ def test_triton_rope_dtype_relaxed_hit(triton_rope_float_dir):
     assert abs(result.latency_us - 12.3) < 0.01
 
 
-def test_non_rope_dtype_strict(tmp_path):
-    """Non-RoPE kernel: BF16 vs FLOAT still causes MISS (strict matching)."""
-    data_dir = tmp_path / "matmul_strict"
+def test_matmul_dtype_relaxed_and_transpose_absorbed(tmp_path):
+    """MatMul allows FLOAT<->BF16 and absorbs ND weight transpose from F.linear."""
+    data_dir = tmp_path / "matmul_dtype_relaxed"
     data_dir.mkdir()
     (data_dir / "op_mapping.yaml").write_text(
         'version: "test"\n'
@@ -646,19 +646,24 @@ def test_non_rope_dtype_strict(tmp_path):
     (data_dir / "MatMulV2.csv").write_text(
         "Input Shapes,Input Data Types,Input Formats,Output Shapes,"
         "Output Data Types,Output Formats,Average Duration(us)\n"
-        '"136,5120;5120,768","FLOAT;FLOAT","ND;ND",'
-        '"136,768","FLOAT","ND",45.0\n'
+        '"2048,7168;256,7168","DT_BF16;DT_BF16","ND;ND",'
+        '"2048,256","DT_BF16","ND",47.4\n'
     )
     ds = ProfilingDataSource(data_dir)
     op = _make_op_info(
         torch.ops.aten.mm.default,
         [
-            torch.empty(136, 5120, device="meta", dtype=torch.bfloat16),
-            torch.empty(5120, 768, device="meta", dtype=torch.bfloat16),
+            torch.empty(2048, 7168, device="meta", dtype=torch.float32),
+            torch.empty(7168, 256, device="meta", dtype=torch.float32),
         ],
     )
     result = ds.lookup(op)
-    assert result is None, "MatMul: BF16 vs FLOAT should NOT match (strict)"
+    assert result is not None, (
+        "MatMul should match profiling row when dtype relaxes FLOAT->DT_BF16 "
+        "and the transposed ND weight is absorbed"
+    )
+    assert abs(result.latency_us - 47.4) < 0.01
+    assert result.details.get("kernel_type") == "MatMulV2"
 
 COMPOSITE_MATMUL_CSV = """\
 Input Shapes,Input Data Types,Input Formats,Output Shapes,Output Data Types,Output Formats,Average Duration(us)

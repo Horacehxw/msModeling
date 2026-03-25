@@ -138,6 +138,12 @@ _MATMUL_KERNELS = frozenset(
     }
 )
 
+_RELAXED_DTYPE_MATMUL_KERNELS = frozenset(
+    {
+        "MatMulV2",
+    }
+)
+
 # SwiGlu kernel types: TC dispatches 2 inputs (gate, up) as separate tensors,
 # but profiling CSVs store 1 concatenated input along last dim.
 _SWIGLU_KERNELS = frozenset({"SwiGlu"})
@@ -155,7 +161,12 @@ _ROPE_KERNELS = frozenset(
 _DTYPE_COMPAT = {"DT_BF16": "FLOAT_GROUP", "FLOAT": "FLOAT_GROUP"}
 
 # Kernel types that allow relaxed dtype matching via _DTYPE_COMPAT.
-_DTYPE_RELAXED_KERNELS = _ROPE_KERNELS
+# For non-quant matmul kernels, some model code paths upcast inputs/weights to
+# FP32 in eager code for numerical stability, while Ascend profiling records
+# the realized kernel as BF16. Allow FLOAT <-> DT_BF16 compatibility so shape
+# matching can still reuse the measured kernel entry. Quant matmul kernels keep
+# strict dtype matching because their dtype semantics differ from plain matmul.
+_DTYPE_RELAXED_KERNELS = _ROPE_KERNELS | _RELAXED_DTYPE_MATMUL_KERNELS
 
 # Kernel types where TC may produce 3D (B, M, D) shapes that should
 # match CSV's 2D (B*M, D) shapes by flattening the leading two dims.
