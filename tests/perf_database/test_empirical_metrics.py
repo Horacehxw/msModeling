@@ -9,7 +9,7 @@ from tensor_cast.performance_model.empirical import (
     compute_per_shape_stats,
     EmpiricalPerformanceModel,
 )
-from tensor_cast.performance_model.perf_database.data_source import (
+from tensor_cast.performance_model.profiling_database.data_source import (
     DataSource,
     QueryResult,
     QuerySource,

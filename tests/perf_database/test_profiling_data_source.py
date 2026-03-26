@@ -4,9 +4,9 @@ import pytest
 import torch
 
 from tensor_cast.device import CommGrid, InterconnectTopology
-from tensor_cast.performance_model.perf_database.data_source import QuerySource
+from tensor_cast.performance_model.profiling_database.data_source import QuerySource
 
-from tensor_cast.performance_model.perf_database.profiling_data_source import (
+from tensor_cast.performance_model.profiling_database.profiling_data_source import (
     _dtype_byte_size,
     DTYPE_MAP,
     fractal_nz_to_nd,
@@ -1978,11 +1978,11 @@ def test_csv_file_field_fallback(moe_data_dir):
 from pathlib import Path
 
 _CANN83_DATA_DIR = Path(__file__).resolve().parents[2] / (
-    "tensor_cast/performance_model/perf_database/data/"
+    "tensor_cast/performance_model/profiling_database/data/"
     "ATLAS_800_A3_752T_128G_DIE/vllm_ascend/vllm0.13.0_torch2.8.0_cann8.3"
 )
 _CANN85_DATA_DIR = Path(__file__).resolve().parents[2] / (
-    "tensor_cast/performance_model/perf_database/data/"
+    "tensor_cast/performance_model/profiling_database/data/"
     "ATLAS_800_A3_752T_128G_DIE/vllm_ascend/vllm0.15.0_torch2.9.0_cann8.5"
 )
 

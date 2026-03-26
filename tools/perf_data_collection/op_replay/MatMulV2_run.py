@@ -3,7 +3,7 @@ Replay MatMulV2 cases from the performance database on Ascend NPU.
 
 Purpose:
   Read MatMulV2 rows from
-  perf_database/data/{device}/vllm_ascend/{version}/MatMulV2.csv,
+  profiling_database/data/{device}/vllm_ascend/{version}/MatMulV2.csv,
   rebuild input tensors from the recorded shapes, formats, and dtypes,
   then execute the matching torch.mm() workload.
 
@@ -12,7 +12,7 @@ Usage:
     --device ATLAS_800_A3_752T_128G_DIE --vllm-ascend-version 0.13.0
 
 Arguments:
-  --device                Selects the device directory under perf_database/data.
+  --device                Selects the device directory under profiling_database/data.
   --vllm-ascend-version   Selects the version directory under {device}/vllm_ascend.
 """
 

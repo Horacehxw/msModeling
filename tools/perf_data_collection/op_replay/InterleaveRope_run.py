@@ -3,7 +3,7 @@ Replay InterleaveRope cases from the performance database on Ascend NPU.
 
 Purpose:
   Read InterleaveRope rows from
-  perf_database/data/{device}/vllm_ascend/{version}/InterleaveRope.csv,
+  profiling_database/data/{device}/vllm_ascend/{version}/InterleaveRope.csv,
   rebuild input tensors from the recorded shapes, formats, and dtypes,
   then execute torch_npu.npu_interleave_rope().
 

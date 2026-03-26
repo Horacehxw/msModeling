@@ -60,7 +60,7 @@ def build_argparser() -> argparse.ArgumentParser:
         choices=SUPPORTED_DEVICES,
         help=(
             "Target device folder under "
-            "tensor_cast/performance_model/perf_database/data/{device}/"
+            "tensor_cast/performance_model/profiling_database/data/{device}/"
         ),
     )
     parser.add_argument(

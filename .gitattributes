@@ -1,3 +1,2 @@
-perf_database/data/**/*.csv filter=lfs diff=lfs merge=lfs -text
+tensor_cast/performance_model/profiling_database/data/**/*.csv filter=lfs diff=lfs merge=lfs -text
 temp/** filter=lfs diff=lfs merge=lfs -text
-tensor_cast/performance_model/perf_database/data/**/*.csv filter=lfs diff=lfs merge=lfs -text

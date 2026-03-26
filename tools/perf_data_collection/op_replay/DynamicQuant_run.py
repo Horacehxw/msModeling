@@ -3,7 +3,7 @@ Replay DynamicQuant cases from the performance database on Ascend NPU.
 
 Purpose:
   Read DynamicQuant rows from
-  perf_database/data/{device}/vllm_ascend/{version}/DynamicQuant.csv,
+  profiling_database/data/{device}/vllm_ascend/{version}/DynamicQuant.csv,
   rebuild input tensors from the recorded shapes, formats, and dtypes,
   then execute torch_npu.npu_dynamic_quant().
 

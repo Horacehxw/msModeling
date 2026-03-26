@@ -24,7 +24,7 @@ DEFAULT_DATA_DIR = (
     Path(__file__).resolve().parents[2]
     / "tensor_cast"
     / "performance_model"
-    / "perf_database"
+    / "profiling_database"
     / "data"
 )
 DEFAULT_ROWS = 10_000
@@ -148,7 +148,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "CSV root directory. If omitted, the script uses either "
-            "{repo}/tensor_cast/performance_model/perf_database/data or "
+            "{repo}/tensor_cast/performance_model/profiling_database/data or "
             "{repo}/.../data/{device}/vllm_ascend/{version}/ when --device and "
             "--vllm-ascend-version are provided."
         ),
@@ -158,7 +158,7 @@ def parse_args() -> argparse.Namespace:
         choices=SUPPORTED_DEVICES,
         help=(
             "Target device name used as input folder: "
-            "tensor_cast/performance_model/perf_database/data/{device}/vllm_ascend/{version}/"
+            "tensor_cast/performance_model/profiling_database/data/{device}/vllm_ascend/{version}/"
         ),
     )
     parser.add_argument(

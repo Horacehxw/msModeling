@@ -3,7 +3,7 @@ Replay ReshapeAndCacheNdKernel cases from the performance database on Ascend NPU
 
 Purpose:
   Read ReshapeAndCacheNdKernel rows from
-  perf_database/data/{device}/vllm_ascend/{version}/ReshapeAndCacheNdKernel.csv,
+  profiling_database/data/{device}/vllm_ascend/{version}/ReshapeAndCacheNdKernel.csv,
   rebuild the recorded tensor inputs, then execute
   torch_npu._npu_reshape_and_cache().
 

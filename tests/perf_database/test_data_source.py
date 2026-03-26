@@ -1,5 +1,5 @@
 import pytest
-from tensor_cast.performance_model.perf_database.data_source import (
+from tensor_cast.performance_model.profiling_database.data_source import (
     DataSource,
     QueryResult,
     QuerySource,

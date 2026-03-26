@@ -4,7 +4,7 @@ import torch
 
 from tensor_cast.performance_model.base import PerformanceModel
 from tensor_cast.performance_model.empirical import EmpiricalPerformanceModel
-from tensor_cast.performance_model.perf_database.data_source import (
+from tensor_cast.performance_model.profiling_database.data_source import (
     DataSource,
     QueryResult,
     QuerySource,
@@ -91,8 +91,8 @@ def test_interpolation_toggle_off_by_default(tmp_path):
     import yaml
 
     from tensor_cast.core.model_runner import _create_data_source
-    from tensor_cast.performance_model.perf_database import ProfilingDataSource
-    from tensor_cast.performance_model.perf_database.interpolating_data_source import (
+    from tensor_cast.performance_model.profiling_database import ProfilingDataSource
+    from tensor_cast.performance_model.profiling_database.interpolating_data_source import (
         InterpolatingDataSource,
     )
 
@@ -114,7 +114,7 @@ def test_interpolation_toggle_on(tmp_path):
     import yaml
 
     from tensor_cast.core.model_runner import _create_data_source
-    from tensor_cast.performance_model.perf_database.interpolating_data_source import (
+    from tensor_cast.performance_model.profiling_database.interpolating_data_source import (
         InterpolatingDataSource,
     )
 

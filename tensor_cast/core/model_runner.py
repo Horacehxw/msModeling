@@ -40,12 +40,12 @@ def _create_data_source(perf_db_path, device_profile):
     """Create the appropriate DataSource, respecting TC_ENABLE_INTERPOLATION."""
     import os
 
-    from ..performance_model.perf_database import ProfilingDataSource
+    from ..performance_model.profiling_database import ProfilingDataSource
 
     data_source = ProfilingDataSource(perf_db_path, device_profile=device_profile)
 
     if os.environ.get("TC_ENABLE_INTERPOLATION", "0") == "1":
-        from ..performance_model.perf_database.interpolating_data_source import (
+        from ..performance_model.profiling_database.interpolating_data_source import (
             InterpolatingDataSource,
         )
 

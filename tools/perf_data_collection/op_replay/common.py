@@ -16,7 +16,7 @@ DATA_DIR = (
     Path(__file__).resolve().parents[3]
     / "tensor_cast"
     / "performance_model"
-    / "perf_database"
+    / "profiling_database"
     / "data"
 )
 SUPPORTED_DEVICES = [
@@ -224,7 +224,7 @@ def build_standard_argparser(
             "Usage examples:\n"
             + "\n".join(f"  {item}" for item in usage_examples)
             + "\n\nParameter notes:\n"
-            + "  --device                Selects the device folder under perf_database/data.\n"
+            + "  --device                Selects the device folder under profiling_database/data.\n"
             + "  --vllm-ascend-version   Selects the version folder under {device}/vllm_ascend/.\n"
             + "  -h, --help              Show this help message and exit."
         ),
@@ -235,7 +235,7 @@ def build_standard_argparser(
         choices=SUPPORTED_DEVICES,
         help=(
             "Target device folder under "
-            "tensor_cast/performance_model/perf_database/data/{device}/"
+            "tensor_cast/performance_model/profiling_database/data/{device}/"
         ),
     )
     parser.add_argument(

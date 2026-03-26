@@ -56,8 +56,8 @@ class TestCommonModule:
         source = (OP_REPLAY_DIR / "common.py").read_text()
         ast.parse(source)
 
-    def test_data_dir_points_to_perf_database(self):
-        """Verify DATA_DIR resolves to the correct perf_database/data/ path."""
+    def test_data_dir_points_to_profiling_database(self):
+        """Verify DATA_DIR resolves to the correct profiling_database/data/ path."""
         source = (OP_REPLAY_DIR / "common.py").read_text()
         tree = ast.parse(source)
         for node in ast.walk(tree):
@@ -65,7 +65,7 @@ class TestCommonModule:
                 for target in node.targets:
                     if isinstance(target, ast.Name) and target.id == "DATA_DIR":
                         source_line = ast.get_source_segment(source, node)
-                        assert "perf_database" in source_line
+                        assert "profiling_database" in source_line
                         assert "data" in source_line
                         return
         pytest.fail("DATA_DIR assignment not found in common.py")

@@ -128,7 +128,7 @@ class DfcPassTestCase(unittest.TestCase):
             quantize_linear_action=QuantizeLinearAction.W8A8_STATIC,
             performance_model="profiling",
             profiling_database=(
-                "tensor_cast/performance_model/perf_database/data/"
+                "tensor_cast/performance_model/profiling_database/data/"
                 "ATLAS_800_A3_752T_128G_DIE/vllm_ascend/"
                 "vllm0.15.0_torch2.9.0_cann8.5"
             ),

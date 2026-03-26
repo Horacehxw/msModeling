@@ -3,7 +3,7 @@ Replay AscendQuantV2 cases from the performance database on Ascend NPU.
 
 Purpose:
   Read AscendQuantV2 rows from
-  perf_database/data/{device}/vllm_ascend/{version}/AscendQuantV2.csv,
+  profiling_database/data/{device}/vllm_ascend/{version}/AscendQuantV2.csv,
   rebuild the recorded tensor inputs, then execute
   torch_npu.npu_quantize() with the same tensor metadata layout as the
   profiled row.

@@ -3,7 +3,7 @@ Replay KvRmsNormRopeCache cases from the performance database on Ascend NPU.
 
 Purpose:
   Read KvRmsNormRopeCache rows from
-  perf_database/data/{device}/vllm_ascend/{version}/KvRmsNormRopeCache.csv,
+  profiling_database/data/{device}/vllm_ascend/{version}/KvRmsNormRopeCache.csv,
   rebuild the recorded tensor inputs, infer the required scalar arguments,
   then execute torch_npu.npu_kv_rmsnorm_rope_cache().
 

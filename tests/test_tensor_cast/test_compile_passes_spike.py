@@ -93,7 +93,7 @@ class MC2PassVerificationTest(unittest.TestCase):
 
         mapping_path = (
             Path(__file__).resolve().parents[2]
-            / "tensor_cast/performance_model/perf_database/data"
+            / "tensor_cast/performance_model/profiling_database/data"
             / "ATLAS_800_A3_752T_128G_DIE/vllm_ascend/v0.13.0/op_mapping.yaml"
         )
         with open(mapping_path) as f:

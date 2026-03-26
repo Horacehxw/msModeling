@@ -3,7 +3,7 @@ Run DispatchFFNCombine microbenchmark cases on Ascend NPU.
 
 Purpose:
   Read DispatchFFNCombine rows from
-  perf_database/data/{device}/vllm_ascend/{version}/DispatchFFNCombine.csv,
+  profiling_database/data/{device}/vllm_ascend/{version}/DispatchFFNCombine.csv,
   rebuild the recorded tensor inputs, then execute the exact microbench_api:
 
       torch.ops._C_ascend.dispatch_ffn_combine(...)

@@ -3,7 +3,7 @@ Replay QuantBatchMatmulV3 cases from the performance database on Ascend NPU.
 
 Purpose:
   Read QuantBatchMatmulV3 rows from
-  perf_database/data/{device}/vllm_ascend/{version}/QuantBatchMatmulV3.csv,
+  profiling_database/data/{device}/vllm_ascend/{version}/QuantBatchMatmulV3.csv,
   rebuild tensors from the recorded Input Shapes / Input Data Types /
   Input Formats, then execute torch_npu.npu_quant_matmul() with the same
   tensor metadata layout as the profiled row.

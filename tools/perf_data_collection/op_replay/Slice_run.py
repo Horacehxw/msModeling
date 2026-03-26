@@ -3,7 +3,7 @@ Replay Slice cases from the performance database on Ascend NPU.
 
 Purpose:
   Read Slice rows from
-  perf_database/data/{device}/vllm_ascend/{version}/Slice.csv,
+  profiling_database/data/{device}/vllm_ascend/{version}/Slice.csv,
   rebuild the recorded tensor inputs, then execute torch_npu.npu_slice().
 
 Notes:

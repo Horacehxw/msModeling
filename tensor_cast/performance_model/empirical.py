@@ -16,7 +16,7 @@ from ..device import DeviceProfile
 from .analytic import AnalyticPerformanceModel
 from .base import PerformanceModel
 from .op_invoke_info import OpInvokeInfo
-from .perf_database.data_source import DataSource
+from .profiling_database.data_source import DataSource
 
 logger = logging.getLogger(__name__)
 
