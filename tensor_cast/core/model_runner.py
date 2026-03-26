@@ -18,6 +18,7 @@ from ..layers.sampler import Sampler
 from ..performance_model.analytic import AnalyticPerformanceModel
 from ..performance_model.empirical import EmpiricalPerformanceModel
 from ..performance_model.memory_tracker import MemoryTracker
+from ..performance_model.profiling_database import ProfilingDataSource
 from ..performance_model.utils import bytes_of_tensor
 from ..runtime import Runtime
 from .input_generator import (
