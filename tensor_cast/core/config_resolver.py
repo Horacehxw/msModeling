@@ -5,7 +5,6 @@ Resolves and configures model settings for tensor cast operations.
 
 from ..core.user_config import UserInputConfig
 from ..layers.attention import AttentionTensorCast
-from ..layers.mla import MultiheadLatentAttentionTensorCast
 from ..layers.quant_linear import TensorCastQuantLinear
 from ..model_config import (
     MlaConfig,
@@ -14,12 +13,13 @@ from ..model_config import (
     ParallelConfig,
     QuantConfig,
 )
-from ..transformers.utils import (
-    AutoModelConfigLoader,
+from ..transformers.custom_model_registry import (
+    get_mla_module,
     get_mla_module_name,
     get_moe_config,
     get_mtp_block_module_name,
 )
+from ..transformers.utils import AutoModelConfigLoader
 
 
 class ConfigResolver:
@@ -148,7 +148,7 @@ class ConfigResolver:
         if mla_module_name is not None:
             mla_config = MlaConfig(
                 module_name=mla_module_name,
-                mla_cls=MultiheadLatentAttentionTensorCast,
+                mla_cls=get_mla_module(model_type),
             )
             self.model_config.mla_config = mla_config
 

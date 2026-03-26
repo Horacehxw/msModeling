@@ -7,13 +7,13 @@ import json
 import logging
 from collections import Counter
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import torch
-
 from overrides import override
 
 from ..device import DeviceProfile
+from .analytic import AnalyticPerformanceModel
 from .base import PerformanceModel
 from .op_invoke_info import OpInvokeInfo
 from .perf_database.data_source import DataSource
@@ -284,6 +284,14 @@ class EmpiricalPerformanceModel(PerformanceModel):
             (func_name, reason, tc_shapes, analytic_result.execution_time_s)
         )
         return analytic_result
+
+    @override
+    def get_classifiers(self) -> List[PerformanceModel.OpClassifier]:
+        """
+        Return classifiers from the fallback model so that breakdown reporting
+        still works when an op is handled by the fallback path.
+        """
+        return self.fallback_model.get_classifiers()
 
     def get_stats(self) -> dict:
         total = self._stats["hit"] + self._stats["miss"]

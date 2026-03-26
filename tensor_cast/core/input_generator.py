@@ -10,6 +10,7 @@ from typing import Any, List, Tuple
 import torch
 
 from ..layers.attention import AttentionMetadataTensorCast
+from ..layers.mla import DeepseekSparseAttention
 from ..layers.sampler import SamplingMetadata
 from ..performance_model import bytes_of_tensor
 from ..transformers.utils import get_attention_quant_config, logger
@@ -137,6 +138,10 @@ def generate_inputs(model, requests: List[RequestInfo], block_size: int = 128):
         "kv_cache_per_token": kv_cache_per_token,
         "sampling_metadata": sampling_metadata,
     }
+
+    dsa_indexer_cache = get_dsa_indexer_cache_info(model, num_blocks, block_size)
+    kwargs.update(dsa_indexer_cache)
+
     if model.model_config.hf_config.model_type == "qwen3_next":
         kwargs["cache_position"] = torch.arange(
             0, num_tokens, dtype=torch.long, device="cpu"
@@ -195,13 +200,9 @@ def generate_image_inputs(
     hf_config = model.model_config.hf_config
     vision_config = hf_config.vision_config
     patch_size = vision_config.patch_size
-    merge_size = (
-        vision_config.spatial_merge_size if vision_config.spatial_merge_size else 2
-    )
+    merge_size = vision_config.spatial_merge_size or 2
     # Rescales the image
-    temporal_patch_size = (
-        vision_config.temporal_patch_size if vision_config.temporal_patch_size else 2
-    )
+    temporal_patch_size = vision_config.temporal_patch_size or 2
     resized_height, resized_width = resize_image(
         hf_config.model_type,
         image_height,
@@ -217,7 +218,7 @@ def generate_image_inputs(
     image_grid_thw = torch.tensor([[grid_t, grid_h, grid_w]], dtype=torch.long).expand(
         image_batch_size, 3
     )
-    channel = vision_config.in_channels if vision_config.in_channels else 3
+    channel = vision_config.in_channels or 3
     hidden_dim = channel * temporal_patch_size * patch_size * patch_size
     tokens = grid_t * grid_h * grid_w
     pixel_values = torch.empty(
@@ -340,6 +341,36 @@ def get_kv_cache_info(model, num_blocks, block_size):
         )
 
     return kv_cache_by_layers, kv_cache_per_token
+
+
+def get_dsa_indexer_cache_info(model, num_blocks, block_size):
+    model_config = model.model_config
+    if model_config.mla_config is None or not issubclass(
+        model_config.mla_config.mla_cls, DeepseekSparseAttention
+    ):
+        return {}
+
+    indexer_cache_by_layers = {}
+    indexer_cache_per_token = 0
+    for i in range(model.num_hidden_layers):
+        cache_dtype = model_config.dtype
+        indexer_cache_by_layers[i] = torch.empty(
+            [
+                num_blocks,
+                block_size,
+                model.text_config.index_head_dim,
+            ],
+            dtype=cache_dtype,
+            device="meta",
+        )
+        indexer_cache_per_token += bytes_of_tensor(indexer_cache_by_layers[i]) / (
+            num_blocks * block_size
+        )
+
+    return {
+        "indexer_cache_by_layers": indexer_cache_by_layers,
+        "indexer_cache_per_token": indexer_cache_per_token,
+    }
 
 
 def generate_inputs_varlen(model, requests: List[RequestInfo], block_size):

@@ -11,9 +11,7 @@ from torch._inductor.freezing import freeze
 from torch._inductor.fx_passes.post_grad import decompose_auto_functionalized
 
 from .. import config
-
 from . import patterns
-
 from .constant_folding import fold_meta_constants
 from .freezing_passes.dispatch_ffn_combine_pass import DispatchFFNCombinePass
 from .freezing_passes import patterns as freezing_patterns

@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from unittest.mock import Mock
 
 import torch
 from parameterized import parameterized
@@ -9,8 +10,14 @@ from tensor_cast.core.model_builder import build_model
 from tensor_cast.core.user_config import UserInputConfig
 from tensor_cast.device import TEST_DEVICE
 from tensor_cast.performance_model.analytic import AnalyticPerformanceModel
+from tensor_cast.performance_model.base import PerformanceModel
 from tensor_cast.performance_model.empirical import EmpiricalPerformanceModel
 from tensor_cast.performance_model.memory_tracker import MemoryTracker
+from tensor_cast.performance_model.profiling_database.data_source import (
+    DataSourcePerformanceModel,
+    QueryResult,
+    QuerySource,
+)
 from tensor_cast.runtime import Runtime
 from .test_common import (
     assert_close,
@@ -22,6 +29,12 @@ from .test_common import (
 
 class PerfAnalysisTestCase(unittest.TestCase):
     def setUp(self):
+        self.data_source = Mock(spec=DataSourcePerformanceModel)
+        self.fallback_model = Mock(spec=PerformanceModel)
+        # Configure fallback to return a valid Result for M5 latency tracking
+        fallback_result = Mock()
+        fallback_result.execution_time_s = 1e-6
+        self.fallback_model.process_op.return_value = fallback_result
         torch.compiler.reset()
 
     def _execute_attention_and_get_base_data(self, attention_args):
@@ -306,6 +319,7 @@ class PerfAnalysisTestCase(unittest.TestCase):
         query_len = 3500
         qk_nope_head_dim = q_head_dim - qk_rope_head_dim
         total_tokens = B * query_len
+        index_topk = 1
         v_head_dim = 128
 
         q = torch.randn(total_tokens, num_heads, q_head_dim, device="meta", dtype=dtype)
@@ -346,6 +360,7 @@ class PerfAnalysisTestCase(unittest.TestCase):
                     W_UV,
                     kv_b_proj,
                     v_head_dim,
+                    index_topk,
                 )
             )
         )
@@ -359,6 +374,7 @@ class PerfAnalysisTestCase(unittest.TestCase):
         query_len = 3500
         qk_nope_head_dim = q_head_dim - qk_rope_head_dim
         total_tokens = B * query_len
+        index_topk = 1
         v_head_dim = 128
 
         q = torch.randn(total_tokens, num_heads, q_head_dim, device="meta", dtype=dtype)
@@ -399,6 +415,7 @@ class PerfAnalysisTestCase(unittest.TestCase):
                     W_UV,
                     kv_b_proj,
                     v_head_dim,
+                    index_topk,
                 )
             )
         )
@@ -412,6 +429,7 @@ class PerfAnalysisTestCase(unittest.TestCase):
         query_len = 1
         qk_nope_head_dim = q_head_dim - qk_rope_head_dim
         total_tokens = B * query_len
+        index_topk = 1
         v_head_dim = 128
 
         q = torch.randn(total_tokens, num_heads, q_head_dim, device="meta", dtype=dtype)
@@ -451,6 +469,7 @@ class PerfAnalysisTestCase(unittest.TestCase):
                     W_UK_T,
                     W_UV,
                     kv_b_proj,
+                    index_topk,
                     v_head_dim,
                 )
             )
@@ -532,7 +551,12 @@ class PerfAnalysisTestCase(unittest.TestCase):
             )
             self.assertEqual(outputs.shape, (1, num_tokens, model.vocab_size))
         result = runtime.table_averages()
-        self.assertIn("tensor_cast.permute_tokens", result)
+        # DFC fusion replaces permute_tokens with dispatch_ffn_combine when compiled
+        self.assertTrue(
+            "tensor_cast.permute_tokens" in result
+            or "tensor_cast.dispatch_ffn_combine" in result,
+            "Expected permute_tokens or dispatch_ffn_combine in table output",
+        )
         self.assertIn("tensor_cast.concat_and_cache_mla", result)
         self.assertIn("tensor_cast.multihead_latent_attention", result)
 
@@ -603,6 +627,33 @@ class PerfAnalysisTestCase(unittest.TestCase):
             self.assertIn("aten.randn", content)
             self.assertIn("aten.add", content)
             self.assertIn("aten.mul", content)
+
+    def test_model_cost_with_noop_self_copy(self):
+        x = torch.randn([16], device="meta")
+        device_profile = TEST_DEVICE
+        perf_model = AnalyticPerformanceModel(device_profile)
+        with (
+            Runtime(perf_model, device_profile) as runtime,
+            torch.no_grad(),
+        ):
+            torch.ops.aten.copy_.default(x, x)
+        self.assertEqual(len(runtime.event_list), 1)
+        self.assertEqual(runtime.total_execution_time_s()[perf_model.name], 0)
+        self.assertIn("aten.copy_.default", runtime.table_averages())
+
+    def test_model_cost_with_non_noop_copy(self):
+        dst = torch.randn([16], device="meta")
+        src = torch.randn([16], device="meta")
+        device_profile = TEST_DEVICE
+        perf_model = AnalyticPerformanceModel(device_profile)
+        with (
+            Runtime(perf_model, device_profile) as runtime,
+            torch.no_grad(),
+        ):
+            torch.ops.aten.copy_.default(dst, src)
+        self.assertEqual(len(runtime.event_list), 1)
+        self.assertGreater(runtime.total_execution_time_s()[perf_model.name], 0)
+        self.assertIn("aten.copy_.default", runtime.table_averages())
 
     def test_model_cost_with_view(self):
         def func(x):
@@ -835,7 +886,18 @@ class PerfAnalysisTestCase(unittest.TestCase):
         x = torch.randn([100, 100], device="meta")
         y = torch.randn([100, 100], device="meta")
         device_profile = TEST_DEVICE
-        perf_model = EmpiricalPerformanceModel(device_profile)
+
+        # Configure mock data source to return a result
+        query_result = Mock(spec=QueryResult)
+        query_result.latency_us = 100.0
+        query_result.confidence = 0.95
+        query_result.source = QuerySource.MEASURED
+        query_result.details = {"kernel_type": "MatMulV2"}
+        self.data_source.lookup.return_value = query_result
+
+        perf_model = EmpiricalPerformanceModel(
+            device_profile, self.data_source, self.fallback_model
+        )
         with (
             Runtime(perf_model, device_profile) as runtime,
             torch.no_grad(),
@@ -852,7 +914,18 @@ class PerfAnalysisTestCase(unittest.TestCase):
 
         x = torch.randn([100], device="meta")
         device_profile = TEST_DEVICE
-        perf_model = EmpiricalPerformanceModel(device_profile)
+
+        # Configure mock data source to return None (cache miss) to use fallback
+        self.data_source.lookup.return_value = None
+
+        # Configure fallback model to return a result with execution_time_s = 0
+        fallback_result = Mock()
+        fallback_result.execution_time_s = 0
+        self.fallback_model.process_op.return_value = fallback_result
+
+        perf_model = EmpiricalPerformanceModel(
+            device_profile, self.data_source, self.fallback_model
+        )
         with (
             Runtime(perf_model, device_profile) as runtime,
             torch.no_grad(),
@@ -871,7 +944,18 @@ class PerfAnalysisTestCase(unittest.TestCase):
         x = torch.randn([100, 100], device="meta")
         scale = torch.tensor(0.1, device="meta")
         device_profile = TEST_DEVICE
-        perf_model = EmpiricalPerformanceModel(device_profile)
+
+        # Configure mock data source to return a result
+        query_result = Mock(spec=QueryResult)
+        query_result.latency_us = 50.0
+        query_result.confidence = 0.95
+        query_result.source = QuerySource.MEASURED
+        query_result.details = {"kernel_type": "AscendQuantV2"}
+        self.data_source.lookup.return_value = query_result
+
+        perf_model = EmpiricalPerformanceModel(
+            device_profile, self.data_source, self.fallback_model
+        )
         with (
             Runtime(perf_model, device_profile) as runtime,
             torch.no_grad(),
