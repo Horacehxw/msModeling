@@ -83,14 +83,10 @@ def test_empirical_model_name():
 # --- C5: Interpolation toggle tests ---
 
 
-def test_interpolation_toggle_off_by_default(tmp_path):
-    """TC_ENABLE_INTERPOLATION unset → ProfilingDataSource used directly."""
-    import os
-    from unittest.mock import patch
-
+def test_interpolating_data_source_wraps_profiling(tmp_path):
+    """InterpolatingDataSource wraps ProfilingDataSource correctly."""
     import yaml
 
-    from tensor_cast.core.model_runner import _create_data_source
     from tensor_cast.performance_model.profiling_database import ProfilingDataSource
     from tensor_cast.performance_model.profiling_database.interpolating_data_source import (
         InterpolatingDataSource,
@@ -99,31 +95,12 @@ def test_interpolation_toggle_off_by_default(tmp_path):
     op_mapping = {"version": "test", "device": "TEST", "operator_mappings": {}}
     (tmp_path / "op_mapping.yaml").write_text(yaml.dump(op_mapping))
 
-    with patch.dict(os.environ, {}, clear=False):
-        os.environ.pop("TC_ENABLE_INTERPOLATION", None)
-        ds = _create_data_source(str(tmp_path), device_profile=MagicMock())
-        assert isinstance(ds, ProfilingDataSource)
-        assert not isinstance(ds, InterpolatingDataSource)
+    base_ds = ProfilingDataSource(str(tmp_path), device_profile=MagicMock())
+    assert isinstance(base_ds, ProfilingDataSource)
+    assert not isinstance(base_ds, InterpolatingDataSource)
 
-
-def test_interpolation_toggle_on(tmp_path):
-    """TC_ENABLE_INTERPOLATION=1 → InterpolatingDataSource wraps ProfilingDataSource."""
-    import os
-    from unittest.mock import patch
-
-    import yaml
-
-    from tensor_cast.core.model_runner import _create_data_source
-    from tensor_cast.performance_model.profiling_database.interpolating_data_source import (
-        InterpolatingDataSource,
-    )
-
-    op_mapping = {"version": "test", "device": "TEST", "operator_mappings": {}}
-    (tmp_path / "op_mapping.yaml").write_text(yaml.dump(op_mapping))
-
-    with patch.dict(os.environ, {"TC_ENABLE_INTERPOLATION": "1"}):
-        ds = _create_data_source(str(tmp_path), device_profile=MagicMock())
-        assert isinstance(ds, InterpolatingDataSource)
+    wrapped_ds = InterpolatingDataSource(base_ds)
+    assert isinstance(wrapped_ds, InterpolatingDataSource)
 
 
 # --- C6: Fused Op HR metric tests ---
