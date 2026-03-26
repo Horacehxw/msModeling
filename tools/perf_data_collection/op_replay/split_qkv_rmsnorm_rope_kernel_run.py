@@ -34,9 +34,10 @@ from common import (
     build_input_tensor,
     build_standard_argparser,
     ensure_npu_available,
+    get_replay_repeat_count,
     get_runtime_modules,
     get_target_data_dir,
-    iter_csv_rows,
+    iter_repeated_csv_rows,
     parse_list_field,
     parse_shape,
 )
@@ -227,6 +228,7 @@ def run_row(csv_path, row_index: int, row: dict[str, str]) -> None:
 
 def main() -> None:
     args = build_argparser().parse_args()
+    repeat_count = get_replay_repeat_count(args.repeat_count)
     ensure_npu_available()
     ensure_vllm_ascend_available()
 
@@ -241,9 +243,10 @@ def main() -> None:
         )
 
     total_rows = 0
-    for csv_path, row_index, row in iter_csv_rows(
+    for csv_path, row_index, row in iter_repeated_csv_rows(
         target_data_dir,
         "split_qkv_rmsnorm_rope_kernel.csv",
+        repeat_count,
     ):
         run_row(csv_path, row_index, row)
         total_rows += 1

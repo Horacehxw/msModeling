@@ -30,6 +30,7 @@ from common import (
     build_input_tensor,
     build_standard_argparser,
     ensure_npu_available,
+    get_replay_repeat_count,
     get_runtime_modules,
     get_target_data_dir,
     iter_csv_rows,
@@ -67,10 +68,11 @@ ACTUAL_SEQ_LENGTHS_KV_INDEX = 6
 BLOCK_TABLE_INDEX = 14
 QUERY_ROPE_INDEX = 24
 KEY_ROPE_INDEX = 25
-REPLAY_REPEAT_COUNT = 10
+REPLAY_REPEAT_COUNT = 30
 REPLAY_REPEAT_COUNT_ENV = "MSMODELING_FIA_REPLAY_REPEAT_COUNT"
 RUNTIME_ACTUAL_SEQ_LENGTHS_VALUES = "Runtime actual_seq_lengths_values"
 RUNTIME_ACTUAL_SEQ_LENGTHS_KV_VALUES = "Runtime actual_seq_lengths_kv_values"
+RUNTIME_BLOCK_TABLE_VALID_BLOCKS = "Runtime block_table_valid_blocks"
 RUNTIME_NUM_HEADS = "Runtime num_heads"
 RUNTIME_NUM_KEY_VALUE_HEADS = "Runtime num_key_value_heads"
 RUNTIME_SPARSE_MODE = "Runtime sparse_mode"
@@ -302,12 +304,20 @@ def infer_seq_lens_kv(
 
     total_blocks, block_size = infer_kv_block_shape(key_shape, block_table_shape)
     if total_blocks is not None and block_size is not None:
-        # For paged attention the first key/value dimension is the size of the
-        # whole KV cache pool, not the effective context blocks consumed by the
-        # current batch. The CSV does not record per-request KV lengths, only the
-        # shape of `actual_seq_lengths_kv` and `block_table`. Use a minimal valid
-        # one-block context for each request so the op receives legal metadata
-        # strictly matching the recorded tensor shapes.
+        # Prefer runtime-valid block counts when available. They are still a
+        # lossy summary, but closer to the true paged decode state than the
+        # previous "always one block" fallback.
+        runtime_valid_blocks = parse_runtime_int_list(
+            runtime_row.get(RUNTIME_BLOCK_TABLE_VALID_BLOCKS, "")
+        )
+        if runtime_valid_blocks is not None:
+            if len(runtime_valid_blocks) != batch_size:
+                raise ValueError(
+                    "Runtime block_table_valid_blocks length does not match "
+                    f"batch size: values={runtime_valid_blocks}, batch_size={batch_size}"
+                )
+            return [max(1, valid_blocks) * block_size for valid_blocks in runtime_valid_blocks]
+
         _, max_blocks_per_seq = block_table_shape
         if max_blocks_per_seq < 1:
             raise ValueError(f"Invalid block_table shape: {block_table_shape}")
@@ -330,6 +340,7 @@ def build_block_table_tensor(
     block_table_shape: tuple[int, ...] | None,
     seq_lens_kv: list[int] | None,
     key_shape: tuple[int, ...],
+    runtime_row: dict[str, str],
 ):
     if block_table_shape is None:
         return None
@@ -342,10 +353,21 @@ def build_block_table_tensor(
     if seq_lens_kv is None or len(seq_lens_kv) != batch_size:
         raise ValueError("block_table requires actual_seq_lengths_kv with matching batch size")
 
+    runtime_valid_blocks = parse_runtime_int_list(runtime_row.get(RUNTIME_BLOCK_TABLE_VALID_BLOCKS, ""))
+    if runtime_valid_blocks is not None and len(runtime_valid_blocks) != batch_size:
+        raise ValueError(
+            "Runtime block_table_valid_blocks length does not match block_table "
+            f"batch size: values={runtime_valid_blocks}, shape={block_table_shape}"
+        )
+
+    # Keep unused slots in-range. FIA should consume only the valid prefix, but
+    # a safe sentinel avoids accidental backend faults on trailing entries.
     block_table = runtime_torch.zeros(block_table_shape, dtype=runtime_torch.int32)
     cursor = 0
     for row_index, seq_len in enumerate(seq_lens_kv):
         needed_blocks = max(1, math.ceil(seq_len / block_size))
+        if runtime_valid_blocks is not None:
+            needed_blocks = max(1, runtime_valid_blocks[row_index])
         if needed_blocks > max_blocks_per_seq:
             raise ValueError(
                 f"Sequence length {seq_len} needs {needed_blocks} blocks, "
@@ -426,6 +448,7 @@ def build_row_case(row: dict[str, str]):
         input_shapes[BLOCK_TABLE_INDEX],
         seq_lens_kv,
         input_shapes[KEY_INDEX],
+        row,
     )
 
     query_rope = None
@@ -473,14 +496,16 @@ def build_row_case(row: dict[str, str]):
 
 def get_repeat_count(args_repeat_count: int | None) -> int:
     if args_repeat_count is not None:
+        if args_repeat_count <= 0:
+            raise ValueError(f"--repeat-count must be positive, got {args_repeat_count}")
         return args_repeat_count
     raw_env = os.environ.get(REPLAY_REPEAT_COUNT_ENV, "").strip()
-    if not raw_env:
-        return REPLAY_REPEAT_COUNT
-    repeat_count = int(raw_env)
-    if repeat_count <= 0:
-        raise ValueError(f"{REPLAY_REPEAT_COUNT_ENV} must be positive, got {raw_env!r}")
-    return repeat_count
+    if raw_env:
+        repeat_count = int(raw_env)
+        if repeat_count <= 0:
+            raise ValueError(f"{REPLAY_REPEAT_COUNT_ENV} must be positive, got {raw_env!r}")
+        return repeat_count
+    return get_replay_repeat_count(None)
 
 
 def build_argparser():
@@ -500,14 +525,6 @@ def build_argparser():
             "--device TEST_DEVICE --vllm-ascend-version 0.9.2",
         ],
         version_help="vLLM-Ascend version, e.g. 0.13.0.",
-    )
-    parser.add_argument(
-        "--repeat-count",
-        type=int,
-        help=(
-            "Repeat each replay row this many times. Defaults to "
-            f"{REPLAY_REPEAT_COUNT} or ${REPLAY_REPEAT_COUNT_ENV} when set."
-        ),
     )
     return parser
 
