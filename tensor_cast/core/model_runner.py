@@ -243,7 +243,7 @@ class ModelRunner:
             breakdowns=runtime.get_breakdowns(),
         )
 
-    def get_inputs_num_bytes(self, requests: List[Request]) -> int:  # noqa: F821
+    def get_inputs_num_bytes(self, requests: List[RequestInfo]) -> int:
         return get_inputs_num_bytes(self.model, requests, self.user_input.block_size)
 
     def get_kv_cache_num_bytes(self, num_tokens: int) -> int:
