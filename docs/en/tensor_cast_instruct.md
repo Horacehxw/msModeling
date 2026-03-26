@@ -1,4 +1,5 @@
 ## Introduction
+
 TensorCast is a performance simulation and analysis framework for PyTorch programs. It empowers developers and researchers to predict the performance of their neural network models on specific hardware configurations without needing access to the physical machine.
 
 At its core, TensorCast operates as a "virtual machine" or a runtime simulator. Instead of executing computations on a live accelerator, it intercepts a PyTorch program's computational graph and simulates its execution on a user-defined MachineConfig. This configuration specifies the target hardware's characteristics, such as theoretical compute power (TFLOPS), memory bandwidths, cache hierarchies, and interconnect speeds. In order to accurately estimate the optimal performance of the model on the given HW, TensorCast provides a model optimization pipeline including automatic model sharding, quantization and FX-graph optimization converting the source program into an optimal one before conducting the analysis.
@@ -20,19 +21,24 @@ By running a model on this "virtual" hardware, TensorCast provides detailed perf
 The final output includes both comprehensive summary tables and detailed Chrome Trace files, allowing for deep visualization and identification of performance bottlenecks.
 
 ## Supported Accelerators
+
 We support most of the AI accelerator devices with simple configurations. We have built-in support for Ascend ATLAS-family accelerators in `device.py` and also provide more device examples under `device_profile_examples` that can be copied into `device_profiles` folder for experiments. Note that these are examples for reference only - we do not guarantee their correctness.
 
 ### Custom device types
+
 You may also define your own device types in a Python file and drop it under `device_profiles` folder. TensorCast will load them automatically. Refer to `device.py` for examples how to define a new device.
 
 ## How to use
+
 ### Supported python versions
+
 3.10+
 
 > [!Warning]
 > If you are using Windows, note that PyTorch 2.10 may not run properly on your system. For a solution, please refer to [this issue](https://github.com/pytorch/pytorch/issues/166628). If you have not yet installed PyTorch, for optimal compatibility, we strongly recommend using version 2.8 or earlier to ensure the program functions correctly.
 
 ### Install required packages
+
 ```bash
 git clone https://gitcode.com/Ascend/msmodeling.git -b develop
 cd msmodeling
@@ -40,6 +46,7 @@ pip install -r requirements.txt
 ```
 
 ### Run text generation with given query length
+
 We provide a `text_generate.py` command line interface to simulate the text generation. The script supports text generation with a batch of queries with the same input length and optionally same context length. The table summary of op performance breakdown is provided by default. An option is also provided to dump the chrome trace.
 
 Its general usage is shown below:
@@ -69,8 +76,8 @@ explicitly by the user when needed. The current intended usage is prefill only:
 the original profiling setup does not enable FlashCommV1 for decode, so decode
 alignment should be validated without `--enable-flashcomm-v1`.
 
-
 ### Run video generation inference for diffusion models
+
 We provide a `video_generate.py` command line interface to simulate the forward pass and performance of diffusion transformer models. The script supports simulating the inference process of video generation models (e.g., Stable Video Diffusion-like architectures) with configurable input dimensions, sampling steps, and parallelism settings. A detailed table summary of operator performance breakdown is provided by default. An option is also provided to dump the performance timeline as a Chrome Trace file.
 
 Its general usage is shown below:
@@ -88,8 +95,8 @@ Run a simulated diffusion transformer forward and dump perf stats.
 ```
 Run `python -m cli.inference.video_generate --help` for details.
 
-
 #### External Shared Experts & Redundant Experts Implementation
+
 The following outlines the implementation logic for External Shared Experts and Redundant Experts.
 
 1. Redundant Experts Only:
@@ -100,10 +107,11 @@ Devices are allocated between external shared experts and routing experts at a r
 For example, if `world_size` is 64, `top_k` is 8, and number of routing experts is 256, 8 devices are assigned to host external shared experts.
 The remaining 56 devices are used to distribute 256 routing experts. 32 devices host 5 routing experts each. 24 devices host 4 routing experts and 1 redundant expert.
 
-3. Both External Shared Experts & Redundant Experts Enabled: 
+3. Both External Shared Experts & Redundant Experts Enabled:
 The allocation logic is identical to the "External Shared Experts Only" mode, with one addition: If no redundant experts are needed to pad routing experts (i.e., routing experts are evenly distributed across devices), each device hosting routing experts will host an additional redundant expert.
 
 #### Run Prefill
+
 To run a prefill of Qwen3-32B with two requests with 3500-token input length each on A2. You can run the following command:
 ```bash
 python -m cli.inference.text_generate Qwen/Qwen3-32B --num-queries 2 --query-length 3500 --device TEST_DEVICE
@@ -114,12 +122,14 @@ python -m cli.inference.text_generate Qwen/Qwen3-32B --num-queries 2 --query-len
 ```
 
 #### Run Decode
+
 Running decode is similar by tweaking the input length and context length. Usually, the input length is 1.
 ```bash
 python -m cli.inference.text_generate Qwen/Qwen3-32B --num-queries 10 --query-length 1 --context-length 4500 --device TEST_DEVICE --quantize-linear-action W8A8_STATIC
 ```
 
 #### Run prefill profiling with FlashCommV1
+
 If you want to study FlashCommV1 behavior in compile mode, enable it explicitly
 on the legacy script entrypoint for prefill workloads. Decode profiling should
 keep FlashCommV1 disabled to stay aligned with the original profiling setup:
@@ -133,6 +143,7 @@ python3.10 -m tensor_cast.scripts.text_generate Qwen/Qwen3-32B \
 ```
 
 ## TODO List
+
 - [X] Qwen3-32B: op perf model, memory allocation, TP, W8A8 (dynamic quant), interconnect modeling
 - [X] Model: Add more model support (make them compilable): kimi-k2, DSv3-671B, Qwen3-235B, GLM-4.5
 - [ ] Model: Support model auto sharding (DP/TP/EP/CP/SP)
@@ -159,10 +170,13 @@ python3.10 -m tensor_cast.scripts.text_generate Qwen/Qwen3-32B \
 - [X] Runtime: Memory consumption estimation for ops.
 
 ## Contributions
+
 ### Installation
+
 `pip install -r requirements.txt`
 
 ### Coding style
+
 Use `lintrunner` to make sure the coding style aligns:
 ```bash
 pip install lintrunner
@@ -173,6 +187,7 @@ lintrunner -a  # run every time before code check-in: check and apply necessary 
 Fix the remaining lint issues reported by `lintrunner`.
 
 ### Unit tests
+
 ```bash
 pip install -r requirements.txt
 cd /path/to/msmodeling
