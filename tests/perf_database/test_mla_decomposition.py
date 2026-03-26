@@ -1172,21 +1172,21 @@ class TestDecomposeMlapo:
     weight=(out_features, in_features), shape[1]=hidden_size, which is wrong.
     """
 
-    def test_returns_4_specs(self):
+    def test_returns_3_specs(self):
+        """NPU fuses q_a_proj + kv_a_proj into fused_qkv_a_proj → 3 specs."""
         args = _make_mlapo_args()
         op = _make_op_info(torch.ops.tensor_cast.mlapo.default, args)
         specs = _decompose_mlapo(op, {})
         assert specs is not None
-        assert len(specs) == 4
+        assert len(specs) == 3
 
     def test_kernel_types(self):
         args = _make_mlapo_args()
         op = _make_op_info(torch.ops.tensor_cast.mlapo.default, args)
         specs = _decompose_mlapo(op, {})
-        assert specs[0].kernel_type == "MatMulV2"
-        assert specs[1].kernel_type == "MatMulV2"
-        assert specs[2].kernel_type == "MatMulV2"
-        assert specs[3].kernel_type == "KvRmsNormRopeCache"
+        assert specs[0].kernel_type == "MatMulV2"       # fused_qkv_a_proj
+        assert specs[1].kernel_type == "MatMulV2"       # q_b_proj
+        assert specs[2].kernel_type == "KvRmsNormRopeCache"
 
     def test_q_lora_rank_from_out_features(self):
         """q_compressed @ q_b_proj: activation shape must use q_lora_rank (shape[0]),
@@ -1208,29 +1208,18 @@ class TestDecomposeMlapo:
         )
         op = _make_op_info(torch.ops.tensor_cast.mlapo.default, args)
         specs = _decompose_mlapo(op, {})
-        # Op4: KvRmsNormRopeCache → input_shapes[0] = (num_tokens, kv_proj_dim)
-        # Bug would produce (136, 5120) instead of (136, 576)
-        assert specs[3].input_shapes[0] == (136, 576)
+        # KvRmsNormRopeCache is now specs[2] (was [3] before fused_qkv_a_proj merge)
+        assert specs[2].input_shapes[0] == (136, 576)
 
-    def test_q_a_proj_full_weight_shape_passed(self):
-        """Op1: hidden @ q_a_proj passes full weight shape (q_lora_rank, hidden_size)."""
+    def test_fused_qkv_a_proj_shape(self):
+        """Op1: hidden @ fused_qkv_a_proj with N = q_lora_rank + kv_proj_dim."""
         args = _make_mlapo_args(
-            num_tokens=100, hidden_size=5120, q_lora_rank=1536
+            num_tokens=100, hidden_size=5120, q_lora_rank=1536, kv_proj_dim=576
         )
         op = _make_op_info(torch.ops.tensor_cast.mlapo.default, args)
         specs = _decompose_mlapo(op, {})
-        # Op1: (num_tokens, hidden_size) @ q_a_proj(q_lora_rank, hidden_size)
-        assert specs[0].input_shapes == [(100, 5120), (1536, 5120)]
-
-    def test_kv_a_proj_full_weight_shape_passed(self):
-        """Op3: hidden @ kv_a_proj passes full weight shape (kv_proj_dim, hidden_size)."""
-        args = _make_mlapo_args(
-            num_tokens=100, hidden_size=5120, kv_proj_dim=576
-        )
-        op = _make_op_info(torch.ops.tensor_cast.mlapo.default, args)
-        specs = _decompose_mlapo(op, {})
-        # Op3: (num_tokens, hidden_size) @ kv_a_proj(kv_proj_dim, hidden_size)
-        assert specs[2].input_shapes == [(100, 5120), (576, 5120)]
+        # Fused: (num_tokens, hidden_size) @ (q_lora_rank+kv_proj_dim, hidden_size)
+        assert specs[0].input_shapes == [(100, 5120), (2112, 5120)]
 
     def test_insufficient_args_returns_none(self):
         op = _make_op_info(
@@ -1249,17 +1238,17 @@ class TestDecomposeMlapo:
 class TestDecomposeMlapoQuant:
     """Tests for _decompose_mlapo_quant weight dimension direction (bugfix 2618b0b)."""
 
-    def test_returns_4_specs_with_quant_kernel(self):
+    def test_returns_3_specs_with_quant_kernel(self):
+        """NPU fuses q_a_proj + kv_a_proj into fused_qkv_a_proj → 3 specs."""
         args = _make_mlapo_args()
         op = _make_op_info(torch.ops.tensor_cast.mlapo_quant.default, args)
         specs = _decompose_mlapo_quant(op, {})
         assert specs is not None
-        assert len(specs) == 4
+        assert len(specs) == 3
         # Quant variant uses QuantBatchMatmulV3 for projections
-        assert specs[0].kernel_type == "QuantBatchMatmulV3"
-        assert specs[1].kernel_type == "QuantBatchMatmulV3"
-        assert specs[2].kernel_type == "QuantBatchMatmulV3"
-        assert specs[3].kernel_type == "KvRmsNormRopeCache"
+        assert specs[0].kernel_type == "QuantBatchMatmulV3"  # fused_qkv_a_proj
+        assert specs[1].kernel_type == "QuantBatchMatmulV3"  # q_b_proj
+        assert specs[2].kernel_type == "KvRmsNormRopeCache"
 
     def test_q_lora_rank_from_out_features_quant(self):
         """Same bugfix regression: q_lora_rank must come from shape[0]."""
@@ -1278,8 +1267,8 @@ class TestDecomposeMlapoQuant:
         )
         op = _make_op_info(torch.ops.tensor_cast.mlapo_quant.default, args)
         specs = _decompose_mlapo_quant(op, {})
-        # Bug would produce (136, 5120) instead of (136, 576)
-        assert specs[3].input_shapes[0] == (136, 576)
+        # KvRmsNormRopeCache is now specs[2] (was [3] before fused merge)
+        assert specs[2].input_shapes[0] == (136, 576)
 
     def test_insufficient_args_returns_none(self):
         """mlapo_quant requires len(args) >= 20."""
