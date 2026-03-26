@@ -10,14 +10,12 @@ from tensor_cast.performance_model.profiling_database.interpolating_data_source 
     InterpolatingDataSource,
 )
 from tensor_cast.performance_model.profiling_database.profiling_data_source import (
-    COMPOSITE_DECOMPOSERS,
-    ProfilingDataSource,
-    SubKernelSpec,
     _decompose_mla,
     _decompose_mla_quant,
     _decompose_mlapo,
     _decompose_mlapo_quant,
     _is_decode_mla,
+    ProfilingDataSource,
 )
 
 
@@ -116,7 +114,6 @@ def _make_mla_prefill_args(
         kv_b_proj,
         v_head_dim,
     ]
-
 
 
 # ---- Unit tests: decomposition functions ----
@@ -237,7 +234,6 @@ class TestDecomposeMLAQuant:
         assert len(specs) == 2
         assert specs[0].kernel_type == "MatMulV2"
         assert specs[1].kernel_type == "FusedInferAttentionScore"
-
 
 
 # ---- Integration tests: composite lookup with CSV data ----
@@ -453,10 +449,14 @@ _EXTRAP_FIA_ROW_COMMON = (
     ',"""1,4,128;""","DT_BF16;FLOAT","ND;ND"'
 )
 EXTRAP_FIA_CSV = (
-    _EXTRAP_FIA_HEADER + "\n"
-    + _EXTRAP_FIA_ROW_COMMON + ",100.0,1000\n"
-    + _EXTRAP_FIA_ROW_COMMON + ",400.0,2000\n"
-    + _EXTRAP_FIA_ROW_COMMON + ",1600.0,4000"
+    _EXTRAP_FIA_HEADER
+    + "\n"
+    + _EXTRAP_FIA_ROW_COMMON
+    + ",100.0,1000\n"
+    + _EXTRAP_FIA_ROW_COMMON
+    + ",400.0,2000\n"
+    + _EXTRAP_FIA_ROW_COMMON
+    + ",1600.0,4000"
 )
 
 
@@ -706,9 +706,9 @@ class TestMonotonicity:
             latencies.append(result.latency_us)
         # Verify monotonically increasing
         for i in range(len(latencies) - 1):
-            assert (
-                latencies[i] < latencies[i + 1]
-            ), f"Not monotonic: seq[{i}]={latencies[i]} >= seq[{i+1}]={latencies[i+1]}"
+            assert latencies[i] < latencies[i + 1], (
+                f"Not monotonic: seq[{i}]={latencies[i]} >= seq[{i + 1}]={latencies[i + 1]}"
+            )
 
     def test_interpolation_within_bracket_bounds(self, extrap_data_dir):
         """Interpolated value must be between bracket endpoints (no overshoot)."""
@@ -814,9 +814,9 @@ class TestSqrtTransformAccuracy:
         assert result is not None
         # Sqrt result should differ from naive linear midpoint (250)
         linear_midpoint = 250.0
-        assert (
-            abs(result.latency_us - linear_midpoint) > 5.0
-        ), "Sqrt transform should produce different result than linear"
+        assert abs(result.latency_us - linear_midpoint) > 5.0, (
+            "Sqrt transform should produce different result than linear"
+        )
         # Should be within bracket bounds
         assert 100.0 <= result.latency_us <= 400.0
 
@@ -1184,16 +1184,14 @@ class TestDecomposeMlapo:
         args = _make_mlapo_args()
         op = _make_op_info(torch.ops.tensor_cast.mlapo.default, args)
         specs = _decompose_mlapo(op, {})
-        assert specs[0].kernel_type == "MatMulV2"       # fused_qkv_a_proj
-        assert specs[1].kernel_type == "MatMulV2"       # q_b_proj
+        assert specs[0].kernel_type == "MatMulV2"  # fused_qkv_a_proj
+        assert specs[1].kernel_type == "MatMulV2"  # q_b_proj
         assert specs[2].kernel_type == "KvRmsNormRopeCache"
 
     def test_q_lora_rank_from_out_features(self):
         """q_compressed @ q_b_proj: activation shape must use q_lora_rank (shape[0]),
         not hidden_size (shape[1]). This is the core regression test."""
-        args = _make_mlapo_args(
-            num_tokens=136, hidden_size=5120, q_lora_rank=1536
-        )
+        args = _make_mlapo_args(num_tokens=136, hidden_size=5120, q_lora_rank=1536)
         op = _make_op_info(torch.ops.tensor_cast.mlapo.default, args)
         specs = _decompose_mlapo(op, {})
         # Op2: q_compressed @ q_b_proj → input_shapes[0] = (num_tokens, q_lora_rank)
@@ -1203,9 +1201,7 @@ class TestDecomposeMlapo:
     def test_kv_proj_dim_from_out_features(self):
         """KvRmsNormRopeCache shape must use kv_proj_dim (shape[0]),
         not hidden_size (shape[1]). This is the core regression test."""
-        args = _make_mlapo_args(
-            num_tokens=136, hidden_size=5120, kv_proj_dim=576
-        )
+        args = _make_mlapo_args(num_tokens=136, hidden_size=5120, kv_proj_dim=576)
         op = _make_op_info(torch.ops.tensor_cast.mlapo.default, args)
         specs = _decompose_mlapo(op, {})
         # KvRmsNormRopeCache is now specs[2] (was [3] before fused_qkv_a_proj merge)
@@ -1252,9 +1248,7 @@ class TestDecomposeMlapoQuant:
 
     def test_q_lora_rank_from_out_features_quant(self):
         """Same bugfix regression: q_lora_rank must come from shape[0]."""
-        args = _make_mlapo_args(
-            num_tokens=136, hidden_size=5120, q_lora_rank=1536
-        )
+        args = _make_mlapo_args(num_tokens=136, hidden_size=5120, q_lora_rank=1536)
         op = _make_op_info(torch.ops.tensor_cast.mlapo_quant.default, args)
         specs = _decompose_mlapo_quant(op, {})
         # Bug would produce (136, 5120) instead of (136, 1536)
@@ -1262,9 +1256,7 @@ class TestDecomposeMlapoQuant:
 
     def test_kv_proj_dim_from_out_features_quant(self):
         """Same bugfix regression: kv_proj_dim must come from shape[0]."""
-        args = _make_mlapo_args(
-            num_tokens=136, hidden_size=5120, kv_proj_dim=576
-        )
+        args = _make_mlapo_args(num_tokens=136, hidden_size=5120, kv_proj_dim=576)
         op = _make_op_info(torch.ops.tensor_cast.mlapo_quant.default, args)
         specs = _decompose_mlapo_quant(op, {})
         # KvRmsNormRopeCache is now specs[2] (was [3] before fused merge)

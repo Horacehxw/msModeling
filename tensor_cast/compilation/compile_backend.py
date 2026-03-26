@@ -13,15 +13,15 @@ from torch._inductor.fx_passes.post_grad import decompose_auto_functionalized
 from .. import config
 from . import patterns
 from .constant_folding import fold_meta_constants
-from .freezing_passes.dispatch_ffn_combine_pass import DispatchFFNCombinePass
 from .freezing_passes import patterns as freezing_patterns
+from .freezing_passes.dispatch_ffn_combine_pass import DispatchFFNCombinePass
 from .freezing_passes.grouped_matmul_swiglu_pass import GroupedMatmulSwigluPass
 from .freezing_passes.sink_split_pass import SinkSplitPass
+from .passes.flashcomm_v1_pass import FlashCommV1Pass
 from .passes.lift_quant_pass import LiftCombineQuantPass
 from .passes.merge_linear_pass import MergeLinearPass
 from .passes.peep_hole_pass import PeepHolePass
 from .passes.redundant_node_elimination_pass import ReduandantNodeEliminationPass
-from .passes.flashcomm_v1_pass import FlashCommV1Pass
 
 logger = logging.getLogger(__name__)
 

@@ -5,15 +5,17 @@ real NPU profiling CSVs in the CANN 8.5 data directory.
 Reference: Qwen3-32B BF16 TP=16, vllm 0.15.0 / torch 2.9.0 / CANN 8.5.
 """
 
-import pytest
-import torch
 from pathlib import Path
 from unittest.mock import MagicMock
+
+import pytest
+import torch
+
+from tensor_cast.performance_model.profiling_database.data_source import QuerySource
 
 from tensor_cast.performance_model.profiling_database.profiling_data_source import (
     ProfilingDataSource,
 )
-from tensor_cast.performance_model.profiling_database.data_source import QuerySource
 
 CANN85_DATA_DIR = (
     Path(__file__).resolve().parents[2]
@@ -31,7 +33,11 @@ def _make_op(func, *tensor_specs):
     mock.func = func
     args = []
     for spec in tensor_specs:
-        if isinstance(spec, tuple) and len(spec) == 2 and isinstance(spec[1], torch.dtype):
+        if (
+            isinstance(spec, tuple)
+            and len(spec) == 2
+            and isinstance(spec[1], torch.dtype)
+        ):
             shape, dtype = spec
         else:
             shape, dtype = spec, torch.bfloat16
@@ -87,9 +93,7 @@ def test_mm_hit(ds):
 
 def test_swiglu_hit(ds):
     """SwiGlu: TC 2×(1,336,1600) merged→(336,3200) matches CSV (336,3200)."""
-    op = _make_op(
-        torch.ops.tensor_cast.swiglu.default, (1, 336, 1600), (1, 336, 1600)
-    )
+    op = _make_op(torch.ops.tensor_cast.swiglu.default, (1, 336, 1600), (1, 336, 1600))
     result = ds.lookup(op)
     assert result is not None
     assert result.latency_us > 0
@@ -98,9 +102,7 @@ def test_swiglu_hit(ds):
 
 def test_rmsnorm_hidden_hit(ds):
     """RmsNorm: TC (1,336,5120),(5120,) → strip batch → matches CSV (336,5120;5120)."""
-    op = _make_op(
-        torch.ops.tensor_cast.rms_norm.default, (1, 336, 5120), (5120,)
-    )
+    op = _make_op(torch.ops.tensor_cast.rms_norm.default, (1, 336, 5120), (5120,))
     result = ds.lookup(op)
     assert result is not None
     assert result.latency_us > 0
@@ -109,9 +111,7 @@ def test_rmsnorm_hidden_hit(ds):
 
 def test_rmsnorm_head_hit(ds):
     """RmsNorm: TC (1,336,4,128),(128,) matches CSV (336,4,128;128)."""
-    op = _make_op(
-        torch.ops.tensor_cast.rms_norm.default, (1, 336, 4, 128), (128,)
-    )
+    op = _make_op(torch.ops.tensor_cast.rms_norm.default, (1, 336, 4, 128), (128,))
     result = ds.lookup(op)
     assert result is not None
     assert result.details["kernel_type"] == "RmsNorm"

@@ -39,9 +39,7 @@ class CompilePassOpMappingTest(unittest.TestCase):
 
     def test_static_quant_linear_all_reduce_entry(self):
         """static_quant_linear_all_reduce should be composite."""
-        entry = self.mapping.get(
-            "tensor_cast.static_quant_linear_all_reduce.default"
-        )
+        entry = self.mapping.get("tensor_cast.static_quant_linear_all_reduce.default")
         self.assertIsNotNone(entry)
         self.assertTrue(entry.get("composite", False))
 

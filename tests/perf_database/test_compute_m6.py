@@ -8,7 +8,7 @@ import pytest
 sys.path.insert(
     0, str(Path(__file__).resolve().parents[2] / "tools" / "perf_data_collection")
 )
-from compute_m6 import (
+from compute_m6 import (  # noqa: E402
     compute_m6,
     estimate_forward_passes,
     parse_kernel_details_diagnostics,
@@ -89,9 +89,7 @@ class TestParseStepTraceTime:
 
     def test_empty_csv(self, tmp_path):
         csv_path = tmp_path / "step_trace_time.csv"
-        csv_path.write_text(
-            "Device_id,Step,Computing,Communication(Not Overlapped)\n"
-        )
+        csv_path.write_text("Device_id,Step,Computing,Communication(Not Overlapped)\n")
         with pytest.raises(ValueError, match="Empty"):
             parse_step_trace_time(tmp_path)
 
@@ -99,10 +97,7 @@ class TestParseStepTraceTime:
 class TestEstimateForwardPasses:
     def test_auto_detect_by_delimiter(self, tmp_path):
         """ArgMaxV2 appears 5 times → 5 forward passes."""
-        rows = (
-            [("MatMulV2", "100.0")] * 50
-            + [("ArgMaxV2", "1.0")] * 5
-        )
+        rows = [("MatMulV2", "100.0")] * 50 + [("ArgMaxV2", "1.0")] * 5
         _make_kernel_details(tmp_path, rows)
         result = estimate_forward_passes(tmp_path, delimiter="ArgMaxV2")
         assert result["n_forward_passes"] == 5
@@ -111,10 +106,7 @@ class TestEstimateForwardPasses:
 
     def test_custom_delimiter(self, tmp_path):
         """Works with any delimiter kernel type."""
-        rows = (
-            [("MatMulV2", "100.0")] * 30
-            + [("MyCustomSampling", "2.0")] * 3
-        )
+        rows = [("MatMulV2", "100.0")] * 30 + [("MyCustomSampling", "2.0")] * 3
         _make_kernel_details(tmp_path, rows)
         result = estimate_forward_passes(tmp_path, delimiter="MyCustomSampling")
         assert result["n_forward_passes"] == 3
@@ -154,9 +146,7 @@ class TestKernelDetailsDiagnostics:
 
     def test_sorted_by_duration(self, tmp_path):
         _make_kernel_details(tmp_path)
-        unmatched = parse_kernel_details_diagnostics(
-            tmp_path, hit_kernel_types=set()
-        )
+        unmatched = parse_kernel_details_diagnostics(tmp_path, hit_kernel_types=set())
         durations = [k["duration_us"] for k in unmatched]
         assert durations == sorted(durations, reverse=True)
 
@@ -169,10 +159,9 @@ class TestComputeM6:
     def _setup(self, tmp_path, n_fwd=1, kernel_dur=5000.0, emp_hit=0.005):
         """Helper: create fixtures with n_fwd forward passes."""
         _make_step_trace_time(tmp_path)
-        rows = (
-            [("MatMulV2", str(kernel_dur / n_fwd))] * n_fwd
-            + [("ArgMaxV2", "1.0")] * n_fwd
-        )
+        rows = [("MatMulV2", str(kernel_dur / n_fwd))] * n_fwd + [
+            ("ArgMaxV2", "1.0")
+        ] * n_fwd
         _make_kernel_details(tmp_path, rows)
         return _make_tc_report(empirical_hit_total_s=emp_hit)
 

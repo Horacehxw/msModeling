@@ -1,5 +1,5 @@
-from collections import deque
 import logging
+from collections import deque
 
 import torch
 import torch.fx as fx
@@ -143,20 +143,25 @@ class DispatchFFNCombinePass(TensorCastGraphModulePass):
 
     # Node type check helpers
     def _is_permute_token(self, node: fx.Node) -> bool:
-        return (node.op == "call_function"
-                and node.target == torch.ops.tensor_cast.permute_tokens.default)
+        return (
+            node.op == "call_function"
+            and node.target == torch.ops.tensor_cast.permute_tokens.default
+        )
 
     def _is_unpermute_token(self, node: fx.Node) -> bool:
-        return (node.op == "call_function"
-                and node.target == torch.ops.tensor_cast.unpermute_tokens.default)
+        return (
+            node.op == "call_function"
+            and node.target == torch.ops.tensor_cast.unpermute_tokens.default
+        )
 
     def _is_grouped_matmul(self, node: fx.Node) -> bool:
-        return (node.op == "call_function"
-                and node.target in self._GROUPED_MATMUL_OPS)
+        return node.op == "call_function" and node.target in self._GROUPED_MATMUL_OPS
 
     def _is_grouped_matmul_swiglu(self, node: fx.Node) -> bool:
-        return (node.op == "call_function"
-                and node.target in self._GROUPED_MATMUL_SWIGLU_OPS)
+        return (
+            node.op == "call_function"
+            and node.target in self._GROUPED_MATMUL_SWIGLU_OPS
+        )
 
     def _is_linear_ffn(self, node: fx.Node) -> bool:
         return node.op == "call_function" and node.target in self._LINEAR_FFN_OPS

@@ -81,9 +81,7 @@ class MC2PassVerificationTest(unittest.TestCase):
         from tensor_cast.core.quantization.datatypes import QuantizeLinearAction
 
         table = self._run_model(QuantizeLinearAction.W8A8_STATIC)
-        self.assertIn(
-            "tensor_cast.static_quant_linear_all_reduce.default", table
-        )
+        self.assertIn("tensor_cast.static_quant_linear_all_reduce.default", table)
 
     def test_mc2_op_mapping_entries_exist(self):
         """All MC2 fused op variants should have op_mapping entries."""
