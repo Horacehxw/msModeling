@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 import torch
 
-from .data_source import DataSource, QueryResult, QuerySource
+from .data_source import DataSourcePerformanceModel, QueryResult, QuerySource
 from .profiling_data_source import (
     COMPOSITE_DECOMPOSERS,
     DTYPE_MAP,
@@ -55,7 +55,7 @@ def _find_bracket(values: List[float], target: float) -> Optional[Tuple[float, f
     return (max(below), min(above))
 
 
-class InterpolatingDataSource(DataSource):
+class InterpolatingDataSource(DataSourcePerformanceModel):
     """Wrapper datasource that adds 1D linear interpolation fallback.
 
     When the base ProfilingDataSource returns None (exact miss), this layer

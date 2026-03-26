@@ -5,13 +5,13 @@ import torch
 from tensor_cast.performance_model.base import PerformanceModel
 from tensor_cast.performance_model.empirical import EmpiricalPerformanceModel
 from tensor_cast.performance_model.profiling_database.data_source import (
-    DataSource,
+    DataSourcePerformanceModel,
     QueryResult,
     QuerySource,
 )
 
 
-class HitDataSource(DataSource):
+class HitDataSource(DataSourcePerformanceModel):
     def lookup(self, op_invoke_info):
         return QueryResult(
             latency_us=45.3,
@@ -21,7 +21,7 @@ class HitDataSource(DataSource):
         )
 
 
-class MissDataSource(DataSource):
+class MissDataSource(DataSourcePerformanceModel):
     def lookup(self, op_invoke_info):
         return None
 

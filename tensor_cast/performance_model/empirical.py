@@ -16,7 +16,7 @@ from ..device import DeviceProfile
 from .analytic import AnalyticPerformanceModel
 from .base import PerformanceModel
 from .op_invoke_info import OpInvokeInfo
-from .profiling_database.data_source import DataSource
+from .profiling_database.data_source import DataSourcePerformanceModel
 
 logger = logging.getLogger(__name__)
 
@@ -212,7 +212,7 @@ class EmpiricalPerformanceModel(PerformanceModel):
     def __init__(
         self,
         device_profile: DeviceProfile,
-        data_source: DataSource,
+        data_source: DataSourcePerformanceModel,
         fallback_model: Optional[PerformanceModel] = None,
     ):
         super().__init__("empirical", device_profile)

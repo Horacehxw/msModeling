@@ -10,7 +10,7 @@ from tensor_cast.performance_model.empirical import (
     EmpiricalPerformanceModel,
 )
 from tensor_cast.performance_model.profiling_database.data_source import (
-    DataSource,
+    DataSourcePerformanceModel,
     QueryResult,
     QuerySource,
 )
@@ -104,7 +104,7 @@ def _make_device():
     return mock
 
 
-class ControlledDataSource(DataSource):
+class ControlledDataSource(DataSourcePerformanceModel):
     """DataSource that returns HIT for shapes in hit_set, MISS otherwise."""
 
     def __init__(self, hit_set: set):

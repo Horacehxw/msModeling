@@ -14,7 +14,7 @@ import torch
 import yaml
 
 from ...device import DeviceProfile
-from .data_source import DataSource, QueryResult, QuerySource
+from .data_source import DataSourcePerformanceModel, QueryResult, QuerySource
 
 
 if TYPE_CHECKING:
@@ -628,7 +628,7 @@ COMPOSITE_DECOMPOSERS: Dict[
 }
 
 
-class ProfilingDataSource(DataSource):
+class ProfilingDataSource(DataSourcePerformanceModel):
     """CSV-backed data source with op_mapping.yaml + FRACTAL_NZ.
 
     Design doc S4.2: internally handles all mapping, shape extraction,
