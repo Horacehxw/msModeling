@@ -205,7 +205,7 @@ class EmpiricalPerformanceModel(PerformanceModel):
     data source first, falls back to fallback_model on miss.
 
     Usage (design doc §5.1):
-        data_source = ProfilingDataSource(data_dir, comm_grid=...)
+        data_source = ProfilingDataSource(data_dir, device_profile=device_profile)
         pm = EmpiricalPerformanceModel(device_profile, data_source)
     """
 

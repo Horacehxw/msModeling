@@ -309,12 +309,6 @@ def main():
         selected_embedding_tp_mode or WordEmbeddingTPMode.col.value
     )
 
-    selected_embedding_tp_mode = args.word_embedding_tp
-    args.word_embedding_tp = selected_embedding_tp_mode is not None
-    args.word_embedding_tp_mode = (
-        selected_embedding_tp_mode or WordEmbeddingTPMode.col.value
-    )
-
     user_input = UserInputConfig.from_args(args)
     model_runner = ModelRunner(user_input)
     metrics = model_runner.run_inference(generate_inputs_func=generate_inputs)
