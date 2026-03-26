@@ -4,7 +4,7 @@
 `torch_npu.npu_fused_infer_attention_score` 接口参数的对应关系，并补充这份 CSV 的实际 case 分类。
 
 适用对象：
-- `tensor_cast/performance_model/perf_database/data/.../FusedInferAttentionScore.csv`
+- `tensor_cast/performance_model/profiling_database/data/.../FusedInferAttentionScore.csv`
 - `tools/perf_data_collection/op_replay/FusedInferAttentionScore_run.py`
 
 ## 1. 结论概览

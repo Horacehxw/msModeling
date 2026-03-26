@@ -69,7 +69,7 @@ PROF_BASE="/Users/horacehxw/Data/Profiling/Profiling-0325-final-vllm-new"
 PROF_QWEN3="$PROF_BASE/profiler-qwen3-0325"
 PROF_DSV3="$PROF_BASE/profiler-dsv3-0325"
 
-DATA_DIR="$(pwd)/tensor_cast/performance_model/perf_database/data/ATLAS_800_A3_752T_128G_DIE/vllm_ascend/vllm0.18.0_torch2.9.0_cann8.5"
+DATA_DIR="$(pwd)/tensor_cast/performance_model/profiling_database/data/ATLAS_800_A3_752T_128G_DIE/vllm_ascend/vllm0.18.0_torch2.9.0_cann8.5"
 
 M4_ACCEPT=0.80   # M4 高于此值时停止迭代
 MAX_ITER=3        # 每个场景最多迭代次数
@@ -243,7 +243,7 @@ python3.10 -m tensor_cast.scripts.text_generate Qwen/Qwen3-32B \
   --num-queries $NQ --query-length $QL --word-embedding-tp row \
   --device ATLAS_800_A3_752T_128G_DIE --world-size 16 --tp-size 16 \
   --quantize-linear-action DISABLED \
-  --performance-model profiling --compile --perf-database "$DATA_DIR" \
+  --performance-model profiling --compile --profiling-database "$DATA_DIR" \
   --enable-flashcomm-v1 \
   --export-metrics results/qwen3_prefill_metrics.json --log-level info
 
@@ -252,7 +252,7 @@ python3.10 -m tensor_cast.scripts.text_generate Qwen/Qwen3-32B \
   --num-queries $NQ --query-length 1 --context-length 4096 --word-embedding-tp row \
   --device ATLAS_800_A3_752T_128G_DIE --world-size 16 --tp-size 16 \
   --quantize-linear-action DISABLED \
-  --performance-model profiling --compile --perf-database "$DATA_DIR" \
+  --performance-model profiling --compile --profiling-database "$DATA_DIR" \
   --export-metrics results/qwen3_decode_metrics.json --log-level info
 
 # --- DSv3 Prefill ---
@@ -260,7 +260,7 @@ python3.10 -m tensor_cast.scripts.text_generate deepseek-ai/DeepSeek-V3 \
   --num-queries $NQ --query-length $QL --word-embedding-tp row \
   --device ATLAS_800_A3_752T_128G_DIE --world-size 16 --tp-size 8 --dp-size 2 --ep-size 16 \
   --quantize-linear-action W8A8_STATIC \
-  --performance-model profiling --compile --perf-database "$DATA_DIR" \
+  --performance-model profiling --compile --profiling-database "$DATA_DIR" \
   --export-metrics results/dsv3_prefill_metrics.json --log-level info
 
 # --- DSv3 Decode ---
@@ -268,7 +268,7 @@ python3.10 -m tensor_cast.scripts.text_generate deepseek-ai/DeepSeek-V3 \
   --num-queries $NQ --query-length 1 --context-length 4096 --word-embedding-tp row \
   --device ATLAS_800_A3_752T_128G_DIE --world-size 16 --tp-size 8 --dp-size 2 --ep-size 16 \
   --quantize-linear-action W8A8_STATIC \
-  --performance-model profiling --compile --perf-database "$DATA_DIR" \
+  --performance-model profiling --compile --profiling-database "$DATA_DIR" \
   --export-metrics results/dsv3_decode_metrics.json --log-level info
 
 # ==========================================
@@ -717,7 +717,7 @@ feat/perf-database vs gitcode-ascend/develop:
 | `/Users/horacehxw/Documents/hxw-华为/蚂蚁仿真器项目/日报\智能纪要*.pdf` | 站会纪要 |
 | `docs/perf_database/daily_project_status/` | **主输出目录** (git 仓库内，日期命名) |
 | `/Users/horacehxw/Documents/hxw-华为/蚂蚁仿真器项目/AI进展总结\` | 完整看板备份目录 |
-| `tensor_cast/performance_model/perf_database/` | 核心实现代码 |
+| `tensor_cast/performance_model/profiling_database/` | 核心实现代码 |
 | `tools/perf_data_collection/` | 数据采集工具链 |
 
 ## 注意事项

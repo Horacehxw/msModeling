@@ -84,9 +84,9 @@ python .\tools\perf_data_collection\generate_shape_grid.py `
 
 - 如果传了 `--data-dir`，直接使用该目录。
 - 如果没有传 `--data-dir`，但传了 `--device` 和 `--vllm-ascend-version`，则使用：
-  - `tensor_cast/performance_model/perf_database/data/{device}/vllm_ascend/{version}/`
+  - `tensor_cast/performance_model/profiling_database/data/{device}/vllm_ascend/{version}/`
 - 如果三者都没传，则回退到默认根目录：
-  - `tensor_cast/performance_model/perf_database/data`
+  - `tensor_cast/performance_model/profiling_database/data`
 
 ## 6. 运行时行为
 

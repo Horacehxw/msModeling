@@ -82,7 +82,7 @@
 
 | 人员 | 投入 | 职责域 | 代码 Owner |
 |------|------|--------|-----------|
-| **ZH** | 50% | DataSource 查询引擎：`_lookup_compute` / `_lookup_comm` / `_lookup_composite` + review 全部查询代码 PR | `perf_database/*.py` |
+| **ZH** | 50% | DataSource 查询引擎：`_lookup_compute` / `_lookup_comm` / `_lookup_composite` + review 全部查询代码 PR | `profiling_database/*.py` |
 | **TCX** | 100% | 数据层全链路：工具链 + Microbenchmark + Attention 查询与数据 + 基础插值；协助 SE 进展管理（日报跟踪、站会记录） | `tools/perf_data_collection/`, attention 查询, 插值 |
 | **ZZY** | 100% | Qwen3 op_mapping：BF16 场景验证 + Decode 扩展 + 自动化方案 spec | `op_mapping.yaml` (Qwen3), 验证报告 |
 | **HDY** | 100% | DSV3 op_mapping + HCCL：W8A8 映射 + 通信数据采集 + DSV3 Profiling 分析 | `op_mapping.yaml` (DSV3), HCCL 数据 |
@@ -104,7 +104,7 @@ XJT→LJW(集成层) ZH(查询层) TCX(数据层) ZZY(Qwen3映射) HDY(DSV3映�
 
 **接口点**（需 PR review 协调的地方）：
 - TCX → ZH：`_lookup_attention()` 代码合入 `profiling_data_source.py`
-- TCX → ZH：InterpolatingDataSource 代码合入 `perf_database/`
+- TCX → ZH：InterpolatingDataSource 代码合入 `profiling_database/`
 - ZZY/HDY → ZH：`op_mapping.yaml` 变更影响查询逻辑时需同步
 - XJT → ZH：新增 compile pass 产生的 TC op 需同步到 `op_mapping.yaml`
 
@@ -215,7 +215,7 @@ HDY |C6+MC2查 |--- C9 --|--- C7 DSV3映射 ----|C8+C10-|
 
 | # | 检查点 | 完成日期 | 验收标准 |
 |---|-------|---------|---------|
-| A1 | CLI `--performance-model {analytic,profiling}` + `--perf-database` 路径参数 | 3.9 → ✅ 3.10 | analytic 行为不变；profiling 模式创建 EmpiricalPerformanceModel |
+| A1 | CLI `--performance-model {analytic,profiling}` + `--profiling-database` 路径参数 | 3.9 → ✅ 3.10 | analytic 行为不变；profiling 模式创建 EmpiricalPerformanceModel |
 | A2 | 端到端：Qwen3-32B Prefill `--performance-model profiling --compile` | 3.11 → ✅ 3.11 | 不报错，log_stats 输出命中率 |
 | A3 | 融合 Pass merge + MC2 pass 验证 + KvRmsNormRopeCache 确认 | 3.13 → ✅ 3.11 | MC2 BF16+W8A8 验证通过；KvRmsNormRopeCache 被 mlapo 覆盖，无需独立 pass |
 
@@ -234,7 +234,7 @@ HDY |C6+MC2查 |--- C9 --|--- C7 DSV3映射 ----|C8+C10-|
 
 **背景**：当前 `profiling_data_source.py` 的 `lookup()` 中，`communication` 和 `composite` 两个分支直接 return None（穿刺简化项 S-11/S-12）。
 
-**修改范围**：`tensor_cast/performance_model/perf_database/profiling_data_source.py`
+**修改范围**：`tensor_cast/performance_model/profiling_database/profiling_data_source.py`
 
 **参考**：设计文档 §4.2（查询分派）、§4.4（通信查询）、§4.7（通信 CSV 格式）
 
@@ -272,7 +272,7 @@ HDY |C6+MC2查 |--- C9 --|--- C7 DSV3映射 ----|C8+C10-|
 - **映射示例**：`examples/op_mapping_example.yaml`
 - **算子分级**：设计文档 §7.1-§7.2（Tier 1/2/3 + 占比数据）
 
-**修改范围**：`perf_database/data/ATLAS_800_A3_752T_128G_DIE/vllm_ascend/v0.13.0/op_mapping.yaml`
+**修改范围**：`profiling_database/data/ATLAS_800_A3_752T_128G_DIE/vllm_ascend/v0.13.0/op_mapping.yaml`
 
 **验证方法论**（每条映射的验证步骤）：
 1. 从 Profiling 提取 kernel Type 及其 Input Shapes / Data Types
@@ -316,8 +316,8 @@ HDY |C6+MC2查 |--- C9 --|--- C7 DSV3映射 ----|C8+C10-|
 
 **修改范围**：
 - `tools/perf_data_collection/parse_kernel_details.py`, `discover_operators.py`
-- `tensor_cast/performance_model/perf_database/profiling_data_source.py`（`_lookup_attention()` 方法）
-- `tensor_cast/performance_model/perf_database/interpolating_data_source.py`
+- `tensor_cast/performance_model/profiling_database/profiling_data_source.py`（`_lookup_attention()` 方法）
+- `tensor_cast/performance_model/profiling_database/interpolating_data_source.py`
 
 **参考**：
 - Attention：设计文档 §4.8（FusedAttention 特殊处理）、穿刺报告 §4.1
@@ -341,7 +341,7 @@ HDY |C6+MC2查 |--- C9 --|--- C7 DSV3映射 ----|C8+C10-|
 - Wrapper 模式包装 ProfilingDataSource：精确命中 → 直接返回，未命中 → 插值
 - **通用插值逻辑（不需要 per-operator 维度声明）**：dtype+format 精确匹配（已在 ProfilingDataSource 实现），shape 维度做最近邻搜索 + 线性插值
 - 读取 `op_mapping.yaml` 的 `interpolation_policy.kernel_overrides` 应用特殊变换（当前仅 FIA 需要 sqrt）
-- 提交 PR 后由ZH review 并合入 `perf_database/`
+- 提交 PR 后由ZH review 并合入 `profiling_database/`
 
 ---
 
@@ -433,7 +433,7 @@ Phase 1 E2E v2 集成测试完成，GO/NO-GO: **GO**。
 ### 数据入库路径
 
 ```
-tensor_cast/performance_model/perf_database/data/
+tensor_cast/performance_model/profiling_database/data/
 └── ATLAS_800_A3_752T_128G_DIE/
     ├── vllm_ascend/vllm0.15.0_torch2.9.0_cann8.5/
     │   └── op_mapping.yaml  ← communication_data_ref: "../../hccl/v8.5/"

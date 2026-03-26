@@ -7,16 +7,16 @@ import json
 import logging
 from collections import Counter
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import torch
-
 from overrides import override
 
 from ..device import DeviceProfile
+from .analytic import AnalyticPerformanceModel
 from .base import PerformanceModel
 from .op_invoke_info import OpInvokeInfo
-from .perf_database.data_source import DataSource
+from .profiling_database.data_source import DataSourcePerformanceModel
 
 logger = logging.getLogger(__name__)
 
@@ -199,20 +199,20 @@ def compute_per_shape_stats(
 
 
 class EmpiricalPerformanceModel(PerformanceModel):
-    """Performance model based on measured data from a DataSource.
+    """Performance model based on measured data from a DataSourcePerformanceModel.
 
-    Design doc §4.3: accepts DataSource instance, process_op() queries
-    data source first, falls back to fallback_model on miss.
+    Design doc §4.3: accepts DataSourcePerformanceModel instance, process_op()
+    queries data source first, falls back to fallback_model on miss.
 
     Usage (design doc §5.1):
-        data_source = ProfilingDataSource(data_dir, comm_grid=...)
+        data_source = ProfilingDataSource(data_dir, device_profile=device_profile)
         pm = EmpiricalPerformanceModel(device_profile, data_source)
     """
 
     def __init__(
         self,
         device_profile: DeviceProfile,
-        data_source: DataSource,
+        data_source: DataSourcePerformanceModel,
         fallback_model: Optional[PerformanceModel] = None,
     ):
         super().__init__("empirical", device_profile)
@@ -284,6 +284,14 @@ class EmpiricalPerformanceModel(PerformanceModel):
             (func_name, reason, tc_shapes, analytic_result.execution_time_s)
         )
         return analytic_result
+
+    @override
+    def get_classifiers(self) -> List[PerformanceModel.OpClassifier]:
+        """
+        Return classifiers from the fallback model so that breakdown reporting
+        still works when an op is handled by the fallback path.
+        """
+        return self.fallback_model.get_classifiers()
 
     def get_stats(self) -> dict:
         total = self._stats["hit"] + self._stats["miss"]

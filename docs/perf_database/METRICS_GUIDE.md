@@ -26,7 +26,7 @@ python3.10 -m tensor_cast.scripts.text_generate Qwen/Qwen3-32B \
   --device ATLAS_800_A3_752T_128G_DIE --world-size 16 --tp-size 16 \
   --quantize-linear-action DISABLED \
   --performance-model profiling --compile \
-  --perf-database tensor_cast/performance_model/perf_database/data/ATLAS_800_A3_752T_128G_DIE/vllm_ascend/vllm0.15.0_torch2.9.0_cann8.5 \
+  --profiling-database tensor_cast/performance_model/profiling_database/data/ATLAS_800_A3_752T_128G_DIE/vllm_ascend/vllm0.15.0_torch2.9.0_cann8.5 \
   --log-level info
 
 # Qwen3-32B Decode (BF16, TP=16)
@@ -35,7 +35,7 @@ python3.10 -m tensor_cast.scripts.text_generate Qwen/Qwen3-32B \
   --device ATLAS_800_A3_752T_128G_DIE --world-size 16 --tp-size 16 \
   --quantize-linear-action DISABLED \
   --performance-model profiling --compile \
-  --perf-database tensor_cast/performance_model/perf_database/data/ATLAS_800_A3_752T_128G_DIE/vllm_ascend/vllm0.15.0_torch2.9.0_cann8.5 \
+  --profiling-database tensor_cast/performance_model/profiling_database/data/ATLAS_800_A3_752T_128G_DIE/vllm_ascend/vllm0.15.0_torch2.9.0_cann8.5 \
   --log-level info
 
 # DSv3 Prefill (W8A8, TP=8, DP=2, EP=16)
@@ -45,7 +45,7 @@ python3.10 -m tensor_cast.scripts.text_generate deepseek-ai/DeepSeek-V3 \
   --word-embedding-tp row \
   --quantize-linear-action W8A8_STATIC \
   --performance-model profiling --compile \
-  --perf-database tensor_cast/performance_model/perf_database/data/ATLAS_800_A3_752T_128G_DIE/vllm_ascend/vllm0.15.0_torch2.9.0_cann8.5 \
+  --profiling-database tensor_cast/performance_model/profiling_database/data/ATLAS_800_A3_752T_128G_DIE/vllm_ascend/vllm0.15.0_torch2.9.0_cann8.5 \
   --log-level info
 
 # DSv3 Decode (W8A8, TP=8, DP=2, EP=16)
@@ -55,7 +55,7 @@ python3.10 -m tensor_cast.scripts.text_generate deepseek-ai/DeepSeek-V3 \
   --word-embedding-tp row \
   --quantize-linear-action W8A8_STATIC \
   --performance-model profiling --compile \
-  --perf-database tensor_cast/performance_model/perf_database/data/ATLAS_800_A3_752T_128G_DIE/vllm_ascend/vllm0.15.0_torch2.9.0_cann8.5 \
+  --profiling-database tensor_cast/performance_model/profiling_database/data/ATLAS_800_A3_752T_128G_DIE/vllm_ascend/vllm0.15.0_torch2.9.0_cann8.5 \
   --log-level info
 ```
 
@@ -115,7 +115,7 @@ python3.10 -m tensor_cast.scripts.text_generate Qwen/Qwen3-32B \
   --device ATLAS_800_A3_752T_128G_DIE --world-size 16 --tp-size 16 \
   --quantize-linear-action DISABLED \
   --performance-model profiling --compile \
-  --perf-database $DATA_DIR \
+  --profiling-database $DATA_DIR \
   --export-metrics results/qwen3_prefill_metrics.json
 
 # Step 2: 计算 M6 (--model 用于估算 forward pass 数量)

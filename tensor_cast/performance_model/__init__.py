@@ -10,7 +10,7 @@ from .analytic import StatsKey
 from .base import PerformanceModel
 from .op_estimator_registry import register_op_estimator
 from .op_invoke_info import OpInvokeInfo
-from .utils import bytes_of_elements, bytes_of_tensor, is_view_op
+from .utils import bytes_of_elements, bytes_of_tensor, is_noop_self_copy_op, is_view_op
 
 logger = logging.getLogger(__name__)
 
@@ -1274,7 +1274,9 @@ def _estimate_static_cost(
 def _estimate_default_without_static_cost(
     op_invoke_info: OpInvokeInfo, device_profile: DeviceProfile
 ) -> PerformanceModel.Result:
-    if is_view_op(op_invoke_info.func):
+    if is_view_op(op_invoke_info.func) or is_noop_self_copy_op(
+        op_invoke_info.func, op_invoke_info.args
+    ):
         return PerformanceModel.Result(0.0)
     perf_properties = op_invoke_info.get_perf_properties()
     # By default, we do not consider instruction-level parallelism when counting computation time
@@ -1610,6 +1612,49 @@ def _estimate_mxfp4_linear_all_reduce(
         "mxfp4_linear",
         "mxfp4_linear_time_s",
     )
+
+
+@OpInvokeInfo.register_op_properties(torch.ops.tensor_cast.dsa_index.default)
+def _(
+    op_invoke_info: OpInvokeInfo,
+) -> OpInvokeInfo.PerformanceProperties:
+    """
+    Modeling for dsa_index:
+    - FP8 Q @ FP8 K -> FP32 logits (dot-product / bmm)
+    - ReLU + scaling with q_s
+    - Sum reduction
+    - Final scaling with k_s
+    """
+    assert len(op_invoke_info.args) == 4
+    q = op_invoke_info.args[0]
+    assert q.ndim == 4, f"dsa_index q expected 4D, got {q.ndim}D"
+    k = op_invoke_info.args[2]
+
+    batch, num_queries, num_heads, head_dim = q.shape
+    kv_len = k.shape[1]
+    properties = op_invoke_info.get_memory_access_properties()
+
+    mma_ops = batch * num_queries * num_heads * kv_len * head_dim * 2
+
+    gp_ops = 0
+    gp_ops += batch * num_queries * num_heads * kv_len  # ReLU
+    gp_ops += batch * num_queries * num_heads * kv_len  # * q_s
+    gp_ops += batch * num_heads * kv_len  # sum
+    gp_ops += batch * num_heads * kv_len  # * k_s
+
+    compute_ops = properties.compute_ops.setdefault(q.dtype, OpInvokeInfo.ComputeOps())
+    compute_ops.mma_ops = mma_ops
+    compute_ops.gp_ops = gp_ops
+
+    return properties
+
+
+@OpInvokeInfo.register_op_properties(torch.ops.tensor_cast.dsa_index_cache.default)
+def _(
+    op_invoke_info: OpInvokeInfo,
+) -> OpInvokeInfo.PerformanceProperties:
+    properties = op_invoke_info.get_memory_access_properties(exclude_input_ids={1})
+    return properties
 
 
 _load_custom_op()

@@ -3,7 +3,7 @@ Replay Add cases from the performance database on Ascend NPU, CUDA, or CPU.
 
 Purpose:
   Read Add rows from
-  perf_database/data/{device}/vllm_ascend/{version}/Add.csv,
+  profiling_database/data/{device}/vllm_ascend/{version}/Add.csv,
   rebuild input tensors from the recorded shapes, formats, and dtypes,
   then execute torch.add() workload.
 

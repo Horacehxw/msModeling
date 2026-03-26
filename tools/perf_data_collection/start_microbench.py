@@ -4,7 +4,7 @@ Profile replay scripts and write the results back to the database.
 Purpose:
   Run op_replay/run_all_op.py with msprof, collect generated op_summary_*.csv
   files, aggregate profiling metrics, and update matching operator CSV files
-  under perf_database/data/{device}/vllm_ascend/{version}.
+  under profiling_database/data/{device}/vllm_ascend/{version}.
 
 Usage:
   py -3 tools/perf_data_collection/start_microbench.py ^
@@ -181,7 +181,7 @@ def build_argparser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawTextHelpFormatter,
         description=(
             "Profile operator replay scripts with msprof and update the\n"
-            "performance database under perf_database/data."
+            "performance database under profiling_database/data."
         ),
         epilog=(
             "Usage examples:\n"
@@ -203,7 +203,7 @@ def build_argparser() -> argparse.ArgumentParser:
         choices=SUPPORTED_DEVICES,
         help=(
             "Target device folder under "
-            "tensor_cast/performance_model/perf_database/data/{device}/"
+            "tensor_cast/performance_model/profiling_database/data/{device}/"
         ),
     )
     parser.add_argument(

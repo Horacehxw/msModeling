@@ -5,13 +5,10 @@ import torch
 from torch.utils._cxx_pytree import tree_map
 
 from ..config import performance_model as perf_config
-
 from ..device import DeviceProfile
 from .base import PerformanceModel
-
 from .op_invoke_info import OpInvokeInfo
-
-from .utils import is_view_op
+from .utils import is_noop_self_copy_op, is_view_op
 
 
 _op_impl_registry = {}
@@ -63,7 +60,9 @@ class OpBenchmark(OpBenchmarkBase):
         self.runtime_device = self.infer_runtime_device()
 
     def benchmark(self, op_invoke_info: OpInvokeInfo) -> PerformanceModel.Result:
-        if is_view_op(op_invoke_info.func):
+        if is_view_op(op_invoke_info.func) or is_noop_self_copy_op(
+            op_invoke_info.func, op_invoke_info.args
+        ):
             return PerformanceModel.Result(0.0)
         if op_invoke_info.func.namespace == "tensor_cast":
             op_impl = get_op_impl(op_invoke_info.func, self.runtime_device)
@@ -78,9 +77,11 @@ class OpBenchmark(OpBenchmarkBase):
     def do_bench(self, op_impl, args, kwargs) -> PerformanceModel.Result:
         # construct real inputs for all the meta tensors on the given device
         real_args, real_kwargs = tree_map(
-            lambda t: torch.empty_like(t, device=self.runtime_device)
-            if isinstance(t, torch.Tensor)
-            else t,
+            lambda t: (
+                torch.empty_like(t, device=self.runtime_device)
+                if isinstance(t, torch.Tensor)
+                else t
+            ),
             (args, kwargs),
         )
         # warm up

@@ -3,7 +3,7 @@ Replay SoftmaxV2 cases from the performance database on Ascend NPU.
 
 Purpose:
   Read SoftmaxV2 rows from
-  perf_database/data/{device}/vllm_ascend/{version}/SoftmaxV2.csv,
+  profiling_database/data/{device}/vllm_ascend/{version}/SoftmaxV2.csv,
   rebuild the recorded tensor inputs, then execute
   torch.nn.functional.softmax() along the last dimension.
 """

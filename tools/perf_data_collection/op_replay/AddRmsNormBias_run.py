@@ -3,7 +3,7 @@ Run AddRmsNormBias microbenchmark cases on Ascend NPU.
 
 Purpose:
   Read AddRmsNormBias rows from
-  perf_database/data/{device}/vllm_ascend/{version}/AddRmsNormBias.csv,
+  profiling_database/data/{device}/vllm_ascend/{version}/AddRmsNormBias.csv,
   rebuild the recorded tensor inputs, then execute the exact microbench_api:
 
       torch.ops._C_ascend.npu_add_rms_norm_bias(...)

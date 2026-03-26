@@ -246,7 +246,7 @@ class KernelDetailsParser:
             self.repo_root
             / "tensor_cast"
             / "performance_model"
-            / "perf_database"
+            / "profiling_database"
             / "data"
             / self.device_dir
             / "vllm_ascend"
@@ -569,7 +569,7 @@ def build_argparser() -> argparse.ArgumentParser:
         choices=SUPPORTED_DEVICES,
         help=(
             "Target device name used as output folder: "
-            "tensor_cast/performance_model/perf_database/data/{device}/vllm_ascend/{version}/"
+            "tensor_cast/performance_model/profiling_database/data/{device}/vllm_ascend/{version}/"
         ),
     )
     parser.add_argument(

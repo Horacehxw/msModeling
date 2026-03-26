@@ -14,7 +14,7 @@ PYTHONPATH=<worktree>:$PYTHONPATH python3.10 -m tensor_cast.scripts.text_generat
   --num-queries 1 --query-length 136 \
   --quantize-linear-action DISABLED --compile \
   --performance-model profiling \
-  --perf-database .../v0.14.0 --log-level debug
+  --profiling-database .../v0.14.0 --log-level debug
 ```
 
 ## Summary — Iteration History

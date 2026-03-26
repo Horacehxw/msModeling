@@ -5,11 +5,11 @@ from unittest.mock import MagicMock
 import pytest
 import torch
 
-from tensor_cast.performance_model.perf_database.data_source import QuerySource
-from tensor_cast.performance_model.perf_database.interpolating_data_source import (
+from tensor_cast.performance_model.profiling_database.data_source import QuerySource
+from tensor_cast.performance_model.profiling_database.interpolating_data_source import (
     InterpolatingDataSource,
 )
-from tensor_cast.performance_model.perf_database.profiling_data_source import (
+from tensor_cast.performance_model.profiling_database.profiling_data_source import (
     COMPOSITE_DECOMPOSERS,
     ProfilingDataSource,
     SubKernelSpec,

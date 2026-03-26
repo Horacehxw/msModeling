@@ -10,14 +10,14 @@ import torch
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from tensor_cast.performance_model.perf_database.profiling_data_source import (
+from tensor_cast.performance_model.profiling_database.profiling_data_source import (
     ProfilingDataSource,
 )
-from tensor_cast.performance_model.perf_database.data_source import QuerySource
+from tensor_cast.performance_model.profiling_database.data_source import QuerySource
 
 CANN85_DATA_DIR = (
     Path(__file__).resolve().parents[2]
-    / "tensor_cast/performance_model/perf_database/data"
+    / "tensor_cast/performance_model/profiling_database/data"
     / "ATLAS_800_A3_752T_128G_DIE/vllm_ascend/vllm0.15.0_torch2.9.0_cann8.5"
 )
 

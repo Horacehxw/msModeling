@@ -70,9 +70,7 @@ class MoELayer(torch.nn.Module):
             module, "norm_topk_prob", self.get_attr(self.gate, "norm_topk_prob", None)
         )
 
-        fused_moe_cls = (
-            moe_config.fused_moe_cls if moe_config.fused_moe_cls else FusedMoETensorCast
-        )
+        fused_moe_cls = moe_config.fused_moe_cls or FusedMoETensorCast
         self.fused_moe = fused_moe_cls(
             self.moe_config,
             self.get_attr(module, "experts", None),
@@ -88,16 +86,9 @@ class MoELayer(torch.nn.Module):
                     "top_k must be specified if gate_returns_raw_logits is True"
                 )
             router_logits = self.gate(hidden_states)
-            # Use fused moe_gating_topk op to match NPU's MoeGatingTopK kernel
-            num_experts = router_logits.shape[-1]
-            expert_bias = torch.zeros(
-                num_experts, dtype=router_logits.dtype, device=router_logits.device
+            topk_weights, topk_indices = torch.ops.tensor_cast.moe_gating_top_k_softmax(
+                router_logits, self.top_k
             )
-            flat_logits = router_logits.view(-1, num_experts)
-            topk_weights, topk_indices = torch.ops.tensor_cast.moe_gating_topk(
-                flat_logits, expert_bias, self.top_k
-            )
-            topk_indices = topk_indices.to(torch.int64)
             if self.norm_topk_prob:
                 topk_weights /= topk_weights.sum(dim=-1, keepdim=True)
             topk_weights = topk_weights.to(hidden_states.dtype)
@@ -267,9 +258,7 @@ class FusedMoETensorCast(FusedMoEBase):
             moe_config, experts, shared_experts, shared_experts_gate, top_k
         )
         self.ep_group = ep_group
-        self.num_global_experts = (
-            num_global_experts if num_global_experts else len(self.experts)
-        )
+        self.num_global_experts = num_global_experts or len(self.experts)
         self.num_external_shared_experts = num_external_shared_experts
         # Global TP size for per-expert local padding.
         # RowParallelLinear.gather_slice_data needs token dim % global_tp == 0.
@@ -511,27 +500,3 @@ class FusedMoETensorCast(FusedMoEBase):
             final_hidden_states = final_hidden_states + shared_expert_output
 
         return final_hidden_states.to(hidden_states.dtype)
-
-
-class TensorQwen3VLMoeTextMLP(torch.nn.Module):
-    def __init__(self, original_module: torch.nn.Module):
-        super().__init__()
-        self.hidden_size = original_module.hidden_size
-        self.intermediate_size = original_module.intermediate_size
-        self.act_fn = original_module.act_fn
-        # Split gate_up_proj into separate gate_proj and up_proj for proper TP sharding
-        self.gate_proj = torch.nn.Linear(
-            self.hidden_size, self.intermediate_size, bias=False
-        )
-        self.up_proj = torch.nn.Linear(
-            self.hidden_size, self.intermediate_size, bias=False
-        )
-        self.down_proj = torch.nn.Linear(
-            self.intermediate_size, self.hidden_size, bias=False
-        )
-
-    def forward(self, hidden_states):
-        gate = self.gate_proj(hidden_states)
-        up = self.up_proj(hidden_states)
-        hidden_states = self.down_proj(up * self.act_fn(gate))
-        return hidden_states

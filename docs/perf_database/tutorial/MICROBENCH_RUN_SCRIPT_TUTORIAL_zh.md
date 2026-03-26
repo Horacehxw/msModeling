@@ -7,7 +7,7 @@
 输入：
 
 - 一个算子 CSV，例如：
-  `tensor_cast/performance_model/perf_database/data/<device>/vllm_ascend/<version>/<KernelType>.csv`
+  `tensor_cast/performance_model/profiling_database/data/<device>/vllm_ascend/<version>/<KernelType>.csv`
 - 同版本的 `op_mapping.yaml`
 - 对应上游仓库里的接口文档、测试或实现
 
@@ -230,7 +230,7 @@ python tools/perf_data_collection/op_replay/<KernelType>_run.py \
 不要误提交：
 
 - 本地 clone 下来的上游仓库
-- `perf_database/data/...` 里你临时生成或解压的内容
+- `profiling_database/data/...` 里你临时生成或解压的内容
 - profiling 输出目录
 
 推荐先看：

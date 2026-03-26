@@ -3,7 +3,7 @@ Replay split_qkv_rmsnorm_rope_kernel cases from the performance database on Asce
 
 Purpose:
   Read split_qkv_rmsnorm_rope_kernel rows from
-  perf_database/data/{device}/vllm_ascend/{version}/split_qkv_rmsnorm_rope_kernel.csv,
+  profiling_database/data/{device}/vllm_ascend/{version}/split_qkv_rmsnorm_rope_kernel.csv,
   rebuild the recorded tensor inputs, infer the scalar arguments required by
   the vLLM-Ascend Triton custom op, then execute
   torch.ops.vllm.qkv_rmsnorm_rope().

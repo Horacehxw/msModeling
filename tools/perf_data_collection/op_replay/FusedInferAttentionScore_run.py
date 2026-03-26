@@ -3,7 +3,7 @@ Replay FusedInferAttentionScore cases from the performance database on Ascend NP
 
 Purpose:
   Read FusedInferAttentionScore rows from
-  perf_database/data/{device}/vllm_ascend/{version}/FusedInferAttentionScore.csv,
+  profiling_database/data/{device}/vllm_ascend/{version}/FusedInferAttentionScore.csv,
   rebuild the recorded tensor inputs, infer the minimal scalar/list arguments
   required by torch_npu.npu_fused_infer_attention_score(), then execute the op
   on NPU.

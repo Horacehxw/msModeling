@@ -3,7 +3,7 @@ Replay Sort cases from the performance database on Ascend NPU.
 
 Purpose:
   Read Sort rows from
-  perf_database/data/{device}/vllm_ascend/{version}/Sort.csv,
+  profiling_database/data/{device}/vllm_ascend/{version}/Sort.csv,
   rebuild the recorded tensor inputs, then execute torch.sort()
   along the last dimension with descending order.
 

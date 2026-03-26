@@ -5,7 +5,7 @@ import yaml
 
 CANN85_OP_MAPPING = (
     Path(__file__).resolve().parents[2]
-    / "tensor_cast/performance_model/perf_database/data"
+    / "tensor_cast/performance_model/profiling_database/data"
     / "ATLAS_800_A3_752T_128G_DIE/vllm_ascend/vllm0.15.0_torch2.9.0_cann8.5"
     / "op_mapping.yaml"
 )

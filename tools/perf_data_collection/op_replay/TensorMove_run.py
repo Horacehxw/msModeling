@@ -3,7 +3,7 @@ Replay TensorMove cases from the performance database on Ascend NPU.
 
 Purpose:
   Read TensorMove rows from
-  perf_database/data/{device}/vllm_ascend/{version}/TensorMove.csv,
+  profiling_database/data/{device}/vllm_ascend/{version}/TensorMove.csv,
   rebuild the recorded source tensor, create a matching destination tensor,
   then execute torch.Tensor.copy_().
 

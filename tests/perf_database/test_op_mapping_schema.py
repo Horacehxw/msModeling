@@ -22,7 +22,7 @@ DATA_ROOT = (
     Path(__file__).resolve().parents[2]
     / "tensor_cast"
     / "performance_model"
-    / "perf_database"
+    / "profiling_database"
     / "data"
 )
 

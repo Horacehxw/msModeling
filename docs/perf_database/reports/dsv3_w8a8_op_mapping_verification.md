@@ -3,7 +3,7 @@
 **数据来源**: `kernel_details_deepseekv3-cann85.csv`
 **硬件**: ATLAS_800_A3_752T_128G_DIE，32 卡，W8A8 aclgraph
 **CANN 版本**: 8.5 / vLLM-ascend 0.15.0
-**op_mapping 路径**: `tensor_cast/performance_model/perf_database/data/ATLAS_800_A3_752T_128G_DIE/vllm_ascend/vllm0.15.0_torch2.9.0_cann8.5/op_mapping.yaml`
+**op_mapping 路径**: `tensor_cast/performance_model/profiling_database/data/ATLAS_800_A3_752T_128G_DIE/vllm_ascend/vllm0.15.0_torch2.9.0_cann8.5/op_mapping.yaml`
 **负责人**: HDY
 **日期**: 2026-03-11
 

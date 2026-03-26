@@ -6,8 +6,8 @@ from unittest.mock import MagicMock
 import pytest
 import torch
 
-from tensor_cast.performance_model.perf_database.data_source import QuerySource
-from tensor_cast.performance_model.perf_database.profiling_data_source import (
+from tensor_cast.performance_model.profiling_database.data_source import QuerySource
+from tensor_cast.performance_model.profiling_database.profiling_data_source import (
     ProfilingDataSource,
     _normalize_fia_q_shape,
     _parse_fia_q_shape,

@@ -21,7 +21,8 @@ from tensor_cast.performance_model.memory_tracker import MemoryTracker
 from tensor_cast.quantize_utils import LinearQuantType, QuantGranularity
 from tensor_cast.runtime import Runtime
 from tensor_cast.transformers.model import TransformerModel
-from tensor_cast.transformers.utils import AutoModelConfigLoader, get_moe_config
+from tensor_cast.transformers.custom_model_registry import get_moe_config
+from tensor_cast.transformers.utils import AutoModelConfigLoader
 from .test_common import count_events, get_quant_config
 
 
@@ -126,8 +127,8 @@ class DfcPassTestCase(unittest.TestCase):
             ep_size=16,
             quantize_linear_action=QuantizeLinearAction.W8A8_STATIC,
             performance_model="profiling",
-            perf_database=(
-                "tensor_cast/performance_model/perf_database/data/"
+            profiling_database=(
+                "tensor_cast/performance_model/profiling_database/data/"
                 "ATLAS_800_A3_752T_128G_DIE/vllm_ascend/"
                 "vllm0.15.0_torch2.9.0_cann8.5"
             ),
