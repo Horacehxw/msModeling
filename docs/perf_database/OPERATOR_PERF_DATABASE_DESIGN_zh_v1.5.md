@@ -184,7 +184,7 @@ tensor_cast/performance_model/
 ├── comm_analytic.py                      # CommAnalyticModel（现有）
 ├── memory_tracker.py                     # MemoryTracker（现有）
 ├── empirical.py                          # EmpiricalPerformanceModel（重构）
-└── perf_database/                        # 新增：DataSource + 数据存储
+└── profiling_database/                        # 新增：DataSource + 数据存储
     ├── __init__.py
     ├── data_source.py                    # DataSource ABC + QueryResult
     ├── profiling_data_source.py          # ProfilingDataSource（CSV 查询 + FRACTAL_NZ）
@@ -220,10 +220,10 @@ tools/perf_data_collection/               # 数据采集与数据库构建工具
 
 | 决策项 | 方案 | 理由 |
 |-------|------|------|
-| 数据位置 | `tensor_cast/performance_model/perf_database/data/` | 数据是 TensorCast 功能的一部分（类似 `device_profiles/`），用户通过 `--performance-model profiling` 时需要数据随包可用 |
+| 数据位置 | `tensor_cast/performance_model/profiling_database/data/` | 数据是 TensorCast 功能的一部分（类似 `device_profiles/`），用户通过 `--performance-model profiling` 时需要数据随包可用 |
 | 文件格式 | CSV（Profiling 原始格式） | 与 kernel_details.csv 完全对齐，保证可溯源 |
 | CSV 命名 | Profiling Type 列原始大小写 | `MatMulV2.csv`、`GroupedMatmul.csv` 等，与 Profiling 直接对应 |
-| 大文件管理 | Git LFS | `.gitattributes` 中配置 `tensor_cast/performance_model/perf_database/data/**/*.csv filter=lfs diff=lfs merge=lfs -text` |
+| 大文件管理 | Git LFS | `.gitattributes` 中配置 `tensor_cast/performance_model/profiling_database/data/**/*.csv filter=lfs diff=lfs merge=lfs -text` |
 | 计算/通信分离 | 计算在 `vllm_ascend/{version}/`，通信在 `hccl/{cann_version}/` | HCCL 通信行为只取决于 CANN 版本和硬件，与 vLLM 版本无关；升级 vLLM 不需要重测通信 |
 | 目录命名约定 | `vllm{ver}_torch{ver}_cann{ver}` 完整版本字符串 | 避免版本歧义，支持同一设备下多版本共存（v1.3.1 更新） |
 | MC2 数据位置 | `vllm_ascend/{version}/` | MC2（`npu_mm_all_reduce_base`）和 vLLM-Ascend 实现绑定 |
@@ -235,7 +235,7 @@ tools/perf_data_collection/               # 数据采集与数据库构建工具
 ### 4.1 DataSource 抽象基类
 
 ```python
-# tensor_cast/performance_model/perf_database/data_source.py
+# tensor_cast/performance_model/profiling_database/data_source.py
 
 class QuerySource(Enum):
     MEASURED = auto()          # 精确匹配（置信度: 1.0）
@@ -613,7 +613,7 @@ op_mapping.yaml 中 MLA entries 的 `sub_kernels` 更新为 decode/prefill 所�
 ```python
 # 使用 ProfilingDataSource
 data_source = ProfilingDataSource(
-    "perf_database/data/ATLAS_800_A3_752T_128G_DIE/vllm_ascend/v0.13.0",
+    "profiling_database/data/ATLAS_800_A3_752T_128G_DIE/vllm_ascend/v0.13.0",
     device_profile,
 )
 perf_model = EmpiricalPerformanceModel(device_profile, data_source)

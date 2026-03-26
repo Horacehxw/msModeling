@@ -2,7 +2,7 @@
 
 本文说明以下文件中每一列的含义，以及它们与 `torch_npu.npu_fused_infer_attention_score` 接口参数和模型推理物理语义的对应关系：
 
-- `tensor_cast/performance_model/perf_database/data/{device}/vllm_ascend/{version}/FusedInferAttentionScore.csv`
+- `tensor_cast/performance_model/profiling_database/data/{device}/vllm_ascend/{version}/FusedInferAttentionScore.csv`
 
 适用对象：
 

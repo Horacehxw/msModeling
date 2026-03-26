@@ -205,35 +205,35 @@ DSv3 的 3 个 quantize MISS 经 debug trace 逐 shape 验证，根因各不相�
 ## 附录 B: TC 命令
 
 ```bash
-DATA_DIR="$(pwd)/tensor_cast/performance_model/perf_database/data/ATLAS_800_A3_752T_128G_DIE/vllm_ascend/vllm0.15.0_torch2.9.0_cann8.5"
+DATA_DIR="$(pwd)/tensor_cast/performance_model/profiling_database/data/ATLAS_800_A3_752T_128G_DIE/vllm_ascend/vllm0.15.0_torch2.9.0_cann8.5"
 
 # Qwen3 Prefill
 python3.10 -m tensor_cast.scripts.text_generate Qwen/Qwen3-32B \
   --num-queries 10 --query-length 4104 --word-embedding-tp row \
   --device ATLAS_800_A3_752T_128G_DIE --world-size 16 --tp-size 16 \
   --quantize-linear-action DISABLED \
-  --performance-model profiling --compile --perf-database "$DATA_DIR"
+  --performance-model profiling --compile --profiling-database "$DATA_DIR"
 
 # Qwen3 Decode
 python3.10 -m tensor_cast.scripts.text_generate Qwen/Qwen3-32B \
   --num-queries 16 --query-length 1 --context-length 4096 --word-embedding-tp row \
   --device ATLAS_800_A3_752T_128G_DIE --world-size 16 --tp-size 16 \
   --quantize-linear-action DISABLED \
-  --performance-model profiling --compile --perf-database "$DATA_DIR"
+  --performance-model profiling --compile --profiling-database "$DATA_DIR"
 
 # DSv3 Prefill
 python3.10 -m tensor_cast.scripts.text_generate deepseek-ai/DeepSeek-V3 \
   --num-queries 1 --query-length 256 --word-embedding-tp row \
   --device ATLAS_800_A3_752T_128G_DIE --world-size 16 --tp-size 8 --dp-size 2 --ep-size 16 \
   --quantize-linear-action W8A8_STATIC \
-  --performance-model profiling --compile --perf-database "$DATA_DIR"
+  --performance-model profiling --compile --profiling-database "$DATA_DIR"
 
 # DSv3 Decode
 python3.10 -m tensor_cast.scripts.text_generate deepseek-ai/DeepSeek-V3 \
   --num-queries 16 --query-length 1 --context-length 4096 --word-embedding-tp row \
   --device ATLAS_800_A3_752T_128G_DIE --world-size 16 --tp-size 8 --dp-size 2 --ep-size 16 \
   --quantize-linear-action W8A8_STATIC \
-  --performance-model profiling --compile --perf-database "$DATA_DIR"
+  --performance-model profiling --compile --profiling-database "$DATA_DIR"
 ```
 
 TC 参数从 CSV shapes 反推（非直接使用 vLLM 配置）。EP 配置: vLLM `--enable-expert-parallel` with TP=8, DP=2 → TC `--ep-size 16`。Embedding TP: `--word-embedding-tp row`（profiling 显示 vocab/TP 分片）。加 `--log-level debug` 可查看每个 MISS 的 TC shape 和 CSV shape 对比。

@@ -12,7 +12,7 @@ Generate a runnable `tools/perf_data_collection/op_replay/<KernelType>_run.py` f
 ## When to Use
 
 - User asks to add a new `xxx_run.py` under `tools/perf_data_collection/op_replay`
-- A CSV already exists under `tensor_cast/performance_model/perf_database/data/<device>/vllm_ascend/<version>/`
+- A CSV already exists under `tensor_cast/performance_model/profiling_database/data/<device>/vllm_ascend/<version>/`
 - `op_mapping.yaml` already has a `torch_npu_reference.<KernelType>.microbench_api` entry
 - The operator needs real NPU replay, not just theoretical mapping
 

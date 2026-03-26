@@ -371,8 +371,8 @@ kernel_type_variants:
 
 | 类别 | 文件/路径 | 说明 |
 |------|----------|------|
-| **核心代码** | `tensor_cast/performance_model/perf_database/data_source.py` | DataSource ABC |
-| | `tensor_cast/performance_model/perf_database/profiling_data_source.py` | CSV 查询 + 8 种 shape 匹配规则 |
+| **核心代码** | `tensor_cast/performance_model/profiling_database/data_source.py` | DataSource ABC |
+| | `tensor_cast/performance_model/profiling_database/profiling_data_source.py` | CSV 查询 + 8 种 shape 匹配规则 |
 | | `tensor_cast/performance_model/empirical.py` | EmpiricalPerformanceModel 重构 |
 | | `tensor_cast/core/model_runner.py` | `--performance-model profiling` CLI |
 | **数据** | `.../v0.14.0/op_mapping.yaml` | 60+ 条算子映射 |

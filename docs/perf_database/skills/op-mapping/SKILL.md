@@ -208,7 +208,7 @@ Merge all torch_npu_reference entries from workers. Deduplicate by kernel_type.
 
 ### 4e: Write Output
 
-Save to: `$MSMODELING/tensor_cast/performance_model/perf_database/data/$DEVICE/vllm_ascend/$VERSION/op_mapping.yaml`
+Save to: `$MSMODELING/tensor_cast/performance_model/profiling_database/data/$DEVICE/vllm_ascend/$VERSION/op_mapping.yaml`
 
 ---
 
@@ -273,7 +273,7 @@ $PYTHON -m tensor_cast.scripts.text_generate $MODEL \
   --device $DEVICE --world-size $WS --tp-size $TP [--dp-size $DP] [--ep-size $EP] \
   --quantize-linear-action $QUANT \
   --performance-model profiling --compile \
-  --perf-database $DATA_DIR 2>&1 | tee /tmp/verify_run.log
+  --profiling-database $DATA_DIR 2>&1 | tee /tmp/verify_run.log
 ```
 
 ### 5c: Analyze Gaps

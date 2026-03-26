@@ -13,7 +13,7 @@
 通信数据独立于计算数据，按 CANN 版本存储（跨 vLLM 版本复用）：
 
 ```
-tensor_cast/performance_model/perf_database/data/
+tensor_cast/performance_model/profiling_database/data/
 └── {device}/
     └── hccl/
         └── {cann_version}/

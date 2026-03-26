@@ -6,7 +6,7 @@
 
 `op_mapping.yaml` 将每个 TensorCast (TC) 虚拟算子映射到真实设备 profiling 数据中的 NPU 内核类型（kernel type）。这个映射使得 `EmpiricalPerformanceModel` 能够查找真实 profiling 延迟，而不是使用解析估算。
 
-**文件位置：** `tensor_cast/performance_model/perf_database/data/{device}/vllm_ascend/{version}/op_mapping.yaml`
+**文件位置：** `tensor_cast/performance_model/profiling_database/data/{device}/vllm_ascend/{version}/op_mapping.yaml`
 
 **版本命名规范：** `{version}` 编码了用于 profiling 的软件栈版本（例如 `v0.13.0` 或 `vllm0.13.0_torch2.8.0_cann8.3`）
 
@@ -236,7 +236,7 @@ python3.10 -m tools.perf_data_collection.parse_kernel_details \
 
 # 验证生成的数据库
 python3.10 -m tools.perf_data_collection.validate \
-  --database tensor_cast/performance_model/perf_database/data/{device}/vllm_ascend/{version}/
+  --database tensor_cast/performance_model/profiling_database/data/{device}/vllm_ascend/{version}/
 ```
 
 ### 获取唯一内核类型
@@ -340,7 +340,7 @@ python3.10 -m tensor_cast.scripts.text_generate $MODEL \
   --device $DEVICE --world-size $WS --tp-size $TP [--dp-size $DP] [--ep-size $EP] \
   --quantize-linear-action $QUANT \
   --performance-model profiling --compile \
-  --perf-database $DATA_DIR
+  --profiling-database $DATA_DIR
 ```
 
 如果你在验证 FlashCommV1 对齐，可额外添加 `--enable-flashcomm-v1`。

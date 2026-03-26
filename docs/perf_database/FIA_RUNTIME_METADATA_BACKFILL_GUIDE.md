@@ -359,7 +359,7 @@ $env:MSMODELING_FIA_DUMP_PATH='G:\仿真开发\FIA\fia_runtime_metadata.jsonl'
 
 ```bash
 py -3 tools/perf_data_collection/fill_fia_runtime_metadata.py \
-  --csv-path tensor_cast/performance_model/perf_database/data/ATLAS_800_A3_752T_128G_DIE/vllm_ascend/v0.20.0/FusedInferAttentionScore.csv \
+  --csv-path tensor_cast/performance_model/profiling_database/data/ATLAS_800_A3_752T_128G_DIE/vllm_ascend/v0.20.0/FusedInferAttentionScore.csv \
   --jsonl-path G:\仿真开发\FIA\fia_runtime_metadata.jsonl
 ```
 
@@ -367,7 +367,7 @@ py -3 tools/perf_data_collection/fill_fia_runtime_metadata.py \
 
 ```bash
 py -3 tools/perf_data_collection/fill_fia_runtime_metadata.py \
-  --csv-path tensor_cast/performance_model/perf_database/data/ATLAS_800_A3_752T_128G_DIE/vllm_ascend/v0.20.0/FusedInferAttentionScore.csv \
+  --csv-path tensor_cast/performance_model/profiling_database/data/ATLAS_800_A3_752T_128G_DIE/vllm_ascend/v0.20.0/FusedInferAttentionScore.csv \
   --jsonl-path G:\仿真开发\FIA\fia_runtime_metadata.jsonl \
   --output-path G:\仿真开发\msmodeling\FusedInferAttentionScore.backfilled.csv
 ```
