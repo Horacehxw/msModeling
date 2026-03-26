@@ -499,7 +499,12 @@ def _decompose_mlapo(
     """Decompose mlapo into projection MatMuls + KvRmsNormRopeCache.
 
     TC mlapo fuses: q_a_proj + q_a_norm + q_b_proj + kv_a_proj + kv_a_norm + rope.
-    NPU runs these as separate kernels. Decompose to match profiling data.
+    NPU fuses q_a_proj + kv_a_proj into a single fused_qkv_a_proj matmul
+    (output dim = q_lora_rank + kv_lora_rank + rope_dim = 2112 for DSv3),
+    then runs q_b_proj separately.  Decompose to match profiling data:
+      1. fused_qkv_a_proj: MatMulV2(hidden, [q_lora_rank+kv_proj_dim, hidden_size])
+      2. q_b_proj: MatMulV2(q_compressed, q_b_proj_weight)
+      3. KvRmsNormRopeCache (norm + rope post-projection)
 
     Args layout (tensor_cast/ops/mla.py):
         args[0]: hidden_states (num_tokens, hidden_size)
@@ -531,23 +536,21 @@ def _decompose_mlapo(
     q_lora_rank = q_a_proj.shape[0]  # out_features of q_a_proj
     kv_proj_dim = kv_a_proj.shape[0]  # out_features: kv_lora_rank + rope_dim
 
+    # NPU fuses q_a_proj + kv_a_proj into a single fused_qkv_a_proj matmul
+    # with output dim = q_lora_rank + kv_lora_rank + rope_dim (e.g. 1536+512+64=2112)
+    fused_proj_dim = q_lora_rank + kv_proj_dim
+
     return [
-        # Op1: hidden @ q_a_proj
+        # Op1+Op5 fused: hidden @ fused_qkv_a_proj (N = q_lora_rank + kv_proj_dim)
         SubKernelSpec(
             kernel_type="MatMulV2",
-            input_shapes=[(num_tokens, hidden_size), tuple(q_a_proj.shape)],
+            input_shapes=[(num_tokens, hidden_size), (fused_proj_dim, hidden_size)],
             dtype=dtype_str,
         ),
         # Op3: q_compressed @ q_b_proj
         SubKernelSpec(
             kernel_type="MatMulV2",
             input_shapes=[(num_tokens, q_lora_rank), tuple(q_b_proj.shape)],
-            dtype=dtype_str,
-        ),
-        # Op5: hidden @ kv_a_proj
-        SubKernelSpec(
-            kernel_type="MatMulV2",
-            input_shapes=[(num_tokens, hidden_size), tuple(kv_a_proj.shape)],
             dtype=dtype_str,
         ),
         # Op6+7: kv norm + rope (post-projection)
@@ -562,8 +565,9 @@ def _decompose_mlapo(
 def _decompose_mlapo_quant(
     op_invoke_info: "OpInvokeInfo", mapping: dict
 ) -> Optional[List[SubKernelSpec]]:
-    """Decompose mlapo_quant — same structure, QuantBatchMatmulV3 for projections.
+    """Decompose mlapo_quant — same as mlapo but QuantBatchMatmulV3 for projections.
 
+    NPU fuses q_a_proj + kv_a_proj into fused_qkv_a_proj (N=2112 for DSv3).
     Weight shapes follow F.linear convention: (out_features, in_features).
     """
     args = op_invoke_info.args
@@ -587,22 +591,24 @@ def _decompose_mlapo_quant(
     q_lora_rank = q_a_proj.shape[0]  # out_features of q_a_proj
     kv_proj_dim = kv_a_proj.shape[0]  # out_features: kv_lora_rank + rope_dim
 
+    # NPU fuses q_a_proj + kv_a_proj into a single fused_qkv_a_proj matmul
+    # with output dim = q_lora_rank + kv_lora_rank + rope_dim (e.g. 1536+512+64=2112)
+    fused_proj_dim = q_lora_rank + kv_proj_dim
+
     return [
+        # Op1+Op5 fused: hidden @ fused_qkv_a_proj (N = q_lora_rank + kv_proj_dim)
         SubKernelSpec(
             kernel_type="QuantBatchMatmulV3",
-            input_shapes=[(num_tokens, hidden_size), tuple(q_a_proj.shape)],
+            input_shapes=[(num_tokens, hidden_size), (fused_proj_dim, hidden_size)],
             dtype=dtype_str,
         ),
+        # Op3: q_compressed @ q_b_proj
         SubKernelSpec(
             kernel_type="QuantBatchMatmulV3",
             input_shapes=[(num_tokens, q_lora_rank), tuple(q_b_proj.shape)],
             dtype=dtype_str,
         ),
-        SubKernelSpec(
-            kernel_type="QuantBatchMatmulV3",
-            input_shapes=[(num_tokens, hidden_size), tuple(kv_a_proj.shape)],
-            dtype=dtype_str,
-        ),
+        # Op6+7: kv norm + rope (post-projection)
         SubKernelSpec(
             kernel_type="KvRmsNormRopeCache",
             input_shapes=[(num_tokens, kv_proj_dim)],
