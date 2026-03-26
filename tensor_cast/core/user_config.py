@@ -66,6 +66,7 @@ class UserInputConfig:
     word_embedding_tp: bool = False
     word_embedding_tp_mode: WordEmbeddingTPMode = WordEmbeddingTPMode.col
     enable_redundant_experts: bool = False
+    enable_shared_expert_tp: bool = False
     enable_external_shared_experts: bool = False
     host_external_shared_experts: bool = False
     block_size: int = 128

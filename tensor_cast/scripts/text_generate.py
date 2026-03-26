@@ -234,6 +234,12 @@ def main():
         "then each device hosting the routing experts will also add one redundant expert.",
     )
     parser.add_argument(
+        "--enable-shared-expert-tp",
+        action="store_true",
+        help="Enable vLLM-style tensor parallel for shared experts. "
+        "This uses dense-MLP TP for shared_experts with delayed down_proj reduction.",
+    )
+    parser.add_argument(
         "--enable-external-shared-experts",
         action="store_true",
         help="Whether or not to implement external shared experts",

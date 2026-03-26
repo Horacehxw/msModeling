@@ -48,6 +48,7 @@ class FusedMoEBase(torch.nn.Module, ABC):
         hidden_states: torch.Tensor,
         topk_indices: torch.Tensor,
         topk_weights: torch.Tensor,
+        skip_shared_experts: bool = False,
     ) -> torch.Tensor:
         raise NotImplementedError(
             "FusedMoEBase is an abstract class and should not be instantiated directly"
@@ -131,6 +132,7 @@ class ParallelMoELayer(ModelWrapperBase):
         module: MoELayer,
         global_dp_group: ParallelGroup,
         global_tp_group: ParallelGroup,
+        mlp_tp_group: Optional[ParallelGroup],
         ep_group: ParallelGroup,
         num_external_shared_experts: int,
         num_redundant_experts: int,
@@ -172,12 +174,31 @@ class ParallelMoELayer(ModelWrapperBase):
 
         self.global_dp_group = global_dp_group
         self.global_tp_group = global_tp_group
+        self.mlp_tp_group = mlp_tp_group or global_tp_group
         if self.has_ep:
             self.transform_dp_group = (
                 self.global_dp_group.world_size != self.ep_group.world_size
             )
         else:
             self.transform_dp_group = self.global_dp_group.world_size != 1
+
+    def _run_shared_experts(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        assert self._inner.fused_moe.shared_experts is not None
+
+        shared_expert_output = self._inner.fused_moe.shared_experts(hidden_states)
+        if self._inner.fused_moe.shared_experts_gate:
+            shared_expert_output = (
+                torch.nn.functional.sigmoid(
+                    self._inner.fused_moe.shared_experts_gate(hidden_states)
+                )
+                * shared_expert_output
+            )
+
+        # Current EP path gathers routed outputs by token dimension, so we cannot
+        # reuse vLLM's "add partial shared + partial routed, then one all-reduce"
+        # scheme directly without over-reducing the routed branch. Instead, we
+        # all-reduce only the shared-expert partial output here.
+        return self.mlp_tp_group.all_reduce(shared_expert_output)
 
     def _get_dp_alignment(self):
         """Get the alignment divisor for MoE DP domain transformations.
@@ -192,6 +213,56 @@ class ParallelMoELayer(ModelWrapperBase):
         return self.global_tp_group.world_size
 
     def forward(self, hidden_states: torch.Tensor):
+        if self.has_ep and self._inner.moe_config.enable_shared_expert_tp:
+            origin_shape = hidden_states.shape
+            if len(origin_shape) == 3:
+                hidden_states = hidden_states.reshape(-1, *origin_shape[2:])
+
+            shared_expert_output = None
+            if (
+                self._inner.fused_moe.shared_experts is not None
+                and self.num_external_shared_experts == 0
+            ):
+                shared_expert_output = self._run_shared_experts(hidden_states)
+
+            if self.transform_dp_group:
+                num_tokens = hidden_states.shape[0]
+                divisor = self._get_dp_alignment()
+                padding_tokens = (-num_tokens) % divisor
+                hidden_states = torch.nn.functional.pad(
+                    hidden_states, (0, 0, 0, padding_tokens)
+                )
+
+                topk_indices, topk_weights = self._inner.route(hidden_states)
+                hidden_states = self.global_tp_group.slice(hidden_states, dim=0)
+                topk_indices = self.global_tp_group.slice(topk_indices, dim=0)
+                topk_weights = self.global_tp_group.slice(topk_weights, dim=0)
+                hidden_states = self._inner.fused_moe(
+                    hidden_states,
+                    topk_indices,
+                    topk_weights,
+                    skip_shared_experts=shared_expert_output is not None,
+                )
+                hidden_states = self.global_tp_group.all_gather(hidden_states, dim=0)
+                hidden_states = hidden_states[:num_tokens]
+            else:
+                topk_indices, topk_weights = self._inner.route(hidden_states)
+                hidden_states = self._inner.fused_moe(
+                    hidden_states,
+                    topk_indices,
+                    topk_weights,
+                    skip_shared_experts=shared_expert_output is not None,
+                )
+
+            if shared_expert_output is not None:
+                hidden_states = hidden_states + shared_expert_output
+
+            if len(origin_shape) == 3:
+                hidden_states = hidden_states.reshape(
+                    *origin_shape[:2], *hidden_states.shape[1:]
+                )
+            return hidden_states
+
         if self.transform_dp_group:
             origin_shape = hidden_states.shape
             if len(origin_shape) == 3:
@@ -412,6 +483,7 @@ class FusedMoETensorCast(FusedMoEBase):
         hidden_states: torch.Tensor,
         topk_indices: torch.Tensor,  # [bsz, seq, topk]
         topk_weights: torch.Tensor,
+        skip_shared_experts: bool = False,
     ) -> torch.Tensor:
         num_tokens = topk_indices.numel()
         split_sizes = self.get_split_sizes(num_tokens, self.top_k)
@@ -490,7 +562,11 @@ class FusedMoETensorCast(FusedMoEBase):
             combined_hidden_states * expert_weights.unsqueeze(-1)
         ).sum(dim=-2)
 
-        if self.shared_experts and self.num_external_shared_experts == 0:
+        if (
+            self.shared_experts
+            and self.num_external_shared_experts == 0
+            and not skip_shared_experts
+        ):
             shared_expert_output = self.shared_experts(hidden_states)
             if self.shared_experts_gate:
                 shared_expert_output = (
