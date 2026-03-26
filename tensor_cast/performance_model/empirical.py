@@ -199,10 +199,10 @@ def compute_per_shape_stats(
 
 
 class EmpiricalPerformanceModel(PerformanceModel):
-    """Performance model based on measured data from a DataSource.
+    """Performance model based on measured data from a DataSourcePerformanceModel.
 
-    Design doc §4.3: accepts DataSource instance, process_op() queries
-    data source first, falls back to fallback_model on miss.
+    Design doc §4.3: accepts DataSourcePerformanceModel instance, process_op()
+    queries data source first, falls back to fallback_model on miss.
 
     Usage (design doc §5.1):
         data_source = ProfilingDataSource(data_dir, device_profile=device_profile)

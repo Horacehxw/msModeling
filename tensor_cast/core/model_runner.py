@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 
 def _create_data_source(perf_db_path, device_profile):
-    """Create the appropriate DataSource, respecting TC_ENABLE_INTERPOLATION."""
+    """Create the appropriate data source, respecting TC_ENABLE_INTERPOLATION."""
     import os
 
     from ..performance_model.profiling_database import ProfilingDataSource

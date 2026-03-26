@@ -105,7 +105,7 @@ def _make_device():
 
 
 class ControlledDataSource(DataSourcePerformanceModel):
-    """DataSource that returns HIT for shapes in hit_set, MISS otherwise."""
+    """Data source that returns HIT for shapes in hit_set, MISS otherwise."""
 
     def __init__(self, hit_set: set):
         self.hit_set = hit_set

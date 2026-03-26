@@ -33,9 +33,4 @@ class DataSourcePerformanceModel(ABC):
 
     def store(self, op_invoke_info: "OpInvokeInfo", result: QueryResult) -> None:
         """Store performance data (optional). Default: read-only."""
-        raise NotImplementedError("This DataSource is read-only")
-
-
-# Backward-compat aliases
-DataSource = DataSourcePerformanceModel
-LookupResult = QueryResult
+        raise NotImplementedError("This data source is read-only")
