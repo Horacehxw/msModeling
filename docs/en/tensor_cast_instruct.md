@@ -129,7 +129,7 @@ python3.10 -m tensor_cast.scripts.text_generate Qwen/Qwen3-32B \
   --device ATLAS_800_A3_752T_128G_DIE --world-size 16 --tp-size 16 \
   --word-embedding-tp row --quantize-linear-action DISABLED \
   --performance-model profiling --compile --enable-flashcomm-v1 \
-  --perf-database tensor_cast/performance_model/perf_database/data/ATLAS_800_A3_752T_128G_DIE/vllm_ascend/vllm0.15.0_torch2.9.0_cann8.5
+  --profiling-database tensor_cast/performance_model/profiling_database/data/ATLAS_800_A3_752T_128G_DIE/vllm_ascend/vllm0.15.0_torch2.9.0_cann8.5
 ```
 
 ## TODO List

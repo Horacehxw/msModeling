@@ -68,7 +68,7 @@ python -m tensor_cast.scripts.text_generate moonshotai/Kimi-K2-Instruct \
 ```bash
 # --compile is REQUIRED for profiling mode (even BF16) — without it,
 # fused ops decompose to 72+ aten primitives that can't match profiling kernels
-# --perf-database is REQUIRED — path to directory with op_mapping.yaml + kernel CSVs
+# --profiling-database is REQUIRED — path to directory with op_mapping.yaml + kernel CSVs
 # --quantize-linear-action must match profiling data (default is W8A8_DYNAMIC, use DISABLED for BF16 data)
 # --num-queries/--query-length must produce token counts matching profiling CSV shapes
 
@@ -78,13 +78,13 @@ python -m tensor_cast.scripts.text_generate Qwen/Qwen3-32B \
   --device ATLAS_800_A3_752T_128G_DIE --world-size 16 --tp-size 16 \
   --quantize-linear-action DISABLED \
   --performance-model profiling --compile \
-  --perf-database tensor_cast/performance_model/perf_database/data/ATLAS_800_A3_752T_128G_DIE/vllm_ascend/v0.13.0
+  --profiling-database tensor_cast/performance_model/profiling_database/data/ATLAS_800_A3_752T_128G_DIE/vllm_ascend/v0.13.0
 
 # With quantization
 python -m tensor_cast.scripts.text_generate deepseek-ai/DeepSeek-V3 \
   --device ATLAS_800_A3_752T_128G_DIE --world-size 32 --tp-size 4 --dp-size 8 --ep \
   --quantize-linear-action W8A8_STATIC \
-  --performance-model profiling --compile --perf-database ./path/to/data
+  --performance-model profiling --compile --profiling-database ./path/to/data
 ```
 
 ### TensorCast - Benchmarking
@@ -176,7 +176,7 @@ Runtime (OpInvokeInfo) → EmpiricalPerformanceModel → DataSource.lookup()
 ### Data Directory Layout
 
 ```
-tensor_cast/performance_model/perf_database/
+tensor_cast/performance_model/profiling_database/
 ├── data_source.py              # DataSource ABC: lookup(OpInvokeInfo) → LookupResult
 ├── profiling_data_source.py    # CSV query + 8 shape matching rules + op_mapping
 ├── interpolating_data_source.py # Wrapper: nearest-neighbor + linear interpolation
@@ -266,9 +266,9 @@ Configured via `--tp-size`, `--dp-size`, `--ep`, `--world-size`.
 | `tensor_cast/layers/quant_linear.py` | Quantization (W4A8, W8A8, FP8) |
 | `tensor_cast/performance_model/analytic.py` | Roofline-based performance model |
 | `tensor_cast/performance_model/empirical.py` | Profiling-based performance model |
-| `tensor_cast/performance_model/perf_database/profiling_data_source.py` | CSV query + shape matching engine |
-| `tensor_cast/performance_model/perf_database/data_source.py` | DataSource ABC interface |
-| `tensor_cast/performance_model/perf_database/interpolating_data_source.py` | Interpolation wrapper |
+| `tensor_cast/performance_model/profiling_database/profiling_data_source.py` | CSV query + shape matching engine |
+| `tensor_cast/performance_model/profiling_database/data_source.py` | DataSource ABC interface |
+| `tensor_cast/performance_model/profiling_database/interpolating_data_source.py` | Interpolation wrapper |
 | `serving_cast/main.py` | ServingCast entry point |
 | `serving_cast/engine.py` | Batch scheduling, KV cache preemption |
 | `stime.py` | DES time management (`Task`, `elapse()`, `now()`) |

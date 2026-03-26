@@ -274,6 +274,12 @@ operator_mappings:
       [HIGH] op-plugin: MoeGatingTopKKernelNpuOpApi.cpp.
       aclnn: aclnnMoeGatingTopK.
 
+  "tensor_cast.moe_gating_top_k_softmax.default":
+    kernel_type: MoeGatingTopK
+    notes: >
+      [HIGH] Alias for moe_gating_topk with fused softmax.
+      Same NPU kernel (aclnnMoeGatingTopK), different TC op signature.
+
 
   # ========== 6. Attention ==========
 
