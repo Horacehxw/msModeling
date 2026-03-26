@@ -3,6 +3,8 @@
 Resolves and configures model settings for tensor cast operations.
 """
 
+import logging
+
 from ..core.user_config import UserInputConfig
 from ..layers.attention import AttentionTensorCast
 from ..layers.quant_linear import TensorCastQuantLinear
@@ -20,6 +22,8 @@ from ..transformers.custom_model_registry import (
     get_mtp_block_module_name,
 )
 from ..transformers.utils import AutoModelConfigLoader
+
+logger = logging.getLogger(__name__)
 
 
 class ConfigResolver:
@@ -100,12 +104,14 @@ class ConfigResolver:
         )
         self.update_moe_config(
             enable_redundant_experts=self.user_input.enable_redundant_experts,
+            enable_shared_expert_tp=self.user_input.enable_shared_expert_tp,
             enable_external_shared_experts=self.user_input.enable_external_shared_experts,
             host_external_shared_experts=self.user_input.host_external_shared_experts,
         )
         self.update_mla_config()
         self.update_mtp_config(num_mtp_tokens=self.user_input.num_mtp_tokens)
         self.update_parallel_config()
+        self.validate_moe_parallel_config()
         # Apply remote source configuration
         self.model_config.remote_source = self.user_input.remote_source
         return self.model_config
@@ -114,6 +120,7 @@ class ConfigResolver:
         self,
         model_type: str = "",
         enable_redundant_experts: bool = False,
+        enable_shared_expert_tp: bool = False,
         enable_external_shared_experts: bool = False,
         host_external_shared_experts: bool = False,
     ):
@@ -123,6 +130,7 @@ class ConfigResolver:
         Args:
             model_type: The type of the model. If empty, uses the loaded model's type.
             enable_redundant_experts: Whether to enable redundant experts.
+            enable_shared_expert_tp: Whether to enable TP-specialized shared experts.
             enable_external_shared_experts: Whether to enable external shared experts.
             host_external_shared_experts: Whether to host external shared experts.
         """
@@ -131,6 +139,7 @@ class ConfigResolver:
         moe_config = get_moe_config(model_type)
         if moe_config is not None:
             moe_config.enable_redundant_experts = enable_redundant_experts
+            moe_config.enable_shared_expert_tp = enable_shared_expert_tp
             moe_config.enable_external_shared_experts = enable_external_shared_experts
             moe_config.host_external_shared_experts = host_external_shared_experts
         self.model_config.moe_config = moe_config
@@ -198,3 +207,18 @@ class ConfigResolver:
             self.model_config.parallel_config.moe_data_parallel_size = (
                 self.model_config.parallel_config.world_size
             )
+
+    def validate_moe_parallel_config(self):
+        moe_config = self.model_config.moe_config
+        if moe_config is None:
+            return
+
+        expert_parallel_size = self.model_config.parallel_config.expert_parallel_size
+        if moe_config.enable_shared_expert_tp and expert_parallel_size <= 1:
+            logger.warning(
+                "enable_shared_expert_tp=True is ignored because "
+                "expert_parallel_size=%s (EP is disabled). Falling back to "
+                "enable_shared_expert_tp=False.",
+                expert_parallel_size,
+            )
+            moe_config.enable_shared_expert_tp = False
