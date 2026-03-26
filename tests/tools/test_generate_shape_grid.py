@@ -1,6 +1,5 @@
 """Tests for tools/perf_data_collection/generate_shape_grid.py (TCX CSV mutation version)."""
 
-import ast
 import random
 import sys
 from pathlib import Path
@@ -9,7 +8,7 @@ from pathlib import Path
 sys.path.insert(
     0, str(Path(__file__).resolve().parents[2] / "tools" / "perf_data_collection")
 )
-from generate_shape_grid import (
+from generate_shape_grid import (  # noqa: E402
     build_shape_text,
     generate_elementwise_binary_shapes,
     generate_matmul_shapes,
@@ -131,5 +130,3 @@ class TestMutateShape:
         # Second call reuses both cached values
         s2 = mutate_shape((7168, 128), RNG, MIN_VAL, MAX_VAL, shared)
         assert s2 == (shared[7168], 256)
-
-

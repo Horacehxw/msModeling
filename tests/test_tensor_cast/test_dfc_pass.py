@@ -10,20 +10,13 @@ from tensor_cast.compilation import get_backend
 from tensor_cast.core.config_resolver import ConfigResolver
 from tensor_cast.core.input_generator import generate_inputs
 from tensor_cast.core.model_runner import ModelRunner, ModelRunnerMetrics
-from tensor_cast.core.quantization.datatypes import QuantizeLinearAction, QuantizeAttentionAction
+from tensor_cast.core.quantization.datatypes import QuantizeLinearAction
 from tensor_cast.core.user_config import UserInputConfig
 from tensor_cast.device import TEST_DEVICE
-from tensor_cast.layers.attention import AttentionTensorCast
-from tensor_cast.layers.quant_linear import TensorCastQuantLinear
-from tensor_cast.model_config import ModelConfig, ParallelConfig
 from tensor_cast.performance_model.analytic import AnalyticPerformanceModel
 from tensor_cast.performance_model.memory_tracker import MemoryTracker
-from tensor_cast.quantize_utils import LinearQuantType, QuantGranularity
 from tensor_cast.runtime import Runtime
 from tensor_cast.transformers.model import TransformerModel
-from tensor_cast.transformers.custom_model_registry import get_moe_config
-from tensor_cast.transformers.utils import AutoModelConfigLoader
-from .test_common import count_events, get_quant_config
 
 
 class DfcPassTestCase(unittest.TestCase):
@@ -45,7 +38,6 @@ class DfcPassTestCase(unittest.TestCase):
             ("decode", 16, 1, 4096),
         ]
     )
-
     def test_dfc_dsv3_ep(self, scenario, num_queries, query_len, context_length):
         """Verify that DFC is effective for DSv3 large EP configuration (Phase 1)"""
         model_id = "deepseek-ai/DeepSeek-V3"
@@ -62,8 +54,10 @@ class DfcPassTestCase(unittest.TestCase):
         result = model_runner.run_inference(generate_inputs_func=generate_inputs)
         if isinstance(result, ModelRunnerMetrics):
             result = asdict(result)
-        self.assertIn("tensor_cast.dispatch_ffn_combine.default", result["table_result"])
-        self.assertNotIn("tensor_cast.permute_tokens.default",result["table_result"])
+        self.assertIn(
+            "tensor_cast.dispatch_ffn_combine.default", result["table_result"]
+        )
+        self.assertNotIn("tensor_cast.permute_tokens.default", result["table_result"])
         self.assertNotIn("tensor_cast.unpermute_tokens.default", result["table_result"])
 
     def test_dfc_output_shape_matches_baseline(self):
@@ -74,10 +68,10 @@ class DfcPassTestCase(unittest.TestCase):
 
         def run_model(enable_dfc):
             with unittest.mock.patch.object(
-                    config.compilation.fusion_patterns,
-                    'enable_dispatch_ffn_combine',
-                    new_callable=unittest.mock.PropertyMock,
-                    return_value=enable_dfc
+                config.compilation.fusion_patterns,
+                "enable_dispatch_ffn_combine",
+                new_callable=unittest.mock.PropertyMock,
+                return_value=enable_dfc,
             ):
                 torch.compiler.reset()
                 user_input = UserInputConfig(
@@ -95,8 +89,10 @@ class DfcPassTestCase(unittest.TestCase):
                 perf_model = AnalyticPerformanceModel(TEST_DEVICE)
                 with (
                     Runtime(
-                        perf_model, TEST_DEVICE, memory_tracker=MemoryTracker(TEST_DEVICE)
-                    ) as rt,
+                        perf_model,
+                        TEST_DEVICE,
+                        memory_tracker=MemoryTracker(TEST_DEVICE),
+                    ) as rt,  # noqa: F841
                     torch.no_grad(),
                 ):
                     out = model.forward(inputs, pos)
@@ -138,6 +134,8 @@ class DfcPassTestCase(unittest.TestCase):
         if isinstance(result, ModelRunnerMetrics):
             result = asdict(result)
 
-        self.assertIn("tensor_cast.dispatch_ffn_combine.default", result["table_result"])
+        self.assertIn(
+            "tensor_cast.dispatch_ffn_combine.default", result["table_result"]
+        )
         self.assertNotIn("tensor_cast.permute_tokens.default", result["table_result"])
         self.assertNotIn("tensor_cast.unpermute_tokens.default", result["table_result"])

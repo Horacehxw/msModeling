@@ -10,8 +10,7 @@ from tensor_cast.core.model_builder import build_model
 from tensor_cast.core.user_config import UserInputConfig
 from tensor_cast.device import TEST_DEVICE
 from tensor_cast.layers.moe_layer import MoELayer, ParallelMoELayer
-from tensor_cast.model_config import ModelConfig, ParallelConfig, QuantConfig
-from tensor_cast.model_config import MoEConfig
+from tensor_cast.model_config import ModelConfig, MoEConfig, ParallelConfig, QuantConfig
 from tensor_cast.performance_model.analytic import AnalyticPerformanceModel
 from tensor_cast.runtime import Runtime
 from tensor_cast.transformers.custom_model_registry import get_moe_config

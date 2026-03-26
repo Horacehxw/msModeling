@@ -1,4 +1,5 @@
 """Tests for FIA enriched CSV lookup (spec: 2026-03-23-fia-enriched-csv-redesign.md)."""
+
 import shutil
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -8,9 +9,9 @@ import torch
 
 from tensor_cast.performance_model.profiling_database.data_source import QuerySource
 from tensor_cast.performance_model.profiling_database.profiling_data_source import (
-    ProfilingDataSource,
     _normalize_fia_q_shape,
     _parse_fia_q_shape,
+    ProfilingDataSource,
 )
 
 
@@ -168,7 +169,7 @@ class TestLookupAttentionEnriched:
         # So 144 is NOT a block-padded version of 128.
         # _is_block_padded(tc=336, csv=330): ceil(330/16)*16=336 → True!
         # CSV row 2: Q=(336,4,128), avg_seq_len=4096
-        op = _make_attention_op_info(
+        _make_attention_op_info(
             query_shape=(336, 4, 128),
             key_shape=(12307, 128, 128),
             seq_lens=[4096] * 330,  # avg=4096, but batch_size=330 ≠ 336
@@ -277,7 +278,9 @@ _ENRICHED_HEADER = (
 _STATS = ",".join([""] * 27)
 
 
-def _fia_row(q_shape_str, dtype_str, out_shape_str, duration, avg_seq, sparse, kv_heads):
+def _fia_row(
+    q_shape_str, dtype_str, out_shape_str, duration, avg_seq, sparse, kv_heads
+):
     """Build one enriched FIA CSV row."""
     return (
         f'dynamic,MIX_AIC,"""{q_shape_str}""",'
@@ -337,13 +340,21 @@ class TestSparseModeMismatch:
             _fia_row(
                 "128,4,128;12307,128,128;12307,128,128;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;",
                 "DT_BF16;DT_BF16;DT_BF16" + ";DT_UNDEFINED" * 28,
-                "128,4,128;", 120.0, 4096, 0, 8,
+                "128,4,128;",
+                120.0,
+                4096,
+                0,
+                8,
             ),
             # sparse_mode=3 (prefill, causal), kv_heads=8, avg_seq=4096, 65us
             _fia_row(
                 "128,4,128;12307,128,128;12307,128,128;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;",
                 "DT_BF16;DT_BF16;DT_BF16" + ";DT_UNDEFINED" * 28,
-                "128,4,128;", 65.0, 4096, 3, 8,
+                "128,4,128;",
+                65.0,
+                4096,
+                3,
+                8,
             ),
         ]
         db = _build_enriched_db(tmp_path, rows)
@@ -352,8 +363,11 @@ class TestSparseModeMismatch:
     def test_decode_matches_sparse0(self, ds):
         """Decode (query_lens all 1) → sparse_mode=0 → HIT 120us."""
         op = _make_attention_op_with_query_lens(
-            (128, 4, 128), (12307, 8, 128),
-            [4096] * 128, [1] * 128, torch.bfloat16,
+            (128, 4, 128),
+            (12307, 8, 128),
+            [4096] * 128,
+            [1] * 128,
+            torch.bfloat16,
         )
         result = ds.lookup(op)
         assert result is not None
@@ -362,8 +376,11 @@ class TestSparseModeMismatch:
     def test_prefill_matches_sparse3(self, ds):
         """Prefill (query_lens > 1) → sparse_mode=3 → HIT 65us."""
         op = _make_attention_op_with_query_lens(
-            (128, 4, 128), (12307, 8, 128),
-            [4096] * 128, [128] * 1, torch.bfloat16,
+            (128, 4, 128),
+            (12307, 8, 128),
+            [4096] * 128,
+            [128] * 1,
+            torch.bfloat16,
         )
         result = ds.lookup(op)
         assert result is not None
@@ -375,14 +392,21 @@ class TestSparseModeMismatch:
             _fia_row(
                 "128,4,128;12307,128,128;12307,128,128;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;",
                 "DT_BF16;DT_BF16;DT_BF16" + ";DT_UNDEFINED" * 28,
-                "128,4,128;", 65.0, 4096, 3, 8,
+                "128,4,128;",
+                65.0,
+                4096,
+                3,
+                8,
             ),
         ]
         db = _build_enriched_db(tmp_path, rows)
         ds = ProfilingDataSource(str(db), _make_mock_device_profile())
         op = _make_attention_op_with_query_lens(
-            (128, 4, 128), (12307, 8, 128),
-            [4096] * 128, [1] * 128, torch.bfloat16,
+            (128, 4, 128),
+            (12307, 8, 128),
+            [4096] * 128,
+            [1] * 128,
+            torch.bfloat16,
         )
         assert ds.lookup(op) is None
 
@@ -397,13 +421,21 @@ class TestNumKvHeadsMatch:
             _fia_row(
                 "4,16,512;12307,128,512;12307,128,512;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;",
                 "DT_BF16;DT_BF16;DT_BF16" + ";DT_UNDEFINED" * 28,
-                "4,16,512;", 55.0, 4096, 0, 1,
+                "4,16,512;",
+                55.0,
+                4096,
+                0,
+                1,
             ),
             # kv_heads=8 (GQA), sparse_mode=0, avg_seq=4096, 90us
             _fia_row(
                 "128,4,128;12307,128,128;12307,128,128;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;",
                 "DT_BF16;DT_BF16;DT_BF16" + ";DT_UNDEFINED" * 28,
-                "128,4,128;", 90.0, 4096, 0, 8,
+                "128,4,128;",
+                90.0,
+                4096,
+                0,
+                8,
             ),
         ]
         db = _build_enriched_db(tmp_path, rows)
@@ -412,8 +444,11 @@ class TestNumKvHeadsMatch:
     def test_mqa_kv_heads_1(self, ds):
         """key shape[-2]=1 → num_kv_heads=1 → HIT 55us."""
         op = _make_attention_op_with_query_lens(
-            (4, 16, 512), (12307, 1, 512),
-            [4096] * 4, [1] * 4, torch.bfloat16,
+            (4, 16, 512),
+            (12307, 1, 512),
+            [4096] * 4,
+            [1] * 4,
+            torch.bfloat16,
         )
         result = ds.lookup(op)
         assert result is not None
@@ -422,8 +457,11 @@ class TestNumKvHeadsMatch:
     def test_gqa_kv_heads_8(self, ds):
         """key shape[-2]=8 → num_kv_heads=8 → HIT 90us (not 55us)."""
         op = _make_attention_op_with_query_lens(
-            (128, 4, 128), (12307, 8, 128),
-            [4096] * 128, [1] * 128, torch.bfloat16,
+            (128, 4, 128),
+            (12307, 8, 128),
+            [4096] * 128,
+            [1] * 128,
+            torch.bfloat16,
         )
         result = ds.lookup(op)
         assert result is not None
@@ -435,15 +473,22 @@ class TestNumKvHeadsMatch:
             _fia_row(
                 "128,4,128;12307,128,128;12307,128,128;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;",
                 "DT_BF16;DT_BF16;DT_BF16" + ";DT_UNDEFINED" * 28,
-                "128,4,128;", 90.0, 4096, 0, 8,
+                "128,4,128;",
+                90.0,
+                4096,
+                0,
+                8,
             ),
         ]
         db = _build_enriched_db(tmp_path, rows)
         ds = ProfilingDataSource(str(db), _make_mock_device_profile())
         # key with kv_heads=1: 3D (*, 1, head_dim)
         op = _make_attention_op_with_query_lens(
-            (128, 4, 128), (12307, 1, 128),
-            [4096] * 128, [1] * 128, torch.bfloat16,
+            (128, 4, 128),
+            (12307, 1, 128),
+            [4096] * 128,
+            [1] * 128,
+            torch.bfloat16,
         )
         assert ds.lookup(op) is None
 
@@ -461,8 +506,11 @@ class TestBackwardCompatNoRuntimeCols:
     def test_old_csv_still_matches(self, ds):
         """Old CSV without Runtime cols → (N, D, dtype, avg_seq) match only."""
         op = _make_attention_op_with_query_lens(
-            (128, 4, 128), (12307, 128, 128),
-            [4096] * 128, [1] * 128, torch.bfloat16,
+            (128, 4, 128),
+            (12307, 128, 128),
+            [4096] * 128,
+            [1] * 128,
+            torch.bfloat16,
         )
         result = ds.lookup(op)
         assert result is not None
@@ -474,33 +522,42 @@ class TestLatencyColPriority:
 
     def test_microbench_first(self):
         import pandas as pd
-        df = pd.DataFrame({
-            "MicroBench Duration(us)": [1.0],
-            "Profiling Average Duration(us)": [2.0],
-            "Average Duration(us)": [3.0],
-            "Duration(us)": [4.0],
-        })
+
+        df = pd.DataFrame(
+            {
+                "MicroBench Duration(us)": [1.0],
+                "Profiling Average Duration(us)": [2.0],
+                "Average Duration(us)": [3.0],
+                "Duration(us)": [4.0],
+            }
+        )
         assert ProfilingDataSource._latency_col(df) == "MicroBench Duration(us)"
 
     def test_profiling_average_second(self):
         import pandas as pd
-        df = pd.DataFrame({
-            "Profiling Average Duration(us)": [2.0],
-            "Average Duration(us)": [3.0],
-        })
+
+        df = pd.DataFrame(
+            {
+                "Profiling Average Duration(us)": [2.0],
+                "Average Duration(us)": [3.0],
+            }
+        )
         assert ProfilingDataSource._latency_col(df) == "Profiling Average Duration(us)"
 
     def test_average_third(self):
         import pandas as pd
+
         df = pd.DataFrame({"Average Duration(us)": [3.0]})
         assert ProfilingDataSource._latency_col(df) == "Average Duration(us)"
 
     def test_duration_fallback(self):
         import pandas as pd
+
         df = pd.DataFrame({"Duration(us)": [4.0]})
         assert ProfilingDataSource._latency_col(df) == "Duration(us)"
 
     def test_no_col_returns_duration(self):
         import pandas as pd
+
         df = pd.DataFrame({"other": [1.0]})
         assert ProfilingDataSource._latency_col(df) == "Duration(us)"

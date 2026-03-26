@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from enum import Enum, auto
+from enum import auto, Enum
 from typing import Any, Dict, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:

@@ -31,6 +31,5 @@ class compilation:
         enable_dispatch_ffn_combine = True
         enable_kv_rmsnorm_rope_cache = False  # Reserved for future MLA pattern
 
-
     class debug:
         graph_log_url = None

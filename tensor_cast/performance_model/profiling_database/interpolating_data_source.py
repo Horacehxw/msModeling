@@ -11,16 +11,12 @@ Design doc reference: S4.4 (InterpolatingDataSource)
 
 import logging
 import math
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 
 import torch
 
 from .data_source import DataSourcePerformanceModel, QueryResult, QuerySource
 from .profiling_data_source import (
-    COMPOSITE_DECOMPOSERS,
-    DTYPE_MAP,
-    ProfilingDataSource,
-    SubKernelSpec,
     _dtype_byte_size,
     _infer_sparse_mode,
     _is_block_padded,
@@ -30,6 +26,9 @@ from .profiling_data_source import (
     _parse_shape_str,
     _parse_str_list,
     _strip_batch_dim,
+    COMPOSITE_DECOMPOSERS,
+    DTYPE_MAP,
+    ProfilingDataSource,
 )
 
 if TYPE_CHECKING:
@@ -225,10 +224,14 @@ class InterpolatingDataSource(DataSourcePerformanceModel):
         key = args[1]
         seq_lens = args[6]
         query_lens = args[7] if len(args) > 7 else None
-        if not isinstance(query, torch.Tensor) or not isinstance(seq_lens, torch.Tensor):
+        if not isinstance(query, torch.Tensor) or not isinstance(
+            seq_lens, torch.Tensor
+        ):
             return None
 
-        head_dim = key.shape[-1] if isinstance(key, torch.Tensor) and key.ndim >= 1 else 0
+        head_dim = (
+            key.shape[-1] if isinstance(key, torch.Tensor) and key.ndim >= 1 else 0
+        )
         tc_q_3d = _normalize_fia_q_shape(tuple(query.shape), head_dim)
         if tc_q_3d is None:
             return None
@@ -246,9 +249,7 @@ class InterpolatingDataSource(DataSourcePerformanceModel):
         # Infer sparse_mode and num_kv_heads from TC args
         tc_sparse_mode = _infer_sparse_mode(query_lens)
         tc_num_kv_heads = (
-            key.shape[-2]
-            if isinstance(key, torch.Tensor) and key.ndim >= 2
-            else None
+            key.shape[-2] if isinstance(key, torch.Tensor) and key.ndim >= 2 else None
         )
 
         has_sparse_col = "Runtime sparse_mode" in df.columns
@@ -273,7 +274,9 @@ class InterpolatingDataSource(DataSourcePerformanceModel):
                 continue
 
             csv_dtypes_str = str(row.get("Input Data Types", ""))
-            csv_first_dtype = csv_dtypes_str.split(";")[0].strip() if csv_dtypes_str else ""
+            csv_first_dtype = (
+                csv_dtypes_str.split(";")[0].strip() if csv_dtypes_str else ""
+            )
             if dtype_str != csv_first_dtype:
                 continue
 
@@ -283,19 +286,24 @@ class InterpolatingDataSource(DataSourcePerformanceModel):
             # T (token count) filter: must match exactly or within block-padding
             csv_T = csv_q_3d[0]
             tc_T = tc_q_3d[0]
-            if tc_T != csv_T:
-                if not _is_block_padded(tc_T, csv_T) and not _is_block_padded(csv_T, tc_T):
-                    continue
+            if (
+                tc_T != csv_T
+                and not _is_block_padded(tc_T, csv_T)
+                and not _is_block_padded(csv_T, tc_T)
+            ):
+                continue
 
             # sparse_mode filter (skip if CSV lacks column)
-            if has_sparse_col:
-                if tc_sparse_mode != int(row["Runtime sparse_mode"]):
-                    continue
+            if has_sparse_col and tc_sparse_mode != int(row["Runtime sparse_mode"]):
+                continue
 
             # num_kv_heads filter (skip if CSV lacks column)
-            if has_kv_heads_col and tc_num_kv_heads is not None:
-                if tc_num_kv_heads != int(row["Runtime num_key_value_heads"]):
-                    continue
+            if (
+                has_kv_heads_col
+                and tc_num_kv_heads is not None
+                and tc_num_kv_heads != int(row["Runtime num_key_value_heads"])
+            ):
+                continue
 
             candidates.append((float(csv_avg_seq), float(row[latency_col])))
 
@@ -498,7 +506,9 @@ class InterpolatingDataSource(DataSourcePerformanceModel):
                 continue
 
             csv_dtypes_str = str(row.get("Input Data Types", ""))
-            csv_first_dtype = csv_dtypes_str.split(";")[0].strip() if csv_dtypes_str else ""
+            csv_first_dtype = (
+                csv_dtypes_str.split(";")[0].strip() if csv_dtypes_str else ""
+            )
             if dtype_str != csv_first_dtype:
                 continue
 
@@ -508,19 +518,28 @@ class InterpolatingDataSource(DataSourcePerformanceModel):
             # T (token count) filter: must match exactly or within block-padding
             csv_T = csv_q_3d[0]
             tc_T = q_shape_3d[0]
-            if tc_T != csv_T:
-                if not _is_block_padded(tc_T, csv_T) and not _is_block_padded(csv_T, tc_T):
-                    continue
+            if (
+                tc_T != csv_T
+                and not _is_block_padded(tc_T, csv_T)
+                and not _is_block_padded(csv_T, tc_T)
+            ):
+                continue
 
             # sparse_mode filter
-            if has_sparse_col and target_sparse is not None:
-                if int(row["Runtime sparse_mode"]) != target_sparse:
-                    continue
+            if (
+                has_sparse_col
+                and target_sparse is not None
+                and int(row["Runtime sparse_mode"]) != target_sparse
+            ):
+                continue
 
             # num_kv_heads filter
-            if has_kv_heads_col and target_kv_heads is not None:
-                if int(row["Runtime num_key_value_heads"]) != target_kv_heads:
-                    continue
+            if (
+                has_kv_heads_col
+                and target_kv_heads is not None
+                and int(row["Runtime num_key_value_heads"]) != target_kv_heads
+            ):
+                continue
 
             candidates.append((float(csv_avg_seq), float(row[latency_col])))
 

@@ -7,10 +7,10 @@ from pathlib import Path
 import pytest
 
 from tools.perf_data_collection.validate_comm_alignment import (
-    AlignmentReport,
-    AlignmentRow,
     _A3_TOPOLOGIES,
     _CSV_TO_OP,
+    AlignmentReport,
+    AlignmentRow,
     analytic_predict_us,
     validate_csv,
     validate_directory,
@@ -20,6 +20,7 @@ from tools.perf_data_collection.validate_comm_alignment import (
 # ---------------------------------------------------------------------------
 # analytic_predict_us unit tests
 # ---------------------------------------------------------------------------
+
 
 class TestAnalyticPredictUs:
     """Verify analytic formulas match CommAnalyticModel logic."""
@@ -63,7 +64,7 @@ class TestAnalyticPredictUs:
         bw = topo.bandwidth_bytes_ps * topo.comm_efficiency
         lat = topo.latency_s
         time_ring = ((n - 1) * lat + (n - 1) * m / bw) * 1e6
-        time_rec  = (math.log2(n) * lat + (n - 1) * m / bw) * 1e6
+        time_rec = (math.log2(n) * lat + (n - 1) * m / bw) * 1e6
         assert abs(result - min(time_ring, time_rec)) < 0.01
 
     def test_reduce_scatter_formula(self):
@@ -74,7 +75,7 @@ class TestAnalyticPredictUs:
         bw = topo.bandwidth_bytes_ps * topo.comm_efficiency
         lat = topo.latency_s
         time_ring = ((n - 1) * lat + (n - 1) * m / n / bw) * 1e6
-        time_rec  = (math.log2(n) * lat + (n - 1) * m / n / bw) * 1e6
+        time_rec = (math.log2(n) * lat + (n - 1) * m / n / bw) * 1e6
         assert abs(result - min(time_ring, time_rec)) < 0.01
 
     def test_all_to_all_formula(self):
@@ -85,7 +86,7 @@ class TestAnalyticPredictUs:
         bw = topo.bandwidth_bytes_ps * topo.comm_efficiency
         lat = topo.latency_s
         time_pairwise = ((n - 1) * lat + m / bw) * 1e6
-        time_bruck    = (math.log2(n) * lat + m / bw) * 1e6
+        time_bruck = (math.log2(n) * lat + m / bw) * 1e6
         assert abs(result - min(time_pairwise, time_bruck)) < 0.01
 
     def test_single_device_returns_zero(self):
@@ -106,6 +107,7 @@ class TestAnalyticPredictUs:
 # ---------------------------------------------------------------------------
 # AlignmentRow tests
 # ---------------------------------------------------------------------------
+
 
 class TestAlignmentRow:
     def _row(self, measured, predicted):
@@ -147,11 +149,11 @@ class TestAlignmentRow:
 # AlignmentReport tests
 # ---------------------------------------------------------------------------
 
+
 class TestAlignmentReport:
     def _make_report(self, ratios, tolerance=2.0):
         rows = [
-            AlignmentRow("all_reduce", 1024, 16, 1, r * 100.0, 100.0)
-            for r in ratios
+            AlignmentRow("all_reduce", 1024, 16, 1, r * 100.0, 100.0) for r in ratios
         ]
         return AlignmentReport(rows=rows, tolerance=tolerance)
 
@@ -184,10 +186,18 @@ class TestAlignmentReport:
 # validate_csv integration tests
 # ---------------------------------------------------------------------------
 
+
 def _write_comm_csv(path: Path, rows: list):
     with path.open("w", newline="") as f:
         writer = csv.DictWriter(
-            f, fieldnames=["message_bytes", "num_devices", "dtype", "topology_tier", "Duration(us)"]
+            f,
+            fieldnames=[
+                "message_bytes",
+                "num_devices",
+                "dtype",
+                "topology_tier",
+                "Duration(us)",
+            ],
         )
         writer.writeheader()
         writer.writerows(rows)
@@ -200,25 +210,29 @@ def comm_csv_dir(tmp_path):
     rows_allreduce = []
     for msg_bytes in [65536, 1310720]:
         predicted = analytic_predict_us("all_reduce", msg_bytes, 16, 1)
-        rows_allreduce.append({
-            "message_bytes": msg_bytes,
-            "num_devices": 16,
-            "dtype": "DT_BF16",
-            "topology_tier": 1,
-            "Duration(us)": f"{predicted:.2f}",
-        })
+        rows_allreduce.append(
+            {
+                "message_bytes": msg_bytes,
+                "num_devices": 16,
+                "dtype": "DT_BF16",
+                "topology_tier": 1,
+                "Duration(us)": f"{predicted:.2f}",
+            }
+        )
     _write_comm_csv(tmp_path / "hcom_allReduce_.csv", rows_allreduce)
 
     rows_allgather = []
     for msg_bytes in [655360]:
         predicted = analytic_predict_us("all_gather", msg_bytes, 16, 1)
-        rows_allgather.append({
-            "message_bytes": msg_bytes,
-            "num_devices": 16,
-            "dtype": "DT_BF16",
-            "topology_tier": 1,
-            "Duration(us)": f"{predicted:.2f}",
-        })
+        rows_allgather.append(
+            {
+                "message_bytes": msg_bytes,
+                "num_devices": 16,
+                "dtype": "DT_BF16",
+                "topology_tier": 1,
+                "Duration(us)": f"{predicted:.2f}",
+            }
+        )
     _write_comm_csv(tmp_path / "hcom_allGather_.csv", rows_allgather)
 
     return tmp_path
@@ -226,7 +240,9 @@ def comm_csv_dir(tmp_path):
 
 def test_validate_csv_all_pass(comm_csv_dir):
     """When measured == predicted, all rows should PASS."""
-    report = validate_csv(comm_csv_dir / "hcom_allReduce_.csv", "all_reduce", tolerance=2.0)
+    report = validate_csv(
+        comm_csv_dir / "hcom_allReduce_.csv", "all_reduce", tolerance=2.0
+    )
     assert report.fail_count == 0
     assert report.warn_count == 0
     assert report.pass_count == 2
@@ -235,7 +251,9 @@ def test_validate_csv_all_pass(comm_csv_dir):
 
 def test_validate_csv_ratio_near_one(comm_csv_dir):
     """Measured values equal to analytic predictions → ratio ≈ 1.0."""
-    report = validate_csv(comm_csv_dir / "hcom_allReduce_.csv", "all_reduce", tolerance=2.0)
+    report = validate_csv(
+        comm_csv_dir / "hcom_allReduce_.csv", "all_reduce", tolerance=2.0
+    )
     for row in report.rows:
         assert abs(row.ratio - 1.0) < 0.01, f"Expected ratio≈1.0, got {row.ratio:.3f}"
 
@@ -243,13 +261,18 @@ def test_validate_csv_ratio_near_one(comm_csv_dir):
 def test_validate_csv_fail_on_large_discrepancy(tmp_path):
     """Measured 10x predicted → FAIL."""
     predicted = analytic_predict_us("all_reduce", 1310720, 16, 1)
-    _write_comm_csv(tmp_path / "hcom_allReduce_.csv", [{
-        "message_bytes": 1310720,
-        "num_devices": 16,
-        "dtype": "DT_BF16",
-        "topology_tier": 1,
-        "Duration(us)": f"{predicted * 10:.2f}",
-    }])
+    _write_comm_csv(
+        tmp_path / "hcom_allReduce_.csv",
+        [
+            {
+                "message_bytes": 1310720,
+                "num_devices": 16,
+                "dtype": "DT_BF16",
+                "topology_tier": 1,
+                "Duration(us)": f"{predicted * 10:.2f}",
+            }
+        ],
+    )
     report = validate_csv(tmp_path / "hcom_allReduce_.csv", "all_reduce", tolerance=2.0)
     assert report.fail_count == 1
     assert not report.ok()
@@ -275,20 +298,30 @@ def test_validate_directory_all_ok_when_all_pass(comm_csv_dir):
 def test_validate_directory_not_ok_when_fail(tmp_path):
     """Directory with a failing CSV → all_ok=False."""
     predicted = analytic_predict_us("all_reduce", 1310720, 16, 1)
-    _write_comm_csv(tmp_path / "hcom_allReduce_.csv", [{
-        "message_bytes": 1310720,
-        "num_devices": 16,
-        "dtype": "DT_BF16",
-        "topology_tier": 1,
-        "Duration(us)": f"{predicted * 10:.2f}",
-    }])
+    _write_comm_csv(
+        tmp_path / "hcom_allReduce_.csv",
+        [
+            {
+                "message_bytes": 1310720,
+                "num_devices": 16,
+                "dtype": "DT_BF16",
+                "topology_tier": 1,
+                "Duration(us)": f"{predicted * 10:.2f}",
+            }
+        ],
+    )
     _, all_ok = validate_directory(tmp_path, tolerance=2.0)
     assert not all_ok
 
 
 def test_csv_to_op_mapping_covers_all_four_ops():
     """All four HCCL op types must be covered."""
-    assert set(_CSV_TO_OP.values()) == {"all_reduce", "all_gather", "reduce_scatter", "all_to_all"}
+    assert set(_CSV_TO_OP.values()) == {
+        "all_reduce",
+        "all_gather",
+        "reduce_scatter",
+        "all_to_all",
+    }
 
 
 def test_topology_tier2_die_level_params():

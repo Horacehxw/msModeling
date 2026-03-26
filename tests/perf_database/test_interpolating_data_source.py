@@ -85,8 +85,10 @@ _INTERP_FIA_ROW_COMMON = (
 INTERP_FIA_CSV = (
     "Input Shapes,Input Data Types,Input Formats,Output Shapes,"
     "Output Data Types,Output Formats,Duration(us),avg_seq_len\n"
-    + _INTERP_FIA_ROW_COMMON + ",100.0,1000\n"
-    + _INTERP_FIA_ROW_COMMON + ",1600.0,4000"
+    + _INTERP_FIA_ROW_COMMON
+    + ",100.0,1000\n"
+    + _INTERP_FIA_ROW_COMMON
+    + ",1600.0,4000"
 )
 
 
@@ -219,9 +221,9 @@ def test_attention_interpolation_sqrt(interp_data_dir):
     assert result is not None, "Should interpolate attention with sqrt transform"
     assert result.source == QuerySource.INTERPOLATED
     # With sqrt transform, expect ~721 (not 600 from linear)
-    assert (
-        680.0 < result.latency_us < 760.0
-    ), f"Expected ~721 with sqrt, got {result.latency_us}"
+    assert 680.0 < result.latency_us < 760.0, (
+        f"Expected ~721 with sqrt, got {result.latency_us}"
+    )
 
 
 def test_unmapped_op_no_interpolation(interp_data_dir):
@@ -267,12 +269,12 @@ def test_interpolate_elementwise_basic(interp_data_dir):
         out,
     )
     result = ds.lookup(op)
-    assert (
-        result is not None
-    ), "Should interpolate elementwise (192,7168) between bracketing rows"
-    assert (
-        abs(result.latency_us - 9.0) < 0.5
-    ), f"Expected ~9.0 us, got {result.latency_us}"
+    assert result is not None, (
+        "Should interpolate elementwise (192,7168) between bracketing rows"
+    )
+    assert abs(result.latency_us - 9.0) < 0.5, (
+        f"Expected ~9.0 us, got {result.latency_us}"
+    )
     assert result.source == QuerySource.INTERPOLATED
     assert result.confidence == 0.7
 
@@ -297,16 +299,16 @@ def test_interpolate_elementwise_dtype_scaled(interp_data_dir):
         out,
     )
     result = ds.lookup(op)
-    assert (
-        result is not None
-    ), "Should interpolate FP32 target with dtype-scaled BF16 candidates"
-    assert (
-        abs(result.latency_us - 18.0) < 1.0
-    ), f"Expected ~18.0 us, got {result.latency_us}"
+    assert result is not None, (
+        "Should interpolate FP32 target with dtype-scaled BF16 candidates"
+    )
+    assert abs(result.latency_us - 18.0) < 1.0, (
+        f"Expected ~18.0 us, got {result.latency_us}"
+    )
     assert result.source == QuerySource.INTERPOLATED
-    assert (
-        result.confidence == 0.6
-    ), f"Dtype-scaled interpolation should have confidence=0.6, got {result.confidence}"
+    assert result.confidence == 0.6, (
+        f"Dtype-scaled interpolation should have confidence=0.6, got {result.confidence}"
+    )
 
 
 def test_interpolate_elementwise_hidden_dim_filter(interp_data_dir):
@@ -369,6 +371,6 @@ class TestFiaRawNoInterpolation:
 
         result = interp.lookup(op)
         # Raw CSV cannot be interpolated on structured attention dims — must return None
-        assert (
-            result is None
-        ), f"InterpolatingDataSource must not interpolate raw FIA CSV, got {result}"
+        assert result is None, (
+            f"InterpolatingDataSource must not interpolate raw FIA CSV, got {result}"
+        )

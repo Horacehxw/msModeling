@@ -92,4 +92,3 @@ class InputGeneratorTestCase(unittest.TestCase):
         with Runtime(perf_model, machine_config), torch.no_grad():
             outputs = model.forward(**inputs)
             self.assertEqual(outputs.shape, output_shape)
-

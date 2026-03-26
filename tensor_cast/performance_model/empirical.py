@@ -13,7 +13,6 @@ import torch
 from overrides import override
 
 from ..device import DeviceProfile
-from .analytic import AnalyticPerformanceModel
 from .base import PerformanceModel
 from .op_invoke_info import OpInvokeInfo
 from .profiling_database.data_source import DataSourcePerformanceModel
@@ -263,9 +262,7 @@ class EmpiricalPerformanceModel(PerformanceModel):
                 if isinstance(a, torch.Tensor)
             ]
             shape_sig = tuple(tc_shapes)
-            self._hit_details.append(
-                (func_name, kernel_type, shape_sig, empirical_s)
-            )
+            self._hit_details.append((func_name, kernel_type, shape_sig, empirical_s))
             return PerformanceModel.Result(
                 execution_time_s=empirical_s,
                 statistics={

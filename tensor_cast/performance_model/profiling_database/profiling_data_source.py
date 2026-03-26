@@ -3,10 +3,11 @@
 Design doc reference: S4.2 (ProfilingDataSource), S4.9 (FRACTAL_NZ)
 """
 
+import contextlib
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
@@ -114,14 +115,10 @@ def _infer_sparse_mode(query_lens) -> int:
     Decode (all query_lens == 1) uses no mask -> sparse_mode=0.
     """
     if query_lens is not None and isinstance(query_lens, torch.Tensor):
-        try:
+        with contextlib.suppress(Exception):
             if query_lens.numel() > 0 and query_lens.max().item() > 1:
                 return 3  # right_down_causal
-        except Exception:
-            pass
     return 0  # no_mask
-
-
 
 
 # while TC's aten.mm receives (K,N) after F.linear transpose.
@@ -352,7 +349,7 @@ def _is_decode_mla(args: tuple) -> bool:
         return True
     if isinstance(query_lens, torch.Tensor):
         try:
-            return bool(query_lens.max().item() <= 1)
+            return query_lens.max().item() <= 1
         except Exception:
             return True
     return True
@@ -469,8 +466,7 @@ def _decompose_mla_common(
                 dtype=dtype_str,
                 query_mode="attention",
                 attention_params={
-                    "q_shape_3d": fia_q_normalized
-                    or (batch_size, num_heads, head_dim),
+                    "q_shape_3d": fia_q_normalized or (batch_size, num_heads, head_dim),
                     "avg_seq_len": avg_seq_len,
                     "sparse_mode": 0,
                     "num_kv_heads": 1,
@@ -524,7 +520,12 @@ def _decompose_mlapo(
     q_b_proj = args[5]  # (num_heads*qk_head_dim, q_lora_rank)
     kv_a_proj = args[6]  # (kv_lora_rank+rope_dim, hidden_size)
 
-    if hidden_states is None or q_a_proj is None or q_b_proj is None or kv_a_proj is None:
+    if (
+        hidden_states is None
+        or q_a_proj is None
+        or q_b_proj is None
+        or kv_a_proj is None
+    ):
         return None
 
     dtype_str = DTYPE_MAP.get(hidden_states.dtype)
@@ -579,7 +580,12 @@ def _decompose_mlapo_quant(
     q_b_proj = args[5]  # (num_heads*qk_head_dim, q_lora_rank)
     kv_a_proj = args[6]  # (kv_lora_rank+rope_dim, hidden_size)
 
-    if hidden_states is None or q_a_proj is None or q_b_proj is None or kv_a_proj is None:
+    if (
+        hidden_states is None
+        or q_a_proj is None
+        or q_b_proj is None
+        or kv_a_proj is None
+    ):
         return None
 
     dtype_str = DTYPE_MAP.get(hidden_states.dtype)
@@ -1123,7 +1129,9 @@ class ProfilingDataSource(DataSourcePerformanceModel):
             csv_N, csv_D = csv_q_3d[1], csv_q_3d[2]
 
             csv_dtypes_str = str(row.get("Input Data Types", ""))
-            csv_first_dtype = csv_dtypes_str.split(";")[0].strip() if csv_dtypes_str else ""
+            csv_first_dtype = (
+                csv_dtypes_str.split(";")[0].strip() if csv_dtypes_str else ""
+            )
             if dtype_str != csv_first_dtype:
                 continue
 
@@ -1131,14 +1139,20 @@ class ProfilingDataSource(DataSourcePerformanceModel):
                 continue
 
             # sparse_mode exact match (skip if CSV lacks column or param)
-            if has_sparse_col and target_sparse is not None:
-                if int(row["Runtime sparse_mode"]) != target_sparse:
-                    continue
+            if (
+                has_sparse_col
+                and target_sparse is not None
+                and int(row["Runtime sparse_mode"]) != target_sparse
+            ):
+                continue
 
             # num_kv_heads exact match (skip if CSV lacks column or param)
-            if has_kv_heads_col and target_kv_heads is not None:
-                if int(row["Runtime num_key_value_heads"]) != target_kv_heads:
-                    continue
+            if (
+                has_kv_heads_col
+                and target_kv_heads is not None
+                and int(row["Runtime num_key_value_heads"]) != target_kv_heads
+            ):
+                continue
 
             if target_avg_seq != csv_avg_seq:
                 continue
@@ -1146,9 +1160,12 @@ class ProfilingDataSource(DataSourcePerformanceModel):
             # T dim: block-padding tolerance
             tc_T = q_shape_3d[0]
             csv_T = csv_q_3d[0]
-            if tc_T != csv_T:
-                if not _is_block_padded(tc_T, csv_T) and not _is_block_padded(csv_T, tc_T):
-                    continue
+            if (
+                tc_T != csv_T
+                and not _is_block_padded(tc_T, csv_T)
+                and not _is_block_padded(csv_T, tc_T)
+            ):
+                continue
 
             lat = float(row[latency_col])
             logger.debug(
@@ -1251,7 +1268,7 @@ class ProfilingDataSource(DataSourcePerformanceModel):
 
         # Extract rank (second-to-last) and rank_group (last)
         rank_group = op_invoke_info.args[-1]
-        rank = op_invoke_info.args[-2]
+        rank = op_invoke_info.args[-2]  # noqa: F841
         if not isinstance(rank_group, (list, tuple)):
             self.last_miss_reason = "invalid_args"
             return None
@@ -1351,7 +1368,9 @@ class ProfilingDataSource(DataSourcePerformanceModel):
             return None
 
         # Get head_dim from key tensor
-        head_dim = key.shape[-1] if isinstance(key, torch.Tensor) and key.ndim >= 1 else 0
+        head_dim = (
+            key.shape[-1] if isinstance(key, torch.Tensor) and key.ndim >= 1 else 0
+        )
 
         # Normalize TC query to 3D
         tc_q_3d = _normalize_fia_q_shape(tuple(query.shape), head_dim)
@@ -1376,9 +1395,7 @@ class ProfilingDataSource(DataSourcePerformanceModel):
 
         # Extract num_kv_heads from key tensor: shape[-2] is kv_head_num
         tc_num_kv_heads = (
-            key.shape[-2]
-            if isinstance(key, torch.Tensor) and key.ndim >= 2
-            else None
+            key.shape[-2] if isinstance(key, torch.Tensor) and key.ndim >= 2 else None
         )
 
         # Check if CSV has optional Runtime columns
@@ -1406,7 +1423,9 @@ class ProfilingDataSource(DataSourcePerformanceModel):
 
             # Check dtype
             csv_dtypes_str = str(row.get("Input Data Types", ""))
-            csv_first_dtype = csv_dtypes_str.split(";")[0].strip() if csv_dtypes_str else ""
+            csv_first_dtype = (
+                csv_dtypes_str.split(";")[0].strip() if csv_dtypes_str else ""
+            )
             if tc_dtype_str != csv_first_dtype:
                 continue
 
@@ -1415,16 +1434,18 @@ class ProfilingDataSource(DataSourcePerformanceModel):
                 continue
 
             # sparse_mode exact match (skip if CSV lacks column)
-            if has_sparse_mode_col:
-                csv_sparse = int(row["Runtime sparse_mode"])
-                if tc_sparse_mode != csv_sparse:
-                    continue
+            if has_sparse_mode_col and tc_sparse_mode != int(
+                row["Runtime sparse_mode"]
+            ):
+                continue
 
             # num_kv_heads exact match (skip if CSV lacks column)
-            if has_kv_heads_col and tc_num_kv_heads is not None:
-                csv_kv_heads = int(row["Runtime num_key_value_heads"])
-                if tc_num_kv_heads != csv_kv_heads:
-                    continue
+            if (
+                has_kv_heads_col
+                and tc_num_kv_heads is not None
+                and tc_num_kv_heads != int(row["Runtime num_key_value_heads"])
+            ):
+                continue
 
             # avg_seq_len exact match
             if tc_avg_seq_len != csv_avg_seq:
@@ -1433,9 +1454,12 @@ class ProfilingDataSource(DataSourcePerformanceModel):
             # First dim (T): block-padding tolerance
             tc_T = tc_q_3d[0]
             csv_T = csv_q_3d[0]
-            if tc_T != csv_T:
-                if not _is_block_padded(tc_T, csv_T) and not _is_block_padded(csv_T, tc_T):
-                    continue
+            if (
+                tc_T != csv_T
+                and not _is_block_padded(tc_T, csv_T)
+                and not _is_block_padded(csv_T, tc_T)
+            ):
+                continue
 
             lat = float(row[latency_col])
             logger.debug(
@@ -1520,8 +1544,7 @@ class ProfilingDataSource(DataSourcePerformanceModel):
             csv_shape_stripped = _strip_batch_dim(csv_shape)
 
             shape_matched = (
-                tc_output_shape == csv_shape
-                or tc_output_shape == csv_shape_stripped
+                tc_output_shape in (csv_shape, csv_shape_stripped)
                 or self._shapes_match_with_padding(tc_output_shape, csv_shape)
                 or self._shapes_match_with_padding(tc_output_shape, csv_shape_stripped)
             )
@@ -1530,8 +1553,7 @@ class ProfilingDataSource(DataSourcePerformanceModel):
             if not shape_matched and len(tc_output_shape) == 3 and len(csv_shape) == 2:
                 flat = (tc_output_shape[0] * tc_output_shape[1], tc_output_shape[2])
                 shape_matched = (
-                    flat == csv_shape
-                    or flat == csv_shape_stripped
+                    flat in (csv_shape, csv_shape_stripped)
                     or self._shapes_match_with_padding(flat, csv_shape)
                     or self._shapes_match_with_padding(flat, csv_shape_stripped)
                 )
@@ -1656,7 +1678,7 @@ class ProfilingDataSource(DataSourcePerformanceModel):
 
         # Log miss with shape details for debugging
         primary_kernel = kernel_types[0]
-        load_name = csv_file if csv_file else primary_kernel
+        load_name = csv_file or primary_kernel
         df = self._load_csv(load_name)
         csv_shapes_list = []
         if df is not None:
@@ -1826,7 +1848,9 @@ class ProfilingDataSource(DataSourcePerformanceModel):
                 shape_3d = (
                     tc_shape_stripped
                     if len(tc_shape_stripped) == 3
-                    else tc_shape if len(tc_shape) == 3 else None
+                    else tc_shape
+                    if len(tc_shape) == 3
+                    else None
                 )
                 if shape_3d is not None:
                     # Flatten first two dims: TC (B, M, D) → CSV (B*M, D)

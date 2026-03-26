@@ -665,6 +665,7 @@ def test_matmul_dtype_relaxed_and_transpose_absorbed(tmp_path):
     assert abs(result.latency_us - 47.4) < 0.01
     assert result.details.get("kernel_type") == "MatMulV2"
 
+
 COMPOSITE_MATMUL_CSV = """\
 Input Shapes,Input Data Types,Input Formats,Output Shapes,Output Data Types,Output Formats,Average Duration(us)
 "136,512;32,320,16,16","DT_BF16;DT_BF16","ND;FRACTAL_NZ","136,5120","DT_BF16","ND",14.156
@@ -1228,6 +1229,7 @@ _ATTN_FIA_HEADER = (
     "Output Data Types,Output Formats,Duration(us),avg_seq_len"
 )
 
+
 def _make_fia_row(q_shape_str, out_shape_str, duration, avg_seq_len):
     """Build one enriched FIA CSV row with minimal slot data."""
     return (
@@ -1243,19 +1245,29 @@ def _make_fia_row(q_shape_str, out_shape_str, duration, avg_seq_len):
         f',"""{out_shape_str}""","DT_BF16;FLOAT","ND;ND",{duration},{avg_seq_len}'
     )
 
+
 ATTN_FIA_CSV = (
-    _ATTN_FIA_HEADER + "\n"
+    _ATTN_FIA_HEADER
+    + "\n"
     + _make_fia_row(
         "7000,4,128;56,128,4,128;56,128,4,128;;;;7000;;;;;;;;7000,56;;;;;;;;;;;;;;",
-        "7000,4,128;", 98.50, 3500,
-    ) + "\n"
+        "7000,4,128;",
+        98.50,
+        3500,
+    )
+    + "\n"
     + _make_fia_row(
         "10,4,128;360,128,4,128;360,128,4,128;;;;10;;;;;;;;10,36;;;;;;;;;;;;;;",
-        "10,4,128;", 890.70, 4500,
-    ) + "\n"
+        "10,4,128;",
+        890.70,
+        4500,
+    )
+    + "\n"
     + _make_fia_row(
         "1,8,128;32,128,8,128;32,128,8,128;;;;1;;;;;;;;1,32;;;;;;;;;;;;;;",
-        "1,8,128;", 112.36, 4096,
+        "1,8,128;",
+        112.36,
+        4096,
     )
 )
 
@@ -1975,7 +1987,7 @@ def test_csv_file_field_fallback(moe_data_dir):
 
 # --- Integration tests: real CANN 8.3 / 8.5 data directories ---
 
-from pathlib import Path
+from pathlib import Path  # noqa: E402
 
 _CANN83_DATA_DIR = Path(__file__).resolve().parents[2] / (
     "tensor_cast/performance_model/profiling_database/data/"
@@ -2055,7 +2067,7 @@ def test_mlapo_composite_not_rejected():
             torch.randn(576, 512),
         ]
 
-        result = ds.lookup(mock_op)
+        ds.lookup(mock_op)
 
         # Result may be None (CSV missing), but reason should NOT be mla_not_implemented
         assert ds.last_miss_reason != "mla_not_implemented", (

@@ -89,14 +89,10 @@ class FlashCommV1Pass(TensorCastGraphModulePass):
         pattern2_matches = self._find_pattern2_matches(graph)
 
         for comm_node, marker_node, norm_node in pattern1_matches:
-            self._rewrite_pattern1(
-                graph, comm_node, marker_node, norm_node, world_size
-            )
+            self._rewrite_pattern1(graph, comm_node, marker_node, norm_node, world_size)
 
         for marker_node, comm_node, norm_node in pattern2_matches:
-            self._rewrite_pattern2(
-                graph, marker_node, comm_node, norm_node, world_size
-            )
+            self._rewrite_pattern2(graph, marker_node, comm_node, norm_node, world_size)
 
         pattern3_matches = self._find_pattern3_matches(graph)
         for (
@@ -116,11 +112,7 @@ class FlashCommV1Pass(TensorCastGraphModulePass):
                 world_size,
             )
 
-        if (
-            not pattern1_matches
-            and not pattern2_matches
-            and not pattern3_matches
-        ):
+        if not pattern1_matches and not pattern2_matches and not pattern3_matches:
             logger.debug("No FlashCommV1 patterns found for transformation")
             return gm
 
@@ -134,9 +126,7 @@ class FlashCommV1Pass(TensorCastGraphModulePass):
         )
 
         comm_nodes_to_cleanup = {comm_node for comm_node, _, _ in pattern1_matches}
-        comm_nodes_to_cleanup.update(
-            comm_node for _, comm_node, _ in pattern2_matches
-        )
+        comm_nodes_to_cleanup.update(comm_node for _, comm_node, _ in pattern2_matches)
         comm_nodes_to_cleanup.update(
             comm_node for comm_node, _, _, _, _ in pattern3_matches
         )
@@ -184,8 +174,10 @@ class FlashCommV1Pass(TensorCastGraphModulePass):
                     if self._is_pattern13_norm_op(marker_user):
                         patterns.append((node, user, marker_user))
                         logger.debug(
-                            "Found FlashCommV1 pattern 1: "
-                            f"{node.target} → {user.target} → {marker_user.target}"
+                            "Found FlashCommV1 pattern 1: %s → %s → %s",
+                            node.target,
+                            user.target,
+                            marker_user.target,
                         )
 
         return patterns
@@ -212,8 +204,10 @@ class FlashCommV1Pass(TensorCastGraphModulePass):
 
             patterns.append((marker_node, comm_node, node))
             logger.debug(
-                "Found FlashCommV1 pattern 2: "
-                f"{marker_node.target} + {comm_node.target} → {node.target}"
+                "Found FlashCommV1 pattern 2: %s + %s → %s",
+                marker_node.target,
+                comm_node.target,
+                node.target,
             )
 
         return patterns
@@ -371,9 +365,7 @@ class FlashCommV1Pass(TensorCastGraphModulePass):
         """Read rank and rank_group from the original all_reduce node."""
         rank = comm_node.args[1] if len(comm_node.args) > 1 else 0
         rank_group = (
-            comm_node.args[2]
-            if len(comm_node.args) > 2
-            else list(range(world_size))
+            comm_node.args[2] if len(comm_node.args) > 2 else list(range(world_size))
         )
         return rank, rank_group
 
@@ -420,9 +412,7 @@ class FlashCommV1Pass(TensorCastGraphModulePass):
             return add_node.args[0]
         return None
 
-    def _match_comm_to_add_input(
-        self, node: Node
-    ) -> Optional[Tuple[Node, Node]]:
+    def _match_comm_to_add_input(self, node: Node) -> Optional[Tuple[Node, Node]]:
         """Match a direct comm or comm->view path that feeds add."""
         if self._is_comm_op(node):
             return node, node
@@ -564,9 +554,11 @@ class FlashCommV1Pass(TensorCastGraphModulePass):
         self._insert_pattern2_output_all_gathers(graph, norm_node, rank, rank_group)
 
         logger.debug(
-            "Transformed FlashCommV1 pattern 2: "
-            f"{marker_node.target} + {comm_node.target} → {norm_node.target} "
-            f"with world_size={world_size}"
+            "Transformed FlashCommV1 pattern 2: %s + %s → %s with world_size=%d",
+            marker_node.target,
+            comm_node.target,
+            norm_node.target,
+            world_size,
         )
 
     def _rewrite_pattern1(
@@ -592,14 +584,14 @@ class FlashCommV1Pass(TensorCastGraphModulePass):
             graph, comm_node, marker_node, rank, rank_group
         )
 
-        self._insert_pattern13_output_all_gather(
-            graph, norm_node, rank, rank_group
-        )
+        self._insert_pattern13_output_all_gather(graph, norm_node, rank, rank_group)
 
         logger.debug(
-            "Transformed FlashCommV1 pattern 1: "
-            f"{comm_node.target} → {marker_node.target} → {norm_node.target} "
-            f"with world_size={world_size}"
+            "Transformed FlashCommV1 pattern 1: %s → %s → %s with world_size=%d",
+            comm_node.target,
+            marker_node.target,
+            norm_node.target,
+            world_size,
         )
 
     def _find_pattern3_matches(
@@ -625,9 +617,11 @@ class FlashCommV1Pass(TensorCastGraphModulePass):
             seen.add(key)
             patterns.append(match)
             logger.debug(
-                "Found FlashCommV1 pattern 3: "
-                f"{match[0].target} → {match[2].target} → "
-                f"{match[3].target} → {match[4].target}"
+                "Found FlashCommV1 pattern 3: %s → %s → %s → %s",
+                match[0].target,
+                match[2].target,
+                match[3].target,
+                match[4].target,
             )
 
         return patterns
@@ -668,12 +662,12 @@ class FlashCommV1Pass(TensorCastGraphModulePass):
         else:
             comm_output_node.replace_input_with(comm_node, reduce_scatter)
 
-        self._insert_pattern13_output_all_gather(
-            graph, norm_node, rank, rank_group
-        )
+        self._insert_pattern13_output_all_gather(graph, norm_node, rank, rank_group)
         logger.debug(
-            "Transformed FlashCommV1 pattern 3: "
-            f"{comm_node.target} → {add_node.target} → "
-            f"{region_end_node.target} → {norm_node.target} "
-            f"with world_size={world_size}"
+            "Transformed FlashCommV1 pattern 3: %s → %s → %s → %s with world_size=%d",
+            comm_node.target,
+            add_node.target,
+            region_end_node.target,
+            norm_node.target,
+            world_size,
         )
