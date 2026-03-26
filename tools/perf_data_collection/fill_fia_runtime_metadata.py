@@ -22,6 +22,7 @@ RUNTIME_ACTUAL_SEQ_LENGTHS_VALUES = "Runtime actual_seq_lengths_values"
 RUNTIME_ACTUAL_SEQ_LENGTHS_KV_SHAPE = "Runtime actual_seq_lengths_kv_shape"
 RUNTIME_ACTUAL_SEQ_LENGTHS_KV_VALUES = "Runtime actual_seq_lengths_kv_values"
 RUNTIME_AVG_SEQ_LEN = "Runtime avg_seq_len"
+RUNTIME_OPERATOR_INPUT_SHAPES_RAW = "Runtime operator_input_shapes_raw"
 RUNTIME_BLOCK_TABLE_SHAPE = "Runtime block_table_shape"
 RUNTIME_BLOCK_TABLE_VALID_BLOCKS = "Runtime block_table_valid_blocks"
 RUNTIME_NUM_HEADS = "Runtime num_heads"
@@ -87,10 +88,11 @@ def format_shape_len(values: list[int] | None) -> str:
 
 
 def build_csv_signature(row: dict[str, str]) -> tuple:
+    input_shapes_source = row.get(RUNTIME_OPERATOR_INPUT_SHAPES_RAW) or row.get("Input Shapes", "")
     return (
-        parse_input_shape_slot(row.get("Input Shapes", ""), 0),
-        parse_input_shape_slot(row.get("Input Shapes", ""), 1),
-        parse_input_shape_slot(row.get("Input Shapes", ""), 2),
+        parse_input_shape_slot(input_shapes_source, 0),
+        parse_input_shape_slot(input_shapes_source, 1),
+        parse_input_shape_slot(input_shapes_source, 2),
         parse_shape_token(row.get(RUNTIME_BLOCK_TABLE_SHAPE, "")),
         parse_runtime_int(row.get(RUNTIME_NUM_HEADS, "")),
         parse_runtime_int(row.get(RUNTIME_NUM_KEY_VALUE_HEADS, "")),

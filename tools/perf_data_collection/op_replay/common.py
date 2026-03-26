@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 from pathlib import Path
 import re
 from typing import TYPE_CHECKING
@@ -29,6 +30,8 @@ SUPPORTED_DEVICES = [
     "ATLAS_800_A3_752T_128G_DIE",
     "ATLAS_800_A3_560T_128G_DIE",
 ]
+DEFAULT_REPLAY_REPEAT_COUNT = 30
+REPLAY_REPEAT_COUNT_ENV = "MSMODELING_OP_REPLAY_REPEAT_COUNT"
 
 torch = None
 torch_npu = None
@@ -211,6 +214,28 @@ def iter_csv_rows(target_data_dir: Path, csv_name: str):
                 yield csv_path, row_index, row
 
 
+def get_replay_repeat_count(args_repeat_count: int | None) -> int:
+    if args_repeat_count is not None:
+        if args_repeat_count <= 0:
+            raise ValueError(f"--repeat-count must be positive, got {args_repeat_count}")
+        return args_repeat_count
+
+    raw_env = (os.environ.get(REPLAY_REPEAT_COUNT_ENV, "") or "").strip()
+    if not raw_env:
+        return DEFAULT_REPLAY_REPEAT_COUNT
+
+    repeat_count = int(raw_env)
+    if repeat_count <= 0:
+        raise ValueError(f"{REPLAY_REPEAT_COUNT_ENV} must be positive, got {raw_env!r}")
+    return repeat_count
+
+
+def iter_repeated_csv_rows(target_data_dir: Path, csv_name: str, repeat_count: int):
+    for csv_path, row_index, row in iter_csv_rows(target_data_dir, csv_name):
+        for _ in range(repeat_count):
+            yield csv_path, row_index, row
+
+
 def build_standard_argparser(
     *,
     description: str,
@@ -226,6 +251,8 @@ def build_standard_argparser(
             + "\n\nParameter notes:\n"
             + "  --device                Selects the device folder under profiling_database/data.\n"
             + "  --vllm-ascend-version   Selects the version folder under {device}/vllm_ascend/.\n"
+            + f"  --repeat-count          Repeat each replay row this many times. Defaults to {DEFAULT_REPLAY_REPEAT_COUNT}\n"
+            + f"                          or ${REPLAY_REPEAT_COUNT_ENV} when set.\n"
             + "  -h, --help              Show this help message and exit."
         ),
     )
@@ -243,5 +270,13 @@ def build_standard_argparser(
         required=True,
         type=check_version,
         help=version_help,
+    )
+    parser.add_argument(
+        "--repeat-count",
+        type=int,
+        help=(
+            "Repeat each replay row this many times. Defaults to "
+            f"{DEFAULT_REPLAY_REPEAT_COUNT} or ${REPLAY_REPEAT_COUNT_ENV} when set."
+        ),
     )
     return parser

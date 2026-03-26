@@ -14,10 +14,11 @@ from common import (
     build_input_tensor,
     build_standard_argparser,
     ensure_npu_available,
+    get_replay_repeat_count,
     get_runtime_modules,
     resolve_device_type,
     get_target_data_dir,
-    iter_csv_rows,
+    iter_repeated_csv_rows,
     parse_list_field,
     parse_shape,
 )
@@ -77,6 +78,7 @@ def run_row(csv_path: Path, row_index: int, row: dict[str, str]) -> None:
 
 def main() -> None:
     args = build_argparser().parse_args()
+    repeat_count = get_replay_repeat_count(args.repeat_count)
     try:
         ensure_npu_available()
     except RuntimeError:
@@ -91,7 +93,7 @@ def main() -> None:
         raise FileNotFoundError(f"No PadV3.csv found under {target_data_dir}")
 
     total_rows = 0
-    for csv_path, row_index, row in iter_csv_rows(target_data_dir, "PadV3.csv"):
+    for csv_path, row_index, row in iter_repeated_csv_rows(target_data_dir, "PadV3.csv", repeat_count):
         run_row(csv_path, row_index, row)
         total_rows += 1
 

@@ -60,6 +60,7 @@ EXTRA_NUMERIC_COLUMNS = [
 FIA_OP_TYPE = "FusedInferAttentionScore"
 FIA_RUNTIME_COLUMNS = [
     "Runtime source_profile",
+    "Runtime operator_input_shapes_raw",
     "Runtime actual_seq_lengths_shape",
     "Runtime actual_seq_lengths_values",
     "Runtime actual_seq_lengths_kv_shape",
@@ -91,6 +92,7 @@ class ProfilingBundle:
 @dataclass
 class FiaRuntimeMetadata:
     source_profile: str
+    operator_input_shapes_raw: str
     input_shapes: str
     output_shapes: str
     actual_seq_lengths_shape: str
@@ -152,9 +154,10 @@ def infer_fia_runtime_metadata(
     input_shapes_text: str,
     output_shapes_text: str,
     source_profile: str,
+    *,
+    operator_input_shapes_raw: str = "",
 ) -> FiaRuntimeMetadata:
     input_shapes = [parse_shape_or_none(item) for item in split_metadata_field(input_shapes_text)]
-    output_shapes = [parse_shape_or_none(item) for item in split_metadata_field(output_shapes_text)]
     while len(input_shapes) < 31:
         input_shapes.append(None)
 
@@ -165,6 +168,7 @@ def infer_fia_runtime_metadata(
     actual_seq_lengths_kv_shape = input_shapes[6]
     block_table_shape = input_shapes[14]
     query_rope_shape = input_shapes[24]
+    key_rope_shape = input_shapes[25]
 
     input_layout = ""
     num_heads = ""
@@ -175,37 +179,55 @@ def infer_fia_runtime_metadata(
     attn_state = "unknown"
     metadata_completeness = "partial"
 
+    has_mla_rope = query_rope_shape is not None or key_rope_shape is not None
+
     if query_shape is not None:
+        # DSV3 MLA prefill/chunk profiling can expose rope side inputs while the
+        # real FIA invocation still uses 3D TND q/k/v tensors. Only the decode
+        # runtime path should be forced into BNSD_NBSD.
         if len(query_shape) == 3:
             input_layout = "TND"
             num_heads = str(query_shape[1])
             if block_table_shape is None and key_shape is not None and len(key_shape) >= 2:
                 num_key_value_heads = str(key_shape[1])
                 kv_cache_mode = "non_paged_direct"
-                attn_state = "prefill_no_cache"
+                # Non-paged MLA prefill/chunk rows do not expose a meaningful
+                # block_size in profiling metadata, so keep the field empty.
+                attn_state = "mla_prefill_runtime" if has_mla_rope else "prefill_no_cache"
             else:
                 num_key_value_heads = "1"
                 kv_cache_mode = "paged_cache_pool"
-                attn_state = "paged_runtime"
+                attn_state = "mla_paged_runtime" if has_mla_rope else "paged_runtime"
         elif len(query_shape) == 4 and query_rope_shape is not None:
             input_layout = "BNSD_NBSD"
             num_heads = str(query_shape[1])
             num_key_value_heads = "1"
             kv_cache_mode = "paged_cache_pool"
             attn_state = "mla_paged_runtime"
+        elif has_mla_rope:
+            input_layout = "BNSD_NBSD"
+            if len(query_shape) >= 2:
+                num_heads = str(query_shape[1])
+            num_key_value_heads = "1"
+            kv_cache_mode = "paged_cache_pool" if block_table_shape is not None else "unknown"
+            attn_state = "mla_paged_runtime" if block_table_shape is not None else "mla_runtime"
 
     if block_table_shape is not None:
         if key_shape is not None:
             if len(key_shape) == 3:
-                block_size = str(key_shape[1])
+                if not has_mla_rope:
+                    block_size = str(key_shape[1])
             elif len(key_shape) == 4:
                 block_size = str(key_shape[2])
 
-    # FIA profiling often omits the runtime mask tensor from the 31-slot kernel
-    # signature, especially for paged/MLA paths. For these cases, treating
-    # "mask missing" as sparse_mode=0 is wrong and makes replay select a
-    # different execution path. Prefer causal sparse mode for paged FIA.
-    if block_table_shape is not None or query_rope_shape is not None:
+    # Standard paged FIA often omits the runtime mask tensor from the 31-slot
+    # kernel signature, so "mask missing" should still prefer causal mode.
+    # MLA rows are different: DeepSeekV3 profiling commonly records rope slots
+    # but omits enough structure that forcing sparse_mode=3 misclassifies the
+    # path as standard paged TND attention. Keep MLA conservative here.
+    if has_mla_rope:
+        sparse_mode = "0" if atten_mask_shape is None else "3"
+    elif block_table_shape is not None:
         sparse_mode = "3"
     elif atten_mask_shape is not None:
         sparse_mode = "3"
@@ -214,6 +236,7 @@ def infer_fia_runtime_metadata(
 
     return FiaRuntimeMetadata(
         source_profile=source_profile,
+        operator_input_shapes_raw=operator_input_shapes_raw,
         input_shapes=input_shapes_text,
         output_shapes=output_shapes_text,
         actual_seq_lengths_shape=shape_to_text(actual_seq_lengths_shape),
@@ -363,25 +386,86 @@ class KernelDetailsParser:
     def _shape_key(row: Dict[str, object]) -> Tuple[str, str]:
         return (str(row.get(INPUT_SHAPES, "")), str(row.get(OUTPUT_SHAPES, "")))
 
+    @staticmethod
+    def _normalize_text(value: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "", (value or "").lower())
+
+    @classmethod
+    def _is_fia_operator_row(cls, row: Dict[str, str]) -> bool:
+        candidates = [
+            row.get("Type", ""),
+            row.get("Name", ""),
+            row.get("Op Type", ""),
+            row.get("Op Name", ""),
+            row.get("Operator Type", ""),
+            row.get("Operator Name", ""),
+        ]
+        normalized = " ".join(cls._normalize_text(value) for value in candidates if value)
+        return "fusedinferattentionscore" in normalized
+
+    def _load_fia_operator_rows_by_profile(self) -> dict[Path, list[dict[str, str]]]:
+        rows_by_profile: dict[Path, list[dict[str, str]]] = {}
+        for csv_path in self.bundle.operator_details_files:
+            fia_rows: list[dict[str, str]] = []
+            with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
+                reader = csv.DictReader(handle)
+                for row in reader:
+                    if not self._is_fia_operator_row(row):
+                        continue
+                    input_shapes = self._safe_cell(row, INPUT_SHAPES)
+                    output_shapes = self._safe_cell(row, OUTPUT_SHAPES)
+                    if not input_shapes or not output_shapes:
+                        continue
+                    fia_rows.append(row)
+            if fia_rows:
+                rows_by_profile[csv_path.parent] = fia_rows
+        return rows_by_profile
+
     def _build_fia_runtime_index(self) -> dict[tuple[str, str], FiaRuntimeMetadata]:
         runtime_index: dict[tuple[str, str], FiaRuntimeMetadata] = {}
+        operator_rows_by_profile = self._load_fia_operator_rows_by_profile()
         for csv_path in self.bundle.kernel_details_files:
+            kernel_rows: list[dict[str, str]] = []
             with csv_path.open("r", encoding="utf-8-sig", newline="") as f:
                 reader = csv.DictReader(f)
                 for row in reader:
                     op_type = self._safe_cell(row, TYPE_COL)
                     if op_type != FIA_OP_TYPE:
                         continue
-                    input_shapes = self._safe_cell(row, INPUT_SHAPES)
-                    output_shapes = self._safe_cell(row, OUTPUT_SHAPES)
-                    key = (input_shapes, output_shapes)
-                    if key in runtime_index:
-                        continue
-                    runtime_index[key] = infer_fia_runtime_metadata(
-                        input_shapes_text=input_shapes,
-                        output_shapes_text=output_shapes,
-                        source_profile=csv_path.parent.name,
-                    )
+                    kernel_rows.append(row)
+
+            operator_rows = operator_rows_by_profile.get(csv_path.parent, [])
+            paired_count = min(len(kernel_rows), len(operator_rows))
+            if operator_rows and len(kernel_rows) != len(operator_rows):
+                print(
+                    "Warning: FIA kernel/operator row count mismatch under "
+                    f"{csv_path.parent}: kernel_rows={len(kernel_rows)}, "
+                    f"operator_rows={len(operator_rows)}. Pairing uses row "
+                    "order for the shared prefix only."
+                )
+
+            for index, row in enumerate(kernel_rows):
+                input_shapes = self._safe_cell(row, INPUT_SHAPES)
+                output_shapes = self._safe_cell(row, OUTPUT_SHAPES)
+                key = (input_shapes, output_shapes)
+                if key in runtime_index:
+                    continue
+
+                operator_input_shapes = ""
+                operator_output_shapes = ""
+                if index < paired_count:
+                    operator_row = operator_rows[index]
+                    operator_input_shapes = self._safe_cell(operator_row, INPUT_SHAPES)
+                    operator_output_shapes = self._safe_cell(operator_row, OUTPUT_SHAPES)
+
+                metadata_input_shapes = operator_input_shapes or input_shapes
+                metadata_output_shapes = operator_output_shapes or output_shapes
+                runtime_index[key] = infer_fia_runtime_metadata(
+                    input_shapes_text=metadata_input_shapes,
+                    output_shapes_text=metadata_output_shapes,
+                    source_profile=csv_path.parent.name,
+                    operator_input_shapes_raw=operator_input_shapes,
+                )
         return runtime_index
 
     @staticmethod
@@ -496,6 +580,7 @@ class KernelDetailsParser:
                     runtime_metadata.metadata_completeness = self._compute_fia_metadata_completeness(runtime_metadata)
                     rows_by_type[op_type][-1].update({
                         "Runtime source_profile": runtime_metadata.source_profile,
+                        "Runtime operator_input_shapes_raw": runtime_metadata.operator_input_shapes_raw,
                         "Runtime actual_seq_lengths_shape": runtime_metadata.actual_seq_lengths_shape,
                         "Runtime actual_seq_lengths_values": runtime_metadata.actual_seq_lengths_values,
                         "Runtime actual_seq_lengths_kv_shape": runtime_metadata.actual_seq_lengths_kv_shape,
