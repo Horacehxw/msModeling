@@ -180,10 +180,10 @@ operator_mappings:
 
   "tensor_cast.grouped_matmul_quant.default":
     kernel_type: GroupedMatmul
-    alternate_kernel_types: [DispatchFFNCombine]
     notes: >
       [HIGH] op-plugin: npu_grouped_matmul with scale/per_token_scale. W8A8.
       CANN 8.5 aclgraph: 路由专家 down proj 被 DispatchFFNCombine 超级融合吸收.
+      In --compile mode, grouped_matmul_quant is replaced by DispatchFFNCombine fusion pass.
 
   "tensor_cast.grouped_matmul_quant_int4.default":
     kernel_type: GroupedMatmul
@@ -210,11 +210,11 @@ operator_mappings:
 
   "tensor_cast.grouped_matmul_quant_swiglu.default":
     kernel_type: GroupedMatmulSwigluQuant
-    alternate_kernel_types: [DispatchFFNCombine]
     notes: >
       [HIGH] op-plugin: GroupedMatmulSwigluQuantNpuOpapi.cpp.
       aclnn: aclnnGroupedMatmulSwigluQuantWeightNZ. W8A8 GMM+SwiGlu+Quant.
       CANN 8.5 aclgraph: 路由专家 FFN 被 DispatchFFNCombine 超级融合吸收.
+      In --compile mode, grouped_matmul_quant_swiglu is replaced by DispatchFFNCombine fusion pass.
 
   "tensor_cast.grouped_matmul_quant_int4_swiglu.default":
     kernel_type: GroupedMatmulSwigluQuant
@@ -249,24 +249,24 @@ operator_mappings:
       shape_flags: [flatten_batch — TC x is 3D (bs, seq, hidden), NPU CSV is 2D (batch, hidden)].
 
   "tensor_cast.init_routing_v2.default":
-    kernel_type: MoeDistributeDispatchV2
-    csv_file: MoeTokenPermute
+    kernel_type: MoeTokenPermute
     tc_input_count: 2
-    alternate_kernel_types: [DispatchFFNCombine]
     notes: >
       [MEDIUM] op-plugin: MoeDistributeDispatchV2KernelOpApi.cpp.
       aclnn: aclnnMoeDistributeDispatchV2/V3/V4. EP path.
       CANN 8.5 aclgraph: 被 DispatchFFNCombine 超级融合吸收.
+      kernel_type follows CSV filename convention (MoeTokenPermute from kernel_details Type column).
+      In v0.15.0+ --compile mode, init_routing_v2 is replaced by DispatchFFNCombine fusion pass.
 
   "tensor_cast.unpermute_tokens.default":
-    kernel_type: MoeDistributeCombineV2
-    csv_file: MoeTokenUnpermute
+    kernel_type: MoeTokenUnpermute
     tc_input_count: 1
-    alternate_kernel_types: [DispatchFFNCombine]
     notes: >
       [MEDIUM] op-plugin: MoeDistributeCombineKernelV2OpApi.cpp.
       aclnn: aclnnMoeDistributeCombineV2/V3/V4. EP path.
       CANN 8.5 aclgraph: 被 DispatchFFNCombine 超级融合吸收.
+      kernel_type follows CSV filename convention (MoeTokenUnpermute from kernel_details Type column).
+      In v0.15.0+ --compile mode, unpermute_tokens is replaced by DispatchFFNCombine fusion pass.
 
   "tensor_cast.moe_gating_top_k_softmax.default":
     kernel_type: MoeGatingTopK
