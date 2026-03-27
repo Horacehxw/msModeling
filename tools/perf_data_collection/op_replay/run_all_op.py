@@ -3,15 +3,15 @@ Run all operator replay scripts in the current op_replay directory.
 
 Purpose:
   Discover every *_run.py script next to this file and execute each one with
-  the same --device and --vllm-ascend-version arguments.
+  the same --device and --vllm-version arguments.
 
 Usage:
   python tools/perf_data_collection/op_replay/run_all_op.py ^
-    --device ATLAS_800_A3_752T_128G_DIE --vllm-ascend-version 0.13.0
+    --device ATLAS_800_A3_752T_128G_DIE --vllm-version 0.13.0
 
 Arguments:
   --device                Passed through to every operator replay script.
-  --vllm-ascend-version   Passed through to every operator replay script.
+  --vllm-version          Passed through to every operator replay script.
 """
 
 from __future__ import annotations
@@ -22,11 +22,19 @@ import runpy
 import subprocess
 import sys
 
-from common import SUPPORTED_DEVICES, check_version, get_target_data_dir, normalize_op_name
+from common import (
+    DEFAULT_DEVICE,
+    SUPPORTED_DEVICES,
+    build_database_cli_args,
+    check_version,
+    get_target_data_dir,
+    normalize_op_name,
+)
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 SELF_NAME = Path(__file__).name
+DISPATCH_FFN_COMBINE_OP_NAME = "DispatchFFNCombine"
 
 def build_argparser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -41,22 +49,34 @@ def build_argparser() -> argparse.ArgumentParser:
         epilog=(
             "Usage examples:\n"
             "  py -3 tools/perf_data_collection/op_replay/run_all_op.py "
-            "--device ATLAS_800_A3_752T_128G_DIE --vllm-ascend-version 0.13.0\n"
+            "--device ATLAS_800_A3_752T_128G_DIE --vllm-version 0.13.0\n"
+            "  py -3 tools/perf_data_collection/op_replay/run_all_op.py "
+            "--database-path tensor_cast/performance_model/profiling_database/data/"
+            "ATLAS_800_A3_752T_128G_DIE/vllm_ascend/vllm0.18.0_torch2.9.0_cann8.5\n"
             "  python tools/perf_data_collection/op_replay/run_all_op.py "
-            "--device TEST_DEVICE --vllm-ascend-version 0.9.2\n"
+            "--device TEST_DEVICE --vllm-version 0.9.2\n"
             "  msprof python tools/perf_data_collection/op_replay/run_all_op.py "
-            "--device ATLAS_800_A3_752T_128G_DIE --vllm-ascend-version 0.15.0\n\n"
+            "--device ATLAS_800_A3_752T_128G_DIE --vllm-version 0.15.0\n\n"
             "Parameter notes:\n"
-            "  --device                Passed through to every *_run.py script.\n"
-            "  --vllm-ascend-version   Passed through to every *_run.py script.\n"
+            "  --database-path         Passed through to every *_run.py script when provided.\n"
+            f"  --device                Passed through to every *_run.py script. Default: {DEFAULT_DEVICE}\n"
+            "  --vllm-version          Accepts either a plain version or a full version dir name.\n"
+            "  --torch-version         Optional PyTorch version used to build the version dir name.\n"
+            "  --cann-version          Optional CANN version used to build the version dir name.\n"
             "  --execution-mode        `inprocess` keeps all operators in one Python process;\n"
             "                          `subprocess` preserves the old per-script child-process behavior.\n"
             "  -h, --help              Show this help message and exit."
         ),
     )
     parser.add_argument(
+        "--database-path",
+        type=Path,
+        default=None,
+        help="Explicit database directory to read from.",
+    )
+    parser.add_argument(
         "--device",
-        required=True,
+        default=DEFAULT_DEVICE,
         choices=SUPPORTED_DEVICES,
         help=(
             "Target device folder under "
@@ -64,10 +84,20 @@ def build_argparser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--vllm-ascend-version",
-        required=True,
+        "--vllm-version",
+        dest="vllm_version",
         type=check_version,
-        help="vLLM-Ascend version, e.g. 0.9.2.",
+        help="vLLM version, e.g. 0.9.2.",
+    )
+    parser.add_argument(
+        "--torch-version",
+        type=check_version,
+        help="Optional PyTorch version, e.g. 2.9.0.",
+    )
+    parser.add_argument(
+        "--cann-version",
+        type=check_version,
+        help="Optional CANN version, e.g. 8.5.",
     )
     parser.add_argument(
         "--execution-mode",
@@ -84,6 +114,15 @@ def build_argparser() -> argparse.ArgumentParser:
         help=(
             "Optional operator names to run, e.g. MatMulV2 PadV3. "
             "Names may be given as OP, OP_run, or OP_run.py."
+        ),
+    )
+    parser.add_argument(
+        "--dispatch-ffn-combine-ep-size",
+        type=int,
+        default=None,
+        help=(
+            "Optional EP size to pass through to DispatchFFNCombine_run.py. "
+            "Ignored by other operators."
         ),
     )
     return parser
@@ -112,32 +151,62 @@ def has_operator_csv(target_data_dir: Path, csv_name: str) -> bool:
     return any(target_data_dir.rglob(csv_name))
 
 
-def run_script_subprocess(script_path: Path, device: str, vllm_ascend_version: str) -> None:
+def run_script_subprocess(
+    script_path: Path,
+    *,
+    database_path: Path | None,
+    device: str,
+    vllm_ascend_version: str | None,
+    torch_version: str | None,
+    cann_version: str | None,
+    dispatch_ffn_combine_ep_size: int | None,
+) -> None:
     command = [
         sys.executable,
         str(script_path),
-        "--device",
-        device,
-        "--vllm-ascend-version",
-        vllm_ascend_version,
     ]
+    command.extend(
+        build_database_cli_args(
+            database_path=database_path,
+            device=device,
+            vllm_ascend_version=vllm_ascend_version,
+            torch_version=torch_version,
+            cann_version=cann_version,
+        )
+    )
+    if normalize_op_name(script_path.stem) == DISPATCH_FFN_COMBINE_OP_NAME and dispatch_ffn_combine_ep_size is not None:
+        command.extend(["--ep-size", str(dispatch_ffn_combine_ep_size)])
     print(f"[RUN] {script_path.name}")
     subprocess.run(command, check=True, cwd=SCRIPT_DIR)
     print(f"[DONE] {script_path.name}")
 
 
-def run_script_inprocess(script_path: Path, device: str, vllm_ascend_version: str) -> None:
+def run_script_inprocess(
+    script_path: Path,
+    *,
+    database_path: Path | None,
+    device: str,
+    vllm_ascend_version: str | None,
+    torch_version: str | None,
+    cann_version: str | None,
+    dispatch_ffn_combine_ep_size: int | None,
+) -> None:
     original_argv = sys.argv[:]
     if str(SCRIPT_DIR) not in sys.path:
         sys.path.insert(0, str(SCRIPT_DIR))
 
-    sys.argv = [
-        str(script_path),
-        "--device",
-        device,
-        "--vllm-ascend-version",
-        vllm_ascend_version,
-    ]
+    sys.argv = [str(script_path)]
+    sys.argv.extend(
+        build_database_cli_args(
+            database_path=database_path,
+            device=device,
+            vllm_ascend_version=vllm_ascend_version,
+            torch_version=torch_version,
+            cann_version=cann_version,
+        )
+    )
+    if normalize_op_name(script_path.stem) == DISPATCH_FFN_COMBINE_OP_NAME and dispatch_ffn_combine_ep_size is not None:
+        sys.argv.extend(["--ep-size", str(dispatch_ffn_combine_ep_size)])
     print(f"[RUN] {script_path.name}")
     try:
         runpy.run_path(str(script_path), run_name="__main__")
@@ -148,14 +217,35 @@ def run_script_inprocess(script_path: Path, device: str, vllm_ascend_version: st
 
 def run_script(
     script_path: Path,
+    *,
+    database_path: Path | None,
     device: str,
-    vllm_ascend_version: str,
+    vllm_ascend_version: str | None,
+    torch_version: str | None,
+    cann_version: str | None,
+    dispatch_ffn_combine_ep_size: int | None,
     execution_mode: str,
 ) -> None:
     if execution_mode == "subprocess":
-        run_script_subprocess(script_path, device, vllm_ascend_version)
+        run_script_subprocess(
+            script_path,
+            database_path=database_path,
+            device=device,
+            vllm_ascend_version=vllm_ascend_version,
+            torch_version=torch_version,
+            cann_version=cann_version,
+            dispatch_ffn_combine_ep_size=dispatch_ffn_combine_ep_size,
+        )
         return
-    run_script_inprocess(script_path, device, vllm_ascend_version)
+    run_script_inprocess(
+        script_path,
+        database_path=database_path,
+        device=device,
+        vllm_ascend_version=vllm_ascend_version,
+        torch_version=torch_version,
+        cann_version=cann_version,
+        dispatch_ffn_combine_ep_size=dispatch_ffn_combine_ep_size,
+    )
 
 
 def main() -> None:
@@ -173,7 +263,10 @@ def main() -> None:
 
     target_data_dir = get_target_data_dir(
         device=args.device,
-        vllm_ascend_version=args.vllm_ascend_version,
+        vllm_ascend_version=args.vllm_version,
+        database_path=args.database_path,
+        torch_version=args.torch_version,
+        cann_version=args.cann_version,
     )
     executed_count = 0
     skipped_count = 0
@@ -188,8 +281,12 @@ def main() -> None:
         try:
             run_script(
                 script_path=script_path,
+                database_path=args.database_path,
                 device=args.device,
-                vllm_ascend_version=args.vllm_ascend_version,
+                vllm_ascend_version=args.vllm_version,
+                torch_version=args.torch_version,
+                cann_version=args.cann_version,
+                dispatch_ffn_combine_ep_size=args.dispatch_ffn_combine_ep_size,
                 execution_mode=args.execution_mode,
             )
             executed_count += 1
@@ -212,3 +309,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+

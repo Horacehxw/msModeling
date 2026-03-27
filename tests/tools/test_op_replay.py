@@ -8,15 +8,18 @@ from pathlib import Path
 import pytest
 
 OP_REPLAY_DIR = (
-    Path(__file__).resolve().parents[2] / "tools" / "perf_data_collection" / "op_replay"
+    Path(__file__).resolve().parents[2]
+    / "tools"
+    / "perf_data_collection"
+    / "op_replay"
 )
 
 
 class TestOpReplayScriptsExist:
     EXPECTED_SCRIPTS = [
         "common.py",
+        "replay_framework.py",
         "run_all_op.py",
-        "profile_and_update_db.py",
         "MatMulV2_run.py",
         "MatMulV3_run.py",
         "RmsNorm_run.py",
@@ -34,7 +37,6 @@ class TestOpReplayArgparse:
 
     SCRIPTS_WITH_HELP = [
         "run_all_op.py",
-        "profile_and_update_db.py",
         "MatMulV2_run.py",
     ]
 
@@ -53,12 +55,18 @@ class TestOpReplayArgparse:
 class TestCommonModule:
     def test_syntax_valid(self):
         """Verify common.py compiles without import errors (torch is lazy-loaded)."""
-        source = (OP_REPLAY_DIR / "common.py").read_text()
+        source = (OP_REPLAY_DIR / "common.py").read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
         ast.parse(source)
 
     def test_data_dir_points_to_profiling_database(self):
         """Verify DATA_DIR resolves to the correct profiling_database/data/ path."""
-        source = (OP_REPLAY_DIR / "common.py").read_text()
+        source = (OP_REPLAY_DIR / "common.py").read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
         tree = ast.parse(source)
         for node in ast.walk(tree):
             if isinstance(node, ast.Assign):

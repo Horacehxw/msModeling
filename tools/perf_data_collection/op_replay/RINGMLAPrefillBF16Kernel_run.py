@@ -22,53 +22,43 @@ from __future__ import annotations
 from math import ceil
 from math import sqrt
 
-from common import (
-    build_input_tensor,
-    build_standard_argparser,
-    ensure_npu_available,
-    get_replay_repeat_count,
-    get_runtime_modules,
-    get_target_data_dir,
-    init_runtime,
-    iter_repeated_csv_rows,
-    parse_shape,
-)
+try:
+    from .common import (
+        build_input_tensor,
+        build_standard_argparser,
+        ensure_npu_available,
+        get_replay_repeat_count,
+        get_runtime_modules,
+        get_target_data_dir,
+        init_runtime,
+        iter_repeated_csv_rows,
+        normalize_dtype_name,
+        parse_shape,
+        resolve_runtime_dtype,
+    )
+except ImportError:
+    from common import (
+        build_input_tensor,
+        build_standard_argparser,
+        ensure_npu_available,
+        get_replay_repeat_count,
+        get_runtime_modules,
+        get_target_data_dir,
+        init_runtime,
+        iter_repeated_csv_rows,
+        normalize_dtype_name,
+        parse_shape,
+        resolve_runtime_dtype,
+    )
 
 
 RING_MASK_SIZE = 512
-
-
-def normalize_dtype_name(dtype_name: str) -> str:
-    return dtype_name if dtype_name.startswith("DT_") else f"DT_{dtype_name}"
-
 
 def pick_dtype_name(*candidates: str, fallback: str = "DT_FLOAT") -> str:
     for candidate in candidates:
         if candidate and candidate.strip():
             return candidate
     return fallback
-
-
-def resolve_runtime_dtype(dtype_name: str):
-    runtime_torch, _ = get_runtime_modules()
-    normalized = normalize_dtype_name(pick_dtype_name(dtype_name))
-    dtype_map = {
-        "DT_FLOAT": runtime_torch.float32,
-        "DT_FLOAT16": runtime_torch.float16,
-        "DT_BF16": runtime_torch.bfloat16,
-        "DT_DOUBLE": runtime_torch.float64,
-        "DT_INT8": runtime_torch.int8,
-        "DT_UINT8": runtime_torch.uint8,
-        "DT_INT16": runtime_torch.int16,
-        "DT_INT32": runtime_torch.int32,
-        "DT_INT64": runtime_torch.int64,
-        "DT_BOOL": runtime_torch.bool,
-    }
-    try:
-        return dtype_map[normalized]
-    except KeyError as exc:
-        raise ValueError(f"Unsupported dtype for RINGMLAPrefillBF16Kernel: {dtype_name}") from exc
-
 
 def parse_optional_shapes(raw_value: str) -> list[tuple[int, ...] | None]:
     values = []
@@ -99,7 +89,7 @@ def build_mask_tensor(mask_shape: tuple[int, ...] | None, dtype_name: str):
     runtime_torch, _ = get_runtime_modules()
     if mask_shape is None:
         mask_shape = (RING_MASK_SIZE, RING_MASK_SIZE)
-    dtype = resolve_runtime_dtype(dtype_name)
+    dtype = resolve_runtime_dtype(pick_dtype_name(dtype_name))
     mask_value = float("-inf") if dtype == runtime_torch.float16 else 1
     mask = runtime_torch.zeros(mask_shape, dtype=dtype, device="npu")
     upper = runtime_torch.triu(
@@ -315,7 +305,7 @@ def build_argparser():
         ),
         usage_examples=[
             "py -3 tools/perf_data_collection/op_replay/RINGMLAPrefillBF16Kernel_run.py "
-            "--device ATLAS_800_A3_752T_128G_DIE --vllm-ascend-version 0.13.0",
+            "--device ATLAS_800_A3_752T_128G_DIE --vllm-version 0.13.0",
         ],
         version_help="vLLM-Ascend version, e.g. 0.13.0.",
     )
@@ -433,7 +423,10 @@ def main() -> None:
 
     target_data_dir = get_target_data_dir(
         device=args.device,
-        vllm_ascend_version=args.vllm_ascend_version,
+        vllm_ascend_version=args.vllm_version,
+        database_path=args.database_path,
+        torch_version=args.torch_version,
+        cann_version=args.cann_version,
     )
     csv_paths = sorted(target_data_dir.rglob("RINGMLAPrefillBF16Kernel.csv"))
     if not csv_paths:
@@ -459,3 +452,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

@@ -62,7 +62,7 @@ class TestFiaOperatorDetailsEnrichment:
         parser = KernelDetailsParser(
             device="TEST_DEVICE",
             kernel_details_path=str(tmp_path),
-            vllm_ascend_version="0.9.2",
+            database_path=tmp_path / "db_out",
         )
         parser.output_dir = tmp_path / "out"
         output_files = parser.parse_and_export()
@@ -81,7 +81,7 @@ class TestFiaOperatorDetailsEnrichment:
         )
         assert row["Runtime input_layout"] == "BNSD_NBSD"
         assert row["Runtime num_key_value_heads"] == "1"
-        assert row["Runtime attn_state"] == "mla_paged_runtime"
+        assert row["Runtime attn_state"] == "mla_runtime"
 
 
 class TestFiaBackfillSignature:

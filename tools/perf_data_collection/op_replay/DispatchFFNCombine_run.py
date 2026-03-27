@@ -1,158 +1,90 @@
 """
-Run DispatchFFNCombine microbenchmark cases on Ascend NPU.
+Replay DispatchFFNCombine rows from the perf database on Ascend NPU.
 
-Purpose:
-  Read DispatchFFNCombine rows from
-  profiling_database/data/{device}/vllm_ascend/{version}/DispatchFFNCombine.csv,
-  rebuild the recorded tensor inputs, then execute the exact microbench_api:
+This script now follows the same replay contract as other operator scripts:
+- rebuild tensors from DispatchFFNCombine.csv
+- execute the operator on NPU
+- let the outer `msprof + start_microbench.py` pipeline collect op_summary data
 
-      torch.ops._C_ascend.dispatch_ffn_combine(...)
-
-Notes:
-  - The operator binding takes Tensor[] for weight1/weight2/scale1/scale2.
-    Current perf database rows store the packed expert tensors as single
-    entries, so this script wraps each packed tensor in a singleton list.
-  - The upstream runtime path in vllm-ascend passes max_output_size=65536 for
-    the fused MC2 dispatch+FFN+combine path. This script follows that value.
-  - The custom op needs an HCCL communication group name. For standalone
-    replay, the script initializes a single-process HCCL default group when
-    no distributed process group is active yet.
-  - EP (Expert Parallel) support: Modify EP_SIZE below to control EP size.
-    EP_SIZE equals to world_size / rank count.
-    When EP_SIZE > 1, the script will automatically launch EP_SIZE processes
-    via `torchrun` to simulate EP distributed environment.
-  - Profiler mode: Uses torch_npu.profiler to capture Duration data and
-    outputs CSV with performance metrics (aligns with ProfilingDataSource).
+It keeps EP-related launch logic because this operator may require an EP-style
+distributed environment, but it no longer owns profiler capture or writes an
+extra output CSV by itself.
 """
 
 from __future__ import annotations
 
-import csv
 import os
 import socket
 import subprocess
-import time
 import sys
-from pathlib import Path
 from typing import Any
 
-from common import (
-    FRACTAL_NZ_FORMAT_ID,
-    build_host_tensor,
-    build_standard_argparser,
-    ensure_npu_available,
-    get_runtime_modules,
-    get_target_data_dir,
-    init_runtime,
-    iter_csv_rows,
-    parse_shape,
-)
+try:
+    from .common import (
+        build_host_tensor,
+        build_standard_argparser,
+        ensure_npu_available,
+        get_replay_repeat_count,
+        get_runtime_modules,
+        get_target_data_dir,
+        init_runtime,
+        iter_repeated_csv_rows,
+        maybe_cast_internal_format,
+        normalize_dtype_name,
+        parse_shape_or_none,
+        resolve_runtime_dtype,
+        split_metadata_field,
+    )
+except ImportError:
+    from common import (
+        build_host_tensor,
+        build_standard_argparser,
+        ensure_npu_available,
+        get_replay_repeat_count,
+        get_runtime_modules,
+        get_target_data_dir,
+        init_runtime,
+        iter_repeated_csv_rows,
+        maybe_cast_internal_format,
+        normalize_dtype_name,
+        parse_shape_or_none,
+        resolve_runtime_dtype,
+        split_metadata_field,
+    )
 
-# ============================================================================
-# Benchmark configuration
-# ============================================================================
-# 连续调用次数
-BENCHMARK_TOTAL_ITERS = 100
-# 预热次数（不计入统计）
-WARMUP_ITERS = 10
 
-# 默认 EP 规模（可通过 --ep-size 参数覆盖）
 DEFAULT_EP_SIZE = 16
-
-# EP_RANK: 当前 rank ID（多进程模式下由 torchrun 自动设置）
 EP_RANK: int = 0
 EP_GROUP = None
 HCOMM_INFO: str | None = None
 MAX_OUTPUT_SIZE = 65536
-
-# 全局 EP_SIZE，在 main() 中根据参数设置
 EP_SIZE: int = DEFAULT_EP_SIZE
-
-# 是否启用均衡 expert 分布（可通过 --balanced 参数覆盖）
 ENABLE_BALANCED: bool = True
 
-
-def split_metadata_field(raw_value: str) -> list[str]:
-    cleaned = raw_value.strip().strip('"')
-    return [item.strip() for item in cleaned.split(";")]
-
-
-def parse_shape_or_none(raw_shape: str):
-    if not raw_shape.strip():
-        return None
-    return parse_shape(raw_shape)
-
-
-def normalize_dtype_name(dtype_name: str) -> str:
-    normalized = dtype_name.strip()
-    if not normalized:
-        return "DT_UNDEFINED"
-    if normalized.startswith("DT_"):
-        return normalized
-    return f"DT_{normalized}"
-
-
-def resolve_runtime_dtype(dtype_name: str):
-    runtime_torch, _ = get_runtime_modules()
-    normalized = normalize_dtype_name(dtype_name)
-    dtype_map = {
-        "DT_FLOAT": runtime_torch.float32,
-        "DT_FLOAT16": runtime_torch.float16,
-        "DT_BF16": runtime_torch.bfloat16,
-        "DT_DOUBLE": runtime_torch.float64,
-        "DT_INT8": runtime_torch.int8,
-        "DT_UINT8": runtime_torch.uint8,
-        "DT_INT16": runtime_torch.int16,
-        "DT_INT32": runtime_torch.int32,
-        "DT_INT64": runtime_torch.int64,
-        "DT_BOOL": runtime_torch.bool,
-    }
-    if normalized not in dtype_map:
-        raise ValueError(f"Unsupported dtype for DispatchFFNCombine: {dtype_name}")
-    return dtype_map[normalized]
-
-
 def find_free_port() -> int:
-    """找一个空闲端口。"""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
 
 
 def launch_torchrun_and_wait(ep_size: int, args: list[str]) -> int:
-    """
-    使用 torchrun 启动多进程 EP 环境，等待所有进程完成。
-
-    Args:
-        ep_size: 需要启动的 rank 数量
-        args: 传递给脚本的命令行参数
-
-    Returns:
-        子进程的退出码
-    """
-    port = find_free_port()
-
-    # 构建 torchrun 命令
     torchrun_cmd = [
-        sys.executable, "-m", "torch.distributed.run",
+        sys.executable,
+        "-m",
+        "torch.distributed.run",
         f"--nproc_per_node={ep_size}",
-        f"--master_port={port}",
-        __file__,  # 当前脚本路径
+        f"--master_port={find_free_port()}",
+        __file__,
         *args,
     ]
-
-    print(f"[Auto EP] Launching torchrun with {ep_size} ranks on port {port}...")
-
-    # 设置环境变量，标记这是由脚本自动启动的
+    print(f"[Auto EP] Launching torchrun with {ep_size} ranks...")
     env = os.environ.copy()
     env["_DFC_AUTO_TORCHRUN"] = "1"
-
     result = subprocess.run(torchrun_cmd, env=env, check=True)
     return result.returncode
 
 
 def init_ep_process_group(ep_size: int, ep_rank: int, master_addr: str, master_port: int):
-    """初始化 EP（专家并行）分布式进程组。"""
     global EP_SIZE, EP_RANK, EP_GROUP, HCOMM_INFO
 
     runtime_torch, runtime_torch_npu = get_runtime_modules()
@@ -162,7 +94,6 @@ def init_ep_process_group(ep_size: int, ep_rank: int, master_addr: str, master_p
     EP_SIZE = ep_size
     EP_RANK = ep_rank
 
-    # 设置当前设备 (每个 rank 对应一个 DIE)
     device_index = ep_rank % runtime_torch.npu.device_count()
     runtime_torch_npu.npu.set_device(device_index)
 
@@ -176,33 +107,27 @@ def init_ep_process_group(ep_size: int, ep_rank: int, master_addr: str, master_p
 
     default_pg = _get_default_group()
     EP_GROUP = default_pg
-
     if runtime_torch.__version__ > "2.0.1":
         backend = default_pg._get_backend(runtime_torch.device("npu"))
         HCOMM_INFO = backend.get_hccl_comm_name(ep_rank)
     else:
         HCOMM_INFO = default_pg.get_hccl_comm_name(ep_rank)
-
     return HCOMM_INFO
 
 
 def get_default_hccl_group_name() -> str:
-    """获取 HCCL 通信组名称，支持单卡和多卡 EP 模式。"""
     global HCOMM_INFO
 
     if HCOMM_INFO is not None:
         return HCOMM_INFO
 
-    # EP 模式：多卡分布式
     if EP_SIZE > 1:
         master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
         master_port = int(os.environ.get("MASTER_PORT", "29500"))
         rank = int(os.environ.get("RANK", "0"))
         world_size = int(os.environ.get("WORLD_SIZE", "1"))
-
         return init_ep_process_group(world_size, rank, master_addr, master_port)
 
-    # 单卡模式
     runtime_torch, runtime_torch_npu = get_runtime_modules()
     import torch.distributed as dist
     from torch.distributed.distributed_c10d import _get_default_group
@@ -211,12 +136,11 @@ def get_default_hccl_group_name() -> str:
     runtime_torch_npu.npu.set_device(device_index)
 
     if not dist.is_initialized():
-        port = find_free_port()
         dist.init_process_group(
             backend="hccl",
             rank=0,
             world_size=1,
-            init_method=f"tcp://127.0.0.1:{port}",
+            init_method=f"tcp://127.0.0.1:{find_free_port()}",
         )
 
     default_pg = _get_default_group()
@@ -226,13 +150,6 @@ def get_default_hccl_group_name() -> str:
     else:
         HCOMM_INFO = default_pg.get_hccl_comm_name(0)
     return HCOMM_INFO
-
-
-def maybe_cast_internal_format(tensor, tensor_format: str):
-    _, runtime_torch_npu = get_runtime_modules()
-    if tensor_format == "FRACTAL_NZ":
-        return runtime_torch_npu.npu_format_cast(tensor, FRACTAL_NZ_FORMAT_ID)
-    return tensor
 
 
 def build_npu_tensor(shape: tuple[int, ...], dtype_name: str, tensor_format: str):
@@ -247,7 +164,6 @@ def build_expert_idx_tensor(shape: tuple[int, ...], num_experts: int):
 
 
 def build_balanced_expert_idx_tensor(shape: tuple[int, ...], num_experts: int):
-    """Round-robin 均衡 expert 分配，保证每个 expert 的 token 数相同 ±1。"""
     runtime_torch, _ = get_runtime_modules()
     num_tokens, topk = shape
     total_slots = num_tokens * topk
@@ -256,7 +172,6 @@ def build_balanced_expert_idx_tensor(shape: tuple[int, ...], num_experts: int):
 
 
 def build_uniform_probs_tensor(shape: tuple[int, ...], topk: int):
-    """构造均匀权重的 probs 张量，避免随机权重引入 combine 阶段的数值差异。"""
     runtime_torch, _ = get_runtime_modules()
     return runtime_torch.full(shape, 1.0 / topk, dtype=runtime_torch.float32).npu()
 
@@ -345,17 +260,16 @@ def build_row_case(row: dict[str, str], balanced: bool = True) -> dict[str, Any]
     weight1 = build_npu_tensor(weight1_shape, input_dtypes[1], input_formats[1])
     weight2 = build_npu_tensor(weight2_shape, input_dtypes[2], input_formats[2])
 
-    topk = expert_idx_shape[1]
-    # 从 CSV 的 EP Size 列获取 ep_world_size，总专家数 = num_experts_per_rank * ep_size
     ep_size_str = row.get("EP Size", "") or ""
     if ep_size_str.strip():
         try:
-            ep_size_from_csv = int(ep_size_str.strip())
-            expert_idx_num_experts = num_experts * ep_size_from_csv
+            expert_idx_num_experts = num_experts * int(ep_size_str.strip())
         except ValueError:
             expert_idx_num_experts = num_experts * EP_SIZE
     else:
         expert_idx_num_experts = num_experts * EP_SIZE
+
+    topk = expert_idx_shape[1]
     if balanced:
         expert_idx = build_balanced_expert_idx_tensor(expert_idx_shape, expert_idx_num_experts)
         probs = build_uniform_probs_tensor(probs_shape, topk)
@@ -387,45 +301,34 @@ def build_row_case(row: dict[str, str], balanced: bool = True) -> dict[str, Any]
         "expected_output_shapes": output_shapes,
         "weight_kind": input_dtypes[1],
         "num_experts": num_experts,
-        "topk": expert_idx_shape[1],
+        "topk": topk,
     }
 
 
 def build_argparser():
     parser = build_standard_argparser(
         description=(
-            "Run DispatchFFNCombine microbenchmark rows on Ascend NPU.\n"
-            "EP Mode: Use --ep-size to control EP size (default: 16).\n"
-            "         EP_SIZE=1: single-process, no EP.\n"
-            "         EP_SIZE>1: auto-launch EP_SIZE processes via torchrun.\n"
-            "Benchmark: 连续调用100次，取 Duration(us) 最小的一次数据。"
+            "Replay DispatchFFNCombine rows on Ascend NPU.\n"
+            "EP mode: use --ep-size to control expert-parallel world size.\n"
+            "EP_SIZE=1 runs in a single process; EP_SIZE>1 auto-launches torchrun.\n"
+            "Profiling is owned by the outer start_microbench/msprof pipeline."
         ),
         usage_examples=[
-            "# Single-process mode (EP=1):",
-            "python tools/perf_data_collection/op_replay/DispatchFFNCombine_run.py "
-            "--device ATLAS_800_A3_752T_128G_DIE --vllm-ascend-version 0.20.0 "
-            "--ep-size 1 --output-csv ./results.csv",
-            "# EP=8 mode:",
-            "python tools/perf_data_collection/op_replay/DispatchFFNCombine_run.py "
-            "--device ATLAS_800_A3_752T_128G_DIE --vllm-ascend-version 0.20.0 "
-            "--ep-size 8 --output-csv ./results.csv",
+            "py -3 tools/perf_data_collection/op_replay/DispatchFFNCombine_run.py "
+            "--device ATLAS_800_A3_752T_128G_DIE --vllm-version 0.20.0 --ep-size 1",
+            "py -3 tools/perf_data_collection/op_replay/DispatchFFNCombine_run.py "
+            "--database-path tensor_cast/performance_model/profiling_database/data/"
+            "ATLAS_800_A3_752T_128G_DIE/vllm_ascend/vllm0.20.0_torch2.9.0_cann8.5 --ep-size 8",
         ],
         version_help="vLLM-Ascend version, e.g. 0.20.0.",
-    )
-    parser.add_argument(
-        "--output-csv",
-        type=str,
-        required=True,
-        help="Path to output CSV file with benchmark results.",
     )
     parser.add_argument(
         "--ep-size",
         type=int,
         default=DEFAULT_EP_SIZE,
         help=(
-            f"EP (Expert Parallel) size, equals to world_size/rank count. "
-            f"EP_SIZE=1: single-process, no EP. "
-            f"EP_SIZE>1: auto-launch EP_SIZE processes via torchrun. "
+            f"EP size, equals world_size/rank count. "
+            f"EP_SIZE=1: single-process. EP_SIZE>1: auto-launch torchrun. "
             f"Default: {DEFAULT_EP_SIZE}."
         ),
     )
@@ -444,37 +347,28 @@ def build_argparser():
     return parser
 
 
-# ============================================================================
-# Benchmark utilities
-# ============================================================================
-
-
-def execute_dfc_op(case: dict[str, Any], use_fallback: bool = False) -> tuple:
-    """执行一次 DFC 算子调用，返回 (out, expert_token_nums)。"""
+def execute_dfc_op(case: dict[str, Any]) -> tuple:
     runtime_torch, _ = get_runtime_modules()
 
-    if not use_fallback:
-        try:
-            out, expert_token_nums = runtime_torch.ops._C_ascend.dispatch_ffn_combine(
-                x=case["x"],
-                weight1=case["weight1_list"],
-                weight2=case["weight2_list"],
-                expert_idx=case["expert_idx"],
-                scale1=case["scale1_list"],
-                scale2=case["scale2_list"],
-                probs=case["probs"],
-                group=case["group"],
-                max_output_size=case["max_output_size"],
-                out=case["out"],
-                expert_token_nums=case["expert_token_nums"],
-            )
-            return out, expert_token_nums, False
-        except RuntimeError as exc:
-            if "does not support opType [DispatchFFNCombine]" not in str(exc):
-                raise
-            use_fallback = True
+    try:
+        out, expert_token_nums = runtime_torch.ops._C_ascend.dispatch_ffn_combine(
+            x=case["x"],
+            weight1=case["weight1_list"],
+            weight2=case["weight2_list"],
+            expert_idx=case["expert_idx"],
+            scale1=case["scale1_list"],
+            scale2=case["scale2_list"],
+            probs=case["probs"],
+            group=case["group"],
+            max_output_size=case["max_output_size"],
+            out=case["out"],
+            expert_token_nums=case["expert_token_nums"],
+        )
+        return out, expert_token_nums, False
+    except RuntimeError as exc:
+        if "does not support opType [DispatchFFNCombine]" not in str(exc):
+            raise
 
-    # Fallback mode
     out, expert_token_nums = runtime_torch.ops._C_ascend.dispatch_gmm_combine_decode(
         x=case["x"],
         expert_ids=case["expert_idx"],
@@ -500,290 +394,12 @@ def execute_dfc_op(case: dict[str, Any], use_fallback: bool = False) -> tuple:
     return out, expert_token_nums, True
 
 
-def run_benchmark_with_profiler(
-        case: dict[str, Any],
-        prof_dir: str,
-) -> dict[str, float]:
-    """
-    使用 profiler 执行 benchmark，返回各项性能指标（微秒）。
-    同时保留 profiler 数据到 prof_dir。
-
-    策略：
-      1. 预热 WARMUP_ITERS 次
-      2. 使用 profiler 采集 BENCHMARK_TOTAL_ITERS 次调用
-      3. 从 kernel_details.csv 中读取每次调用的 Duration，找到最小的一次
-      4. 返回 Duration 最小那次的所有硬件指标
-
-    Returns:
-        dict 包含各项硬件指标（Duration 最小那次的数据）
-    """
-    runtime_torch, runtime_torch_npu = get_runtime_modules()
-
-    # 检测是否需要使用 fallback 模式
-    use_fallback = False
-    try:
-        _, _, _ = execute_dfc_op(case, use_fallback=False)
-    except RuntimeError as exc:
-        if "does not support opType [DispatchFFNCombine]" in str(exc):
-            use_fallback = True
-        else:
-            raise
-
-    # Warmup
-    for _ in range(WARMUP_ITERS):
-        execute_dfc_op(case, use_fallback)
-        runtime_torch.npu.synchronize()
-
-    # 使用 profiler 采集所有调用
-    experimental_config = runtime_torch_npu.profiler._ExperimentalConfig(
-        profiler_level=runtime_torch_npu.profiler.ProfilerLevel.Level1,
-        aic_metrics=runtime_torch_npu.profiler.AiCMetrics.PipeUtilization,
-        l2_cache=True,
-        op_attr=True,
-        data_simplification=True,
-    )
-
-    with runtime_torch_npu.profiler.profile(
-            activities=[
-                runtime_torch_npu.profiler.ProfilerActivity.CPU,
-                runtime_torch_npu.profiler.ProfilerActivity.NPU,
-            ],
-            schedule=runtime_torch_npu.profiler.schedule(
-                wait=0,
-                warmup=0,
-                active=BENCHMARK_TOTAL_ITERS,
-                repeat=1,
-            ),
-            on_trace_ready=runtime_torch_npu.profiler.tensorboard_trace_handler(prof_dir),
-            experimental_config=experimental_config,
-            record_shapes=True,
-            with_stack=True,
-    ) as prof:
-        for _ in range(BENCHMARK_TOTAL_ITERS):
-            execute_dfc_op(case, use_fallback)
-            runtime_torch.npu.synchronize()
-            prof.step()
-
-    # 等待 profiler 数据写入完成
-    runtime_torch.npu.synchronize()
-    time.sleep(1)
-
-    # 从 kernel_details.csv 解析硬件指标
-    result = extract_metrics_from_kernel_details(prof_dir)
-
-    result["use_fallback"] = use_fallback
-    return result
-
-
-def extract_metrics_from_kernel_details(prof_dir: str) -> dict[str, float]:
-    """
-    从 profiler 输出的 kernel_details.csv 中提取硬件指标。
-    取 100 次调用中 Duration(us) 最小的一次数据。
-
-    Args:
-        prof_dir: profiler 输出目录
-
-    Returns:
-        dict 包含各项硬件指标（Duration 最小那次的数据）
-    """
-    prof_path = Path(prof_dir)
-
-    # 查找 ASCEND_PROFILER_OUTPUT/kernel_details.csv
-    # EP 模式下仅处理当前 rank 的数据（prof_dir 已包含 rank 后缀）
-    kernel_details_files = list(prof_path.glob("*_ascend_pt/ASCEND_PROFILER_OUTPUT/kernel_details.csv"))
-
-    if not kernel_details_files:
-        print(f"[WARN] No kernel_details.csv found in {prof_dir}")
-        return get_empty_metrics()
-
-    # 读取所有 kernel_details.csv 中的 DispatchFFNCombine 行
-    all_rows: list[dict[str, float]] = []
-
-    for csv_path in kernel_details_files:
-        with csv_path.open("r", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                name = row.get("Name", "") or row.get("name", "")
-                # 匹配 DFC 算子名称，包括 fallback 模式下的 dispatch_gmm_combine_decode
-                if ("DispatchFFNCombine" in name or "dispatch_ffn_combine" in name
-                        or "DispatchGmmCombineDecode" in name or "dispatch_gmm_combine_decode" in name):
-                    try:
-                        # 提取需要的指标
-                        parsed_row = {
-                            "Duration(us)": float(row.get("Duration(us)", 0) or 0),
-                            "aicore_time(us)": float(row.get("aicore_time(us)", 0) or 0),
-                            "aic_total_cycles": float(row.get("aic_total_cycles", 0) or 0),
-                            "aic_mac_time(us)": float(row.get("aic_mac_time(us)", 0) or 0),
-                            "aic_mac_ratio": float(row.get("aic_mac_ratio", 0) or 0),
-                            "aic_scalar_time(us)": float(row.get("aic_scalar_time(us)", 0) or 0),
-                            "aic_scalar_ratio": float(row.get("aic_scalar_ratio", 0) or 0),
-                            "aic_mte1_time(us)": float(row.get("aic_mte1_time(us)", 0) or 0),
-                            "aic_mte1_ratio": float(row.get("aic_mte1_ratio", 0) or 0),
-                            "aic_mte2_time(us)": float(row.get("aic_mte2_time(us)", 0) or 0),
-                            "aic_mte2_ratio": float(row.get("aic_mte2_ratio", 0) or 0),
-                            "aic_fixpipe_time(us)": float(row.get("aic_fixpipe_time(us)", 0) or 0),
-                            "aic_fixpipe_ratio": float(row.get("aic_fixpipe_ratio", 0) or 0),
-                            "aic_icache_miss_rate": float(row.get("aic_icache_miss_rate", 0) or 0),
-                            "aiv_time(us)": float(row.get("aiv_time(us)", 0) or 0),
-                            "aiv_total_cycles": float(row.get("aiv_total_cycles", 0) or 0),
-                            "aiv_vec_time(us)": float(row.get("aiv_vec_time(us)", 0) or 0),
-                            "aiv_vec_ratio": float(row.get("aiv_vec_ratio", 0) or 0),
-                            "aiv_scalar_time(us)": float(row.get("aiv_scalar_time(us)", 0) or 0),
-                            "aiv_scalar_ratio": float(row.get("aiv_scalar_ratio", 0) or 0),
-                            "aiv_mte2_time(us)": float(row.get("aiv_mte2_time(us)", 0) or 0),
-                            "aiv_mte2_ratio": float(row.get("aiv_mte2_ratio", 0) or 0),
-                            "aiv_mte3_time(us)": float(row.get("aiv_mte3_time(us)", 0) or 0),
-                            "aiv_mte3_ratio": float(row.get("aiv_mte3_ratio", 0) or 0),
-                            "aiv_icache_miss_rate": float(row.get("aiv_icache_miss_rate", 0) or 0),
-                            "cube_utilization(%)": float(row.get("cube_utilization(%)", 0) or 0),
-                        }
-                        all_rows.append(parsed_row)
-                    except (ValueError, TypeError):
-                        continue
-
-    if not all_rows:
-        print(f"[WARN] No DispatchFFNCombine rows found in kernel_details.csv")
-        return get_empty_metrics()
-
-    # 找到 Duration 最小的那一行
-    best_row = min(all_rows, key=lambda r: r["Duration(us)"])
-
-    # 直接返回该行的数据，不做平均
-    result = dict(best_row)
-    result["sample_count"] = len(all_rows)
-
-    return result
-
-
-def get_empty_metrics() -> dict[str, float]:
-    """返回空的指标字典。"""
-    return {
-        "Duration(us)": 0.0,
-        "aicore_time(us)": 0.0,
-        "aic_total_cycles": 0.0,
-        "aic_mac_time(us)": 0.0,
-        "aic_mac_ratio": 0.0,
-        "aic_scalar_time(us)": 0.0,
-        "aic_scalar_ratio": 0.0,
-        "aic_mte1_time(us)": 0.0,
-        "aic_mte1_ratio": 0.0,
-        "aic_mte2_time(us)": 0.0,
-        "aic_mte2_ratio": 0.0,
-        "aic_fixpipe_time(us)": 0.0,
-        "aic_fixpipe_ratio": 0.0,
-        "aic_icache_miss_rate": 0.0,
-        "aiv_time(us)": 0.0,
-        "aiv_total_cycles": 0.0,
-        "aiv_vec_time(us)": 0.0,
-        "aiv_vec_ratio": 0.0,
-        "aiv_scalar_time(us)": 0.0,
-        "aiv_scalar_ratio": 0.0,
-        "aiv_mte2_time(us)": 0.0,
-        "aiv_mte2_ratio": 0.0,
-        "aiv_mte3_time(us)": 0.0,
-        "aiv_mte3_ratio": 0.0,
-        "aiv_icache_miss_rate": 0.0,
-        "cube_utilization(%)": 0.0,
-        "sample_count": 0,
-    }
-
-
-def append_result_to_csv(
-        output_csv: str,
-        row: dict[str, Any],
-        metrics: dict[str, float],
-        ep_size: int,
-) -> None:
-    """将 benchmark 结果追加到 CSV 文件。"""
-    p = Path(output_csv)
-    write_header = not p.exists()
-
-    result = {
-        "OP State": row.get("OP State", ""),
-        "Accelerator Core": row.get("Accelerator Core", ""),
-        "Input Shapes": row.get("Input Shapes", ""),
-        "Input Data Types": row.get("Input Data Types", ""),
-        "Input Formats": row.get("Input Formats", ""),
-        "Output Shapes": row.get("Output Shapes", ""),
-        "Output Data Types": row.get("Output Data Types", ""),
-        "Output Formats": row.get("Output Formats", ""),
-        "EP Size": ep_size,
-        "Average Duration(us)": f"{metrics.get('Duration(us)', 0):.6f}",
-        "aicore_time(us)": f"{metrics.get('aicore_time(us)', 0):.6f}",
-        "aic_total_cycles": f"{metrics.get('aic_total_cycles', 0):.0f}",
-        "aic_mac_time(us)": f"{metrics.get('aic_mac_time(us)', 0):.6f}",
-        "aic_mac_ratio": f"{metrics.get('aic_mac_ratio', 0):.6f}",
-        "aic_scalar_time(us)": f"{metrics.get('aic_scalar_time(us)', 0):.6f}",
-        "aic_scalar_ratio": f"{metrics.get('aic_scalar_ratio', 0):.6f}",
-        "aic_mte1_time(us)": f"{metrics.get('aic_mte1_time(us)', 0):.6f}",
-        "aic_mte1_ratio": f"{metrics.get('aic_mte1_ratio', 0):.6f}",
-        "aic_mte2_time(us)": f"{metrics.get('aic_mte2_time(us)', 0):.6f}",
-        "aic_mte2_ratio": f"{metrics.get('aic_mte2_ratio', 0):.6f}",
-        "aic_fixpipe_time(us)": f"{metrics.get('aic_fixpipe_time(us)', 0):.6f}",
-        "aic_fixpipe_ratio": f"{metrics.get('aic_fixpipe_ratio', 0):.6f}",
-        "aic_icache_miss_rate": f"{metrics.get('aic_icache_miss_rate', 0):.6f}",
-        "aiv_time(us)": f"{metrics.get('aiv_time(us)', 0):.6f}",
-        "aiv_total_cycles": f"{metrics.get('aiv_total_cycles', 0):.0f}",
-        "aiv_vec_time(us)": f"{metrics.get('aiv_vec_time(us)', 0):.6f}",
-        "aiv_vec_ratio": f"{metrics.get('aiv_vec_ratio', 0):.6f}",
-        "aiv_scalar_time(us)": f"{metrics.get('aiv_scalar_time(us)', 0):.6f}",
-        "aiv_scalar_ratio": f"{metrics.get('aiv_scalar_ratio', 0):.6f}",
-        "aiv_mte2_time(us)": f"{metrics.get('aiv_mte2_time(us)', 0):.6f}",
-        "aiv_mte2_ratio": f"{metrics.get('aiv_mte2_ratio', 0):.6f}",
-        "aiv_mte3_time(us)": f"{metrics.get('aiv_mte3_time(us)', 0):.6f}",
-        "aiv_mte3_ratio": f"{metrics.get('aiv_mte3_ratio', 0):.6f}",
-        "aiv_icache_miss_rate": f"{metrics.get('aiv_icache_miss_rate', 0):.6f}",
-        "cube_utilization(%)": f"{metrics.get('cube_utilization(%)', 0):.6f}",
-        "sample_count": int(metrics.get("sample_count", 0)),
-        "Source": "benchmark",
-    }
-
-    fieldnames = list(result.keys())
-
-    with p.open("a", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=fieldnames)
-        if write_header:
-            w.writeheader()
-        w.writerow(result)
-
-
-def run_row(
-        csv_path,
-        row_index: int,
-        row: dict[str, str],
-        output_csv: str,
-        prof_base_dir: str,
-        balanced: bool = True,
-) -> float:
-    """执行单个 DFC 行的 benchmark 并写入 CSV。
-
-    Args:
-        csv_path: 源 CSV 路径
-        row_index: 行索引
-        row: 行数据
-        output_csv: 输出 CSV 路径
-        prof_base_dir: profiler 数据保存的基础目录
-        balanced: 是否使用均衡 expert 分布
-
-    Returns:
-        平均耗时（微秒）
-    """
+def run_row(csv_path, row_index: int, row: dict[str, str], *, balanced: bool) -> None:
+    runtime_torch, _ = get_runtime_modules()
     case = build_row_case(row, balanced=balanced)
+    out, expert_token_nums, used_fallback = execute_dfc_op(case)
+    runtime_torch.npu.synchronize()
 
-    # 为每个 case 创建独立的 profiler 目录
-    # 使用 row_index、token 数和 rank 作为标识，避免 EP 模式下目录冲突
-    token_count = case['x'].shape[0]
-    prof_dir = os.path.join(prof_base_dir, f"prof_row{row_index}_tokens{token_count}_rank{EP_RANK}")
-
-    # 使用 profiler 执行 benchmark
-    metrics = run_benchmark_with_profiler(case, prof_dir)
-    duration_us = metrics.get("Duration(us)", 0)
-    use_fallback = metrics.get("use_fallback", False)
-
-    api_name = "dispatch_gmm_combine_decode" if use_fallback else "dispatch_ffn_combine"
-
-    # 验证输出形状
-    out, expert_token_nums, _ = execute_dfc_op(case, use_fallback)
     actual_shapes = [tuple(out.shape), tuple(expert_token_nums.shape)]
     expected_shapes = case["expected_output_shapes"]
     if actual_shapes[0] != expected_shapes[0]:
@@ -793,14 +409,10 @@ def run_row(
             f"expert_token_nums shape mismatch: actual={actual_shapes[1]} expected={expected_shapes[1]}"
         )
 
-    # 仅 rank 0 写入 CSV，避免多 rank 并发写入竞态
-    if EP_RANK == 0:
-        append_result_to_csv(output_csv, row, metrics, EP_SIZE)
-
-    # 打印日志（仅 rank 0）
     if EP_RANK == 0:
         balance_tag = " balanced" if balanced else ""
         ep_tag = f" EP={EP_SIZE}" if EP_SIZE > 1 else ""
+        api_name = "dispatch_gmm_combine_decode" if used_fallback else "dispatch_ffn_combine"
         print(
             f"[OK]{balance_tag}{ep_tag} {csv_path}:{row_index} "
             f"api={api_name} "
@@ -809,99 +421,84 @@ def run_row(
             f"w2={tuple(case['weight2_list'][0].shape)} "
             f"topk={case['topk']} experts={case['num_experts']} "
             f"weight_kind={case['weight_kind']} "
-            f"Duration={duration_us:.2f}us "
-            f"aicore={metrics.get('aicore_time(us)', 0):.2f}us "
-            f"prof_dir={prof_dir}"
+            f"out={tuple(out.shape)} expert_token_nums={tuple(expert_token_nums.shape)}"
         )
-
-    return duration_us
 
 
 def main() -> None:
     global EP_SIZE, EP_RANK, ENABLE_BALANCED
 
     args = build_argparser().parse_args()
-
-    # 从 CLI 参数获取 EP_SIZE
+    repeat_count = get_replay_repeat_count(args.repeat_count)
     EP_SIZE = args.ep_size
-
-    # 从 CLI 参数获取 ENABLE_BALANCED
     ENABLE_BALANCED = args.balanced
 
-    # 检测是否在 torchrun 环境中运行（子进程）
     env_world_size = int(os.environ.get("WORLD_SIZE", "1"))
     env_rank = int(os.environ.get("RANK", "0"))
     is_auto_torchrun = os.environ.get("_DFC_AUTO_TORCHRUN", "0") == "1"
 
-    # 如果 EP_SIZE > 1 且不是在 torchrun 子进程中，则自动启动 torchrun
     if EP_SIZE > 1 and env_world_size == 1 and not is_auto_torchrun:
-        # 收集命令行参数
         cli_args = []
-        if args.device:
+        if args.database_path is not None:
+            cli_args.extend(["--database-path", str(args.database_path)])
+        else:
             cli_args.extend(["--device", args.device])
-        if args.vllm_ascend_version:
-            cli_args.extend(["--vllm-ascend-version", args.vllm_ascend_version])
-        cli_args.extend(["--output-csv", args.output_csv])
+            if args.vllm_version:
+                cli_args.extend(["--vllm-version", args.vllm_version])
+            if args.torch_version:
+                cli_args.extend(["--torch-version", args.torch_version])
+            if args.cann_version:
+                cli_args.extend(["--cann-version", args.cann_version])
+        cli_args.extend(["--repeat-count", str(repeat_count)])
         cli_args.extend(["--ep-size", str(EP_SIZE)])
         if not ENABLE_BALANCED:
             cli_args.append("--no-balanced")
+        sys.exit(launch_torchrun_and_wait(EP_SIZE, cli_args))
 
-        # 启动 torchrun
-        exit_code = launch_torchrun_and_wait(EP_SIZE, cli_args)
-        sys.exit(exit_code)
-
-    # 以下是实际的执行逻辑（单进程或 torchrun 子进程）
     ensure_npu_available()
 
-    # 设置 EP 配置
     if env_world_size > 1:
-        # torchrun 子进程环境
         EP_SIZE = env_world_size
         EP_RANK = env_rank
         get_default_hccl_group_name()
         if EP_RANK == 0:
             print(f"[EP Mode] EP_SIZE={EP_SIZE}, EP_RANK={EP_RANK}")
     else:
-        # 单进程模式
         print(f"[Single-process Mode] EP_SIZE={EP_SIZE} (no EP communication)")
 
     target_data_dir = get_target_data_dir(
         device=args.device,
-        vllm_ascend_version=args.vllm_ascend_version,
+        vllm_ascend_version=args.vllm_version,
+        database_path=args.database_path,
+        torch_version=args.torch_version,
+        cann_version=args.cann_version,
     )
     csv_paths = sorted(target_data_dir.rglob("DispatchFFNCombine.csv"))
     if not csv_paths:
         raise FileNotFoundError(f"No DispatchFFNCombine.csv found under {target_data_dir}")
 
-    # 创建 profiler 数据保存目录（在输出 CSV 同级目录下）
-    output_csv_path = Path(args.output_csv)
-    prof_base_dir = output_csv_path.parent / f"PROF_{output_csv_path.stem}"
-    prof_base_dir.mkdir(parents=True, exist_ok=True)
-    if EP_RANK == 0:
-        print(f"[PROF] Profiler data will be saved to: {prof_base_dir}")
-
     total_rows = 0
-    for csv_path, row_index, row in iter_csv_rows(target_data_dir, "DispatchFFNCombine.csv"):
-        run_row(csv_path, row_index, row, output_csv=args.output_csv, prof_base_dir=str(prof_base_dir),
-                balanced=ENABLE_BALANCED)
+    for csv_path, row_index, row in iter_repeated_csv_rows(
+        target_data_dir,
+        "DispatchFFNCombine.csv",
+        repeat_count,
+    ):
+        run_row(csv_path, row_index, row, balanced=ENABLE_BALANCED)
         total_rows += 1
-        # EP 模式下逐行 barrier，避免某 rank 异常导致其他 rank 永久阻塞
         if EP_SIZE > 1:
             import torch.distributed as dist
+
             dist.barrier()
 
-    # 分布式模式下，只有 rank 0 打印总结
     if EP_RANK == 0:
         print(
             f"Processed {total_rows} DispatchFFNCombine rows "
             f"from {len(csv_paths)} csv file(s) under {target_data_dir}."
         )
-        print(f"Results written to: {args.output_csv}")
-        print(f"Profiler data saved to: {prof_base_dir}")
 
-    # 同步所有 rank
     if EP_SIZE > 1:
         import torch.distributed as dist
+
         dist.barrier()
 
 

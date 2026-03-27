@@ -22,20 +22,35 @@ Notes:
 from __future__ import annotations
 
 import math
-import os
 from pathlib import Path
 import sys
 
-from common import (
-    build_input_tensor,
-    build_standard_argparser,
-    ensure_npu_available,
-    get_replay_repeat_count,
-    get_runtime_modules,
-    get_target_data_dir,
-    iter_csv_rows,
-    parse_shape,
-)
+try:
+    from .common import (
+        build_input_tensor,
+        build_standard_argparser,
+        ensure_npu_available,
+        get_replay_repeat_count,
+        get_runtime_modules,
+        get_target_data_dir,
+        iter_csv_rows,
+        normalize_dtype_name,
+        parse_shape_or_none,
+        parse_shape,
+    )
+except ImportError:
+    from common import (
+        build_input_tensor,
+        build_standard_argparser,
+        ensure_npu_available,
+        get_replay_repeat_count,
+        get_runtime_modules,
+        get_target_data_dir,
+        iter_csv_rows,
+        normalize_dtype_name,
+        parse_shape_or_none,
+        parse_shape,
+    )
 
 CURRENT_DIR = Path(__file__).resolve().parent
 PARENT_DIR = CURRENT_DIR.parent
@@ -44,20 +59,6 @@ if str(PARENT_DIR) not in sys.path:
 
 from fia_common import parse_runtime_int, parse_runtime_int_list, shape_numel, split_metadata_field
 
-
-DTYPE_ALIASES = {
-    "FLOAT": "DT_FLOAT",
-    "FLOAT16": "DT_FLOAT16",
-    "BF16": "DT_BF16",
-    "DOUBLE": "DT_DOUBLE",
-    "INT8": "DT_INT8",
-    "UINT8": "DT_UINT8",
-    "INT16": "DT_INT16",
-    "INT32": "DT_INT32",
-    "INT64": "DT_INT64",
-    "BOOL": "DT_BOOL",
-    "DT_UNDEFINED": "DT_UNDEFINED",
-}
 
 QUERY_INDEX = 0
 KEY_INDEX = 1
@@ -68,8 +69,6 @@ ACTUAL_SEQ_LENGTHS_KV_INDEX = 6
 BLOCK_TABLE_INDEX = 14
 QUERY_ROPE_INDEX = 24
 KEY_ROPE_INDEX = 25
-REPLAY_REPEAT_COUNT = 30
-REPLAY_REPEAT_COUNT_ENV = "MSMODELING_FIA_REPLAY_REPEAT_COUNT"
 RUNTIME_ACTUAL_SEQ_LENGTHS_VALUES = "Runtime actual_seq_lengths_values"
 RUNTIME_ACTUAL_SEQ_LENGTHS_KV_VALUES = "Runtime actual_seq_lengths_kv_values"
 RUNTIME_BLOCK_TABLE_VALID_BLOCKS = "Runtime block_table_valid_blocks"
@@ -94,19 +93,6 @@ CAUSAL_MASK_DTYPE_ATTRS = {
     "DT_INT8": "int8",
     "DT_UINT8": "uint8",
 }
-
-
-def normalize_dtype_name(dtype_name: str) -> str:
-    normalized = dtype_name.strip()
-    if normalized.startswith("DT_"):
-        return normalized
-    return DTYPE_ALIASES.get(normalized, normalized)
-
-def parse_shape_or_none(raw_shape: str):
-    if not raw_shape.strip():
-        return None
-    return parse_shape(raw_shape)
-
 
 def distribute_total(total: int, bucket_count: int, *, min_value: int) -> list[int]:
     if bucket_count <= 0:
@@ -494,20 +480,6 @@ def build_row_case(row: dict[str, str]):
     }
 
 
-def get_repeat_count(args_repeat_count: int | None) -> int:
-    if args_repeat_count is not None:
-        if args_repeat_count <= 0:
-            raise ValueError(f"--repeat-count must be positive, got {args_repeat_count}")
-        return args_repeat_count
-    raw_env = os.environ.get(REPLAY_REPEAT_COUNT_ENV, "").strip()
-    if raw_env:
-        repeat_count = int(raw_env)
-        if repeat_count <= 0:
-            raise ValueError(f"{REPLAY_REPEAT_COUNT_ENV} must be positive, got {raw_env!r}")
-        return repeat_count
-    return get_replay_repeat_count(None)
-
-
 def build_argparser():
     parser = build_standard_argparser(
         description=(
@@ -520,9 +492,9 @@ def build_argparser():
         ),
         usage_examples=[
             "py -3 tools/perf_data_collection/op_replay/FusedInferAttentionScore_run.py "
-            "--device ATLAS_800_A3_752T_128G_DIE --vllm-ascend-version 0.13.0",
+            "--device ATLAS_800_A3_752T_128G_DIE --vllm-version 0.13.0",
             "python tools/perf_data_collection/op_replay/FusedInferAttentionScore_run.py "
-            "--device TEST_DEVICE --vllm-ascend-version 0.9.2",
+            "--device TEST_DEVICE --vllm-version 0.9.2",
         ],
         version_help="vLLM-Ascend version, e.g. 0.13.0.",
     )
@@ -589,11 +561,14 @@ def run_row(
 def main() -> None:
     args = build_argparser().parse_args()
     ensure_npu_available()
-    repeat_count = get_repeat_count(args.repeat_count)
+    repeat_count = get_replay_repeat_count(args.repeat_count)
 
     target_data_dir = get_target_data_dir(
         device=args.device,
-        vllm_ascend_version=args.vllm_ascend_version,
+        vllm_ascend_version=args.vllm_version,
+        database_path=args.database_path,
+        torch_version=args.torch_version,
+        cann_version=args.cann_version,
     )
     total_rows = 0
     for csv_path, row_index, row in iter_csv_rows(
@@ -615,3 +590,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

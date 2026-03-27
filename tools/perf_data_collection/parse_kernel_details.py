@@ -14,8 +14,27 @@ OP_REPLAY_DIR = CURRENT_DIR / "op_replay"
 if str(OP_REPLAY_DIR) not in sys.path:
     sys.path.insert(0, str(OP_REPLAY_DIR))
 
-from common import SUPPORTED_DEVICES, check_version, normalize_device_name, normalize_vllm_ascend_version
-from fia_common import parse_shape_or_none, shape_numel, shape_to_text, split_metadata_field
+try:
+    from common import (
+        DEFAULT_DEVICE,
+        SUPPORTED_DEVICES,
+        check_version,
+        get_target_data_dir,
+        normalize_device_name,
+    )
+except ModuleNotFoundError:
+    from .op_replay.common import (
+        DEFAULT_DEVICE,
+        SUPPORTED_DEVICES,
+        check_version,
+        get_target_data_dir,
+        normalize_device_name,
+    )
+
+try:
+    from fia_common import parse_shape_or_none, shape_numel, shape_to_text, split_metadata_field
+except ModuleNotFoundError:
+    from .fia_common import parse_shape_or_none, shape_numel, shape_to_text, split_metadata_field
 
 INPUT_SHAPES = "Input Shapes"
 INPUT_DTYPES = "Input Data Types"
@@ -26,11 +45,6 @@ OUTPUT_FORMATS = "Output Formats"
 TYPE_COL = "Type"
 OP_STATE = "OP State"
 ACCELERATOR_CORE = "Accelerator Core"
-EP_SIZE_COL = "EP Size"
-
-# DispatchFFNCombine 相关常量
-DISPATCH_FFN_COMBINE_OP_NAME = "DispatchFFNCombine"
-DEFAULT_EP_WORLD_SIZE = 16  # 默认 EP 规模，用于从 weight shape 推断 EP Size
 DURATION_US = "Duration(us)"
 AVG_DURATION_US = "Profiling Average Duration(us)"
 STD_DURATION_US = "Profiling Std Duration(us)"
@@ -265,27 +279,25 @@ class KernelDetailsParser:
     """Parse one or more kernel_details*.csv files and export aggregated op stats by op type."""
 
     def __init__(
-            self,
-            device: str,
-            kernel_details_path: str,
-            vllm_ascend_version: str,
-            ep_world_size: int = DEFAULT_EP_WORLD_SIZE,
+        self,
+        device: str,
+        kernel_details_path: str,
+        vllm_ascend_version: str | None = None,
+        *,
+        database_path: str | Path | None = None,
+        torch_version: str | None = None,
+        cann_version: str | None = None,
     ):
         self.device = device
         self.kernel_details_path = Path(kernel_details_path)
-        self.vllm_ascend_version = normalize_vllm_ascend_version(vllm_ascend_version)
         self.device_dir = normalize_device_name(device)
-        self.ep_world_size = ep_world_size
         self.repo_root = Path(__file__).resolve().parents[2]
-        self.output_dir = (
-            self.repo_root
-            / "tensor_cast"
-            / "performance_model"
-            / "profiling_database"
-            / "data"
-            / self.device_dir
-            / "vllm_ascend"
-            / self.vllm_ascend_version
+        self.output_dir = get_target_data_dir(
+            device=device,
+            vllm_ascend_version=vllm_ascend_version,
+            database_path=database_path,
+            torch_version=torch_version,
+            cann_version=cann_version,
         )
         self.bundle = self._resolve_profiling_bundle()
 
@@ -563,7 +575,7 @@ class KernelDetailsParser:
             median_duration = statistics.median(item["durations"])
             avg_extra = {
                 profiling_column_name(f"Average {col}"): (
-                        float(item["sum_extra"][col]) / count
+                    float(item["sum_extra"][col]) / count
                 )
                 for col in EXTRA_NUMERIC_COLUMNS
             }
@@ -577,9 +589,6 @@ class KernelDetailsParser:
                     OUTPUT_SHAPES: output_shapes,
                     OUTPUT_DTYPES: item["output_dtypes"],
                     OUTPUT_FORMATS: item["output_formats"],
-                    EP_SIZE_COL: get_ep_size_value(
-                        op_type, self.ep_world_size
-                    ),
                     AVG_DURATION_US: f"{avg_duration:.6f}",
                     MEDIAN_DURATION_US: f"{median_duration:.6f}",
                     STD_DURATION_US: f"{std_duration:.6f}",
@@ -634,10 +643,6 @@ class KernelDetailsParser:
         for file_index, (op_type, type_rows) in enumerate(rows_by_type.items(), start=1):
             output_path = self.output_dir / f"{self._sanitize_filename(op_type)}.csv"
             ordered_columns = list(base_ordered_columns)
-            # EP Size 列仅对 DispatchFFNCombine 有意义
-            if op_type == DISPATCH_FFN_COMBINE_OP_NAME:
-                ordered_columns.insert(8, EP_SIZE_COL)
-            # FIA 运行时列仅对 FusedInferAttentionScore 有意义
             if op_type == FIA_OP_TYPE:
                 ordered_columns.extend(FIA_RUNTIME_COLUMNS)
             normalized_rows = []
@@ -663,81 +668,83 @@ class KernelDetailsParser:
 def build_argparser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Parse kernel_details.csv and split by operator type "
-            "with averaged duration grouped by input/output shapes."
-        )
+            "Parse profiling data and split it into operator CSV files.\n\n"
+            "Required parameters:\n"
+            "  --profiling-path    Path to a kernel_details*.csv file or a profiling directory.\n\n"
+            "Optional parameters:\n"
+            "  --database-path     Explicit output database directory.\n"
+            "  --device            Device folder name when inferring the database path.\n"
+            "  --vllm-version      vLLM version or full version-dir name when inferring the database path.\n"
+            "  --torch-version     PyTorch version used to build the version-dir name.\n"
+            "  --cann-version      CANN version used to build the version-dir name."
+        ),
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+    parser.add_argument(
+        "--profiling-path",
+        required=True,
+        help=(
+            "[Required] Path to a kernel_details*.csv file or a profiling directory. "
+            "When a directory is provided, the script recursively scans all CSV files whose filename "
+            "contains 'kernel_details'."
+        ),
+    )
+    parser.add_argument(
+        "--database-path",
+        type=Path,
+        default=None,
+        help="[Optional] Explicit database directory to write generated CSV files into.",
     )
     parser.add_argument(
         "--device",
-        required=True,
+        default=DEFAULT_DEVICE,
         choices=SUPPORTED_DEVICES,
         help=(
-            "Target device name used as output folder: "
-            "tensor_cast/performance_model/profiling_database/data/{device}/vllm_ascend/{version}/"
+            "[Optional] Device folder name used when inferring the output path. "
+            f"Default: {DEFAULT_DEVICE}."
         ),
     )
     parser.add_argument(
-        "--vllm-ascend-version",
-        required=True,
+        "--vllm-version",
+        dest="vllm_version",
         type=check_version,
-        help="vLLM-Ascend version, e.g. 0.9.2.",
+        help="[Optional] vLLM version, e.g. 0.9.2, or a full version-dir name.",
     )
     parser.add_argument(
-        "--kernel-details-path",
-        required=True,
-        help=(
-            "Path to a kernel_details*.csv file or a directory. "
-            "If a directory is provided, the script recursively scans all CSV files whose filename contains "
-            "'kernel_details'."
-        ),
+        "--torch-version",
+        type=check_version,
+        help="[Optional] PyTorch version used to build the version-dir name, e.g. 2.9.0.",
     )
     parser.add_argument(
-        "--ep-world-size",
-        type=int,
-        default=DEFAULT_EP_WORLD_SIZE,
-        help=(
-            f"EP (Expert Parallel) world size for inferring EP Size from weight shape. "
-            f"Only used for {DISPATCH_FFN_COMBINE_OP_NAME} operator. "
-            f"Default: {DEFAULT_EP_WORLD_SIZE}."
-        ),
+        "--cann-version",
+        type=check_version,
+        help="[Optional] CANN version used to build the version-dir name, e.g. 8.5.",
     )
     return parser
-
-
-def get_ep_size_value(op_type: str, ep_world_size: int) -> str:
-    """
-    获取 EP Size 列的值（仅对 DispatchFFNCombine 有效）。
-
-    Args:
-        op_type: 算子类型
-        ep_world_size: EP 并行规模
-
-    Returns:
-        EP Size 字符串，非 DispatchFFNCombine 返回空字符串
-    """
-    if op_type != DISPATCH_FFN_COMBINE_OP_NAME:
-        return ""
-    return str(ep_world_size)
 
 
 def main() -> None:
     args = build_argparser().parse_args()
     parser = KernelDetailsParser(
         device=args.device,
-        kernel_details_path=args.kernel_details_path,
-        vllm_ascend_version=args.vllm_ascend_version,
-        ep_world_size=args.ep_world_size,
+        kernel_details_path=args.profiling_path,
+        vllm_ascend_version=args.vllm_version,
+        database_path=args.database_path,
+        torch_version=args.torch_version,
+        cann_version=args.cann_version,
     )
     output_files = parser.parse_and_export()
     print(
         f"Generated {len(output_files)} csv file(s) under "
         f"{parser.output_dir.as_posix()} "
-        f"from {args.kernel_details_path}"
+        f"from {args.profiling_path}"
     )
 
 
 if __name__ == "__main__":
     main()
 
+
 # Backward-compatible alias for external imports from older naming.
 AscendProfilerParser = KernelDetailsParser
+
