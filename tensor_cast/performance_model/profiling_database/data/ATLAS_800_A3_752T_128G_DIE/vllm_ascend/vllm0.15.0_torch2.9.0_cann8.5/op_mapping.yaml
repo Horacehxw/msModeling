@@ -773,10 +773,12 @@ operator_mappings:
     notes: "TC row-mode embedding: x - row_start. NPU fuses internally."
 
   "aten.constant_pad_nd.default":
-    kernel_type: TensorMove
+    kernel_type: PadV3
+    alternate_kernel_types: [PadV3AiCore]
     tc_input_count: 1
     notes: >
-      [LOW] Padding op. NPU uses TensorMove for zero-padded copies.
+      [HIGH] Padding op. Path A: aten.constant_pad_nd → aclnnConstantPadNd → PadV3.
+      Verified via msprof: Name=aclnnConstantPadNd_PadV3AiCore_PadV3, Type=PadV3.
       tc_input_count=1: match input tensor only (pad params are non-tensor).
 
   "aten.slice.Tensor":
