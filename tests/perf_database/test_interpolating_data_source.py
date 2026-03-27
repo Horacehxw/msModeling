@@ -6,7 +6,10 @@ from unittest.mock import MagicMock
 import pytest
 import torch
 
-from tensor_cast.performance_model.profiling_database.data_source import QuerySource
+from tensor_cast.performance_model.profiling_database.data_source import (
+    QueryResult,
+    QuerySource,
+)
 from tensor_cast.performance_model.profiling_database.interpolating_data_source import (
     InterpolatingDataSource,
 )
@@ -374,3 +377,74 @@ class TestFiaRawNoInterpolation:
         assert result is None, (
             f"InterpolatingDataSource must not interpolate raw FIA CSV, got {result}"
         )
+
+
+def test_partial_falls_through_to_interpolation(interp_data_dir):
+    """PARTIAL from base should not block interpolation attempt.
+
+    When base returns PARTIAL (e.g., composite with some sub-kernel misses),
+    InterpolatingDataSource should try interpolation first. If interpolation
+    succeeds, it should return the interpolated result instead of PARTIAL.
+    """
+    base = ProfilingDataSource(interp_data_dir)
+    ds = InterpolatingDataSource(base)
+
+    # Mock base.lookup to return PARTIAL
+    partial_result = QueryResult(
+        latency_us=50.0,
+        confidence=0.5,
+        source=QuerySource.PARTIAL,
+        details={"hit_kernels": ["MatMulV2"], "missed_kernels": ["SomeKernel"]},
+    )
+    original_base_lookup = base.lookup
+    base.lookup = lambda op: partial_result
+
+    # Also mock _interpolate to return INTERPOLATED with better result
+    interp_result = QueryResult(
+        latency_us=15.0,
+        confidence=0.7,
+        source=QuerySource.INTERPOLATED,
+        details={"kernel_type": "MatMulV2", "method": "linear_1d"},
+    )
+    ds._interpolate = lambda op: interp_result
+
+    op = _make_op_info(
+        torch.ops.aten.mm.default,
+        [
+            torch.empty(150, 512, device="meta", dtype=torch.bfloat16),
+            torch.empty(512, 1024, device="meta", dtype=torch.bfloat16),
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is not None
+    assert result.source == QuerySource.INTERPOLATED, (
+        f"Expected INTERPOLATED to take priority over PARTIAL, got {result.source}"
+    )
+
+
+def test_partial_returned_when_interpolation_fails(interp_data_dir):
+    """When base returns PARTIAL and interpolation fails, fall back to PARTIAL."""
+    base = ProfilingDataSource(interp_data_dir)
+    ds = InterpolatingDataSource(base)
+
+    partial_result = QueryResult(
+        latency_us=50.0,
+        confidence=0.5,
+        source=QuerySource.PARTIAL,
+        details={"hit_kernels": ["MatMulV2"], "missed_kernels": ["SomeKernel"]},
+    )
+    base.lookup = lambda op: partial_result
+    ds._interpolate = lambda op: None  # interpolation fails
+
+    op = _make_op_info(
+        torch.ops.aten.mm.default,
+        [
+            torch.empty(150, 512, device="meta", dtype=torch.bfloat16),
+            torch.empty(512, 1024, device="meta", dtype=torch.bfloat16),
+        ],
+    )
+    result = ds.lookup(op)
+    assert result is not None
+    assert result.source == QuerySource.PARTIAL, (
+        f"Expected PARTIAL fallback when interpolation fails, got {result.source}"
+    )

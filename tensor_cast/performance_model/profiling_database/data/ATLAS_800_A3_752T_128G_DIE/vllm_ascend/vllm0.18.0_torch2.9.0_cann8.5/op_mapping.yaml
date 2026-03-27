@@ -239,6 +239,7 @@ operator_mappings:
 
   "tensor_cast.dispatch_ffn_combine.default":
     kernel_type: DispatchFFNCombine
+    query_mode: moe_fused
     tc_input_count: 1
     notes: >
       [HIGH] path: C. vllm-ascend v0.15.0 超级融合 MoE op (csrc/dispatch_ffn_combine/).

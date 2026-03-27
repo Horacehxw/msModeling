@@ -16,6 +16,117 @@ from tensor_cast.performance_model.profiling_database.data_source import (
 )
 
 
+class TestPartialMetrics:
+    def test_partial_uses_latency_but_counts_as_miss(self):
+        """PARTIAL result: latency is used in E2E, but counted as MISS in metrics."""
+        mock_ds = MagicMock(spec=DataSourcePerformanceModel)
+        mock_ds.lookup.return_value = QueryResult(
+            latency_us=100.0,
+            confidence=0.5,
+            source=QuerySource.PARTIAL,
+            details={
+                "kernel_type": ["QuantBatchMatmulV3"],
+                "missed_kernels": ["KvRmsNormRopeCache"],
+                "composite": True,
+                "partial": True,
+            },
+        )
+
+        mock_device = MagicMock()
+        mock_device.flops = 1e12
+        mock_device.bandwidth = 1e12
+
+        mock_fallback = MagicMock(spec=PerformanceModel)
+        mock_fallback.process_op.return_value = PerformanceModel.Result(
+            execution_time_s=200e-6,
+            statistics={},
+        )
+        mock_fallback.get_classifiers.return_value = []
+
+        pm = EmpiricalPerformanceModel(mock_device, mock_ds, mock_fallback)
+
+        op = MagicMock()
+        op.func = torch.ops.tensor_cast.mlapo_quant.default
+        op.args = (torch.empty(4099, 7168, device="meta", dtype=torch.bfloat16),)
+
+        result = pm.process_op(op)
+
+        # PARTIAL uses empirical latency
+        assert abs(result.execution_time_s - 100e-6) < 1e-9
+
+        # But counts as MISS in stats
+        stats = pm.get_stats()
+        assert stats["miss"] == 1
+        assert stats["hit"] == 0
+
+    def test_partial_shown_separately_in_log_stats(self, caplog):
+        """PARTIAL entries are shown in a separate line, not mixed into MISSes."""
+        import logging
+
+        mock_ds = MagicMock(spec=DataSourcePerformanceModel)
+        mock_device = MagicMock()
+        mock_device.flops = 1e12
+        mock_device.bandwidth = 1e12
+
+        mock_fallback = MagicMock(spec=PerformanceModel)
+        mock_fallback.process_op.return_value = PerformanceModel.Result(
+            execution_time_s=200e-6,
+            statistics={},
+        )
+        mock_fallback.get_classifiers.return_value = []
+
+        pm = EmpiricalPerformanceModel(mock_device, mock_ds, mock_fallback)
+
+        # Simulate 2 PARTIAL mlapo_quant + 1 PARTIAL mla + 1 full MISS
+        pm._stats = {"hit": 3, "miss": 4}
+        pm._hit_details = [
+            ("tensor_cast.swiglu.default", "SwiGlu", ((2048, 6912),), 12e-6),
+            ("tensor_cast.swiglu.default", "SwiGlu", ((2048, 6912),), 12e-6),
+            ("tensor_cast.swiglu.default", "SwiGlu", ((2048, 6912),), 12e-6),
+        ]
+        pm._miss_details = [
+            (
+                "tensor_cast.mlapo_quant.default",
+                "partial:KvRmsNormRopeCache",
+                [(4099, 7168)],
+                200e-6,
+            ),
+            (
+                "tensor_cast.mlapo_quant.default",
+                "partial:KvRmsNormRopeCache",
+                [(4099, 7168)],
+                200e-6,
+            ),
+            (
+                "tensor_cast.multihead_latent_attention.default",
+                "partial:FusedInferAttentionScore",
+                [(4099, 512)],
+                200e-6,
+            ),
+            (
+                "aten.mm.default",
+                "shape_mismatch",
+                [(4096, 5120), (5120, 5120)],
+                200e-6,
+            ),
+        ]
+
+        with caplog.at_level(logging.INFO):
+            pm.log_stats()
+
+        log_text = caplog.text
+
+        # PARTIAL line should appear with count and op names
+        assert "PARTIAL: 3/7" in log_text
+        assert "mlapo_quant" in log_text
+        assert "multihead_latent_attention" in log_text
+
+        # MISSes section should NOT contain the partial reasons
+        # Find the MISSes line and verify it only has 1 unique reason
+        assert "MISSes (1 unique reasons)" in log_text
+        assert "[shape_mismatch]" in log_text
+
+
 class TestM4PerShapeMatchRate:
     """M4: Per-Shape Match HR -- unique (func_name, shape) pairs, excl zero_cost."""
 

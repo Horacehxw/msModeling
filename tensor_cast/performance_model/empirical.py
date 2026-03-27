@@ -15,7 +15,7 @@ from overrides import override
 from ..device import DeviceProfile
 from .base import PerformanceModel
 from .op_invoke_info import OpInvokeInfo
-from .profiling_database.data_source import DataSourcePerformanceModel
+from .profiling_database.data_source import DataSourcePerformanceModel, QuerySource
 
 logger = logging.getLogger(__name__)
 
@@ -250,7 +250,8 @@ class EmpiricalPerformanceModel(PerformanceModel):
         analytic_result = self.fallback_model.process_op(op_invoke_info)
         self._total_latency_sum += analytic_result.execution_time_s
 
-        if result is not None:
+        if result is not None and result.source != QuerySource.PARTIAL:
+            # Full HIT — use empirical latency, count as HIT in metrics
             self._stats["hit"] += 1
             self._hit_latency_sum += analytic_result.execution_time_s
             empirical_s = result.latency_us * 1e-6
@@ -272,6 +273,35 @@ class EmpiricalPerformanceModel(PerformanceModel):
                 },
             )
 
+        if result is not None and result.source == QuerySource.PARTIAL:
+            # PARTIAL: use empirical latency in E2E sum, but count as MISS
+            # in match rate (M1). Update _empirical_hit_total_s (M6) so the
+            # E2E ratio stays consistent with the returned latency. Do NOT
+            # update _hit_latency_sum (M5) — PARTIAL is still conceptually
+            # a MISS for accuracy metrics.
+            self._stats["miss"] += 1
+            empirical_s = result.latency_us * 1e-6
+            self._empirical_hit_total_s += empirical_s
+            tc_shapes = [
+                tuple(a.shape)
+                for a in op_invoke_info.args
+                if isinstance(a, torch.Tensor)
+            ]
+            missed_kernels = result.details.get("missed_kernels", [])
+            reason = f"partial:{','.join(missed_kernels)}"
+            self._miss_details.append(
+                (func_name, reason, tc_shapes, analytic_result.execution_time_s)
+            )
+            return PerformanceModel.Result(
+                execution_time_s=empirical_s,
+                statistics={
+                    "source": result.source.name,
+                    "confidence": result.confidence,
+                    **result.details,
+                },
+            )
+
+        # Full MISS — fall back to analytic model
         self._stats["miss"] += 1
         tc_shapes = [
             tuple(a.shape) for a in op_invoke_info.args if isinstance(a, torch.Tensor)
@@ -307,6 +337,38 @@ class EmpiricalPerformanceModel(PerformanceModel):
             stats["m1_raw_op_count_hr"] * 100,
         )
 
+        # Separate PARTIAL entries from full MISSes
+        partial_details = [
+            (fn, reason, shapes, lat)
+            for fn, reason, shapes, lat in self._miss_details
+            if reason.startswith("partial:")
+        ]
+        full_miss_details = [
+            (fn, reason, shapes, lat)
+            for fn, reason, shapes, lat in self._miss_details
+            if not reason.startswith("partial:")
+        ]
+
+        # PARTIAL summary line
+        if partial_details:
+            total = stats["total"]
+            partial_count = len(partial_details)
+            # Extract short op names with multiplicity
+            partial_op_counts = Counter(
+                fn.removeprefix("torch.ops.").split(".")[-2] if "." in fn else fn
+                for fn, _r, _s, _l in partial_details
+            )
+            op_strs = [
+                f"{name}\u00d7{count}" if count > 1 else name
+                for name, count in partial_op_counts.most_common()
+            ]
+            logger.info(
+                "  PARTIAL: %d/%d (%s)",
+                partial_count,
+                total,
+                ", ".join(op_strs),
+            )
+
         # Deduplicated HITs: count occurrences of each mapping
         if self._hit_details:
             display_keys = [f"{fn}->{kt}" for fn, kt, _, _ in self._hit_details]
@@ -319,10 +381,10 @@ class EmpiricalPerformanceModel(PerformanceModel):
                 "  HITs (%d unique):\n%s", len(hit_counts), "\n".join(hit_lines)
             )
 
-        # MISSes grouped by reason category
-        if self._miss_details:
+        # MISSes grouped by reason category (excluding PARTIAL)
+        if full_miss_details:
             by_reason: dict[str, list[tuple[str, list[tuple]]]] = {}
-            for func_name, reason, tc_shapes, _lat in self._miss_details:
+            for func_name, reason, tc_shapes, _lat in full_miss_details:
                 by_reason.setdefault(reason, []).append((func_name, tc_shapes))
 
             miss_lines = []

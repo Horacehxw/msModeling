@@ -4,6 +4,7 @@ import pytest
 import torch
 
 from tensor_cast.device import CommGrid, InterconnectTopology
+from tensor_cast.model_config import ParallelConfig
 from tensor_cast.performance_model.profiling_database.data_source import QuerySource
 
 from tensor_cast.performance_model.profiling_database.profiling_data_source import (
@@ -13,6 +14,14 @@ from tensor_cast.performance_model.profiling_database.profiling_data_source impo
     get_topology_tier,
     ProfilingDataSource,
 )
+
+
+def _make_parallel_config(ep_size=1, world_size=16, tp_size=8):
+    return ParallelConfig(
+        world_size=world_size,
+        tensor_parallel_size=tp_size,
+        expert_parallel_size=ep_size,
+    )
 
 
 # --- QuerySource enum tests ---
@@ -494,7 +503,8 @@ def rope_data_dir(tmp_path):
 def test_rope_shape_normalization(rope_data_dir):
     """TC RoPE sends [Q(1,1,144,128), K(1,4,144,128), cos(1,144,128), sin(1,144,128)]
     CSV expects [K(1,136,4,128), Q(1,136,1,128), cos(1,136,1,128), sin(1,136,1,128)].
-    Should match after: reorder Q/K, transpose (B,H,S,D)->(B,S,H,D), insert head dim in cos/sin."""
+    Should match after: reorder Q/K, transpose (B,H,S,D)->(B,S,H,D), insert head dim in cos/sin.
+    """
     ds = ProfilingDataSource(rope_data_dir)
     op = _make_op_info(
         torch.ops.tensor_cast.apply_rope.default,
@@ -2496,3 +2506,308 @@ def test_elementwise_fallback_tuple_output(elementwise_data_dir):
     result = ds.lookup(op)
     assert result is not None, "Should unwrap tuple output and match on first element"
     assert abs(result.latency_us - 10.5) < 0.01
+
+
+# --- _query_by_shapes tests ---
+
+QUERY_BY_SHAPES_OP_MAPPING = """
+version: "test"
+device: TEST_DEVICE
+
+operator_mappings:
+  "aten.mm.default":
+    kernel_type: MatMulV2
+    alternate_kernel_types: [MatMulV3]
+"""
+
+QUERY_BY_SHAPES_MATMULV2_CSV = """\
+Input Shapes,Input Data Types,Input Formats,Output Shapes,Output Data Types,Output Formats,Average Duration(us)
+"136,5120;5120,768","DT_BF16;DT_BF16","ND;ND","136,768","DT_BF16","ND",45.3
+"""
+
+QUERY_BY_SHAPES_MATMULV3_CSV = """\
+Input Shapes,Input Data Types,Input Formats,Output Shapes,Output Data Types,Output Formats,Average Duration(us)
+"256,5120;5120,768","DT_BF16;DT_BF16","ND;ND","256,768","DT_BF16","ND",55.0
+"""
+
+# CSV with 4 inputs (like QuantBatchMatmulV3: activation, FRACTAL_NZ weight, bias, bias)
+QUERY_BY_SHAPES_QBMV3_CSV = """\
+Input Shapes,Input Data Types,Input Formats,Output Shapes,Output Data Types,Output Formats,Average Duration(us)
+"4099,7168;66,448,16,32;2112;2112","DT_BF16;DT_BF16;DT_BF16;DT_BF16","ND;FRACTAL_NZ;ND;ND","4099,2112","DT_BF16","ND",100.5
+"""
+
+
+@pytest.fixture
+def query_shapes_data_dir(tmp_path):
+    d = tmp_path / "qbs"
+    d.mkdir()
+    (d / "op_mapping.yaml").write_text(QUERY_BY_SHAPES_OP_MAPPING)
+    (d / "MatMulV2.csv").write_text(QUERY_BY_SHAPES_MATMULV2_CSV.strip())
+    (d / "MatMulV3.csv").write_text(QUERY_BY_SHAPES_MATMULV3_CSV.strip())
+    (d / "QuantBatchMatmulV3.csv").write_text(QUERY_BY_SHAPES_QBMV3_CSV.strip())
+    return d
+
+
+class TestQueryByShapes:
+    def test_primary_kernel_hit(self, query_shapes_data_dir):
+        ds = ProfilingDataSource(query_shapes_data_dir)
+        tc_inputs = [
+            ((136, 5120), torch.bfloat16),
+            ((5120, 768), torch.bfloat16),
+        ]
+        result = ds._query_by_shapes(["MatMulV2"], tc_inputs)
+        assert result is not None
+        lat, kernel = result
+        assert abs(lat - 45.3) < 0.01
+        assert kernel == "MatMulV2"
+
+    def test_alternate_kernel_fallback(self, query_shapes_data_dir):
+        """Primary misses, alternate hits."""
+        ds = ProfilingDataSource(query_shapes_data_dir)
+        tc_inputs = [
+            ((256, 5120), torch.bfloat16),
+            ((5120, 768), torch.bfloat16),
+        ]
+        result = ds._query_by_shapes(["MatMulV2", "MatMulV3"], tc_inputs)
+        assert result is not None
+        lat, kernel = result
+        assert abs(lat - 55.0) < 0.01
+        assert kernel == "MatMulV3"
+
+    def test_all_miss_returns_none(self, query_shapes_data_dir):
+        ds = ProfilingDataSource(query_shapes_data_dir)
+        tc_inputs = [
+            ((999, 5120), torch.bfloat16),
+            ((5120, 768), torch.bfloat16),
+        ]
+        result = ds._query_by_shapes(["MatMulV2", "MatMulV3"], tc_inputs)
+        assert result is None
+
+    def test_tc_input_count_truncates_csv(self, query_shapes_data_dir):
+        """tc_input_count=2 allows matching CSV with 4 inputs using only first 2."""
+        ds = ProfilingDataSource(query_shapes_data_dir)
+        tc_inputs = [
+            ((4099, 7168), torch.bfloat16),
+            ((2112, 7168), torch.bfloat16),
+        ]
+        result = ds._query_by_shapes(
+            ["QuantBatchMatmulV3"], tc_inputs, tc_input_count=2
+        )
+        assert result is not None
+        lat, kernel = result
+        assert abs(lat - 100.5) < 0.01
+        assert kernel == "QuantBatchMatmulV3"
+
+    def test_without_tc_input_count_misses_4_input_csv(self, query_shapes_data_dir):
+        """Without tc_input_count, 2 TC inputs vs 4 CSV inputs → MISS."""
+        ds = ProfilingDataSource(query_shapes_data_dir)
+        tc_inputs = [
+            ((4099, 7168), torch.bfloat16),
+            ((2112, 7168), torch.bfloat16),
+        ]
+        result = ds._query_by_shapes(["QuantBatchMatmulV3"], tc_inputs)
+        assert result is None
+
+
+# --- Composite partial match tests ---
+
+PARTIAL_MATCH_OP_MAPPING = """
+version: "test"
+device: TEST_DEVICE
+
+operator_mappings:
+  "tensor_cast.mlapo_quant.default":
+    composite: true
+    sub_kernels: [QuantBatchMatmulV3, KvRmsNormRopeCache]
+"""
+
+PARTIAL_MATCH_QBMV3_CSV = """\
+Input Shapes,Input Data Types,Input Formats,Output Shapes,Output Data Types,Output Formats,Average Duration(us)
+"4099,7168;2112,7168","DT_BF16;DT_BF16","ND;ND","4099,2112","DT_BF16","ND",80.0
+"""
+
+
+@pytest.fixture
+def partial_match_data_dir(tmp_path):
+    d = tmp_path / "partial"
+    d.mkdir()
+    (d / "op_mapping.yaml").write_text(PARTIAL_MATCH_OP_MAPPING)
+    (d / "QuantBatchMatmulV3.csv").write_text(PARTIAL_MATCH_QBMV3_CSV.strip())
+    # No KvRmsNormRopeCache.csv — will MISS
+    return d
+
+
+class TestCompositePartialMatch:
+    def test_partial_returns_partial_source(self, partial_match_data_dir):
+        """When some sub-kernels hit and others miss, return PARTIAL."""
+        from tensor_cast.performance_model.profiling_database.profiling_data_source import (
+            SubKernelSpec,
+        )
+
+        ds = ProfilingDataSource(partial_match_data_dir)
+        specs = [
+            SubKernelSpec(
+                kernel_type="QuantBatchMatmulV3",
+                input_shapes=[(4099, 7168), (2112, 7168)],
+                dtype="DT_BF16",
+            ),
+            SubKernelSpec(
+                kernel_type="KvRmsNormRopeCache",
+                input_shapes=[(4099, 576)],
+                dtype="DT_BF16",
+            ),
+        ]
+
+        op = _make_op_info(
+            torch.ops.tensor_cast.mlapo_quant.default,
+            [torch.empty(4099, 7168, device="meta", dtype=torch.bfloat16)],
+        )
+        result = ds._lookup_composite_decomposed(op, {}, lambda op, m: specs)
+        assert result is not None
+        assert result.source == QuerySource.PARTIAL
+        assert result.latency_us == 80.0
+        assert "hit_kernels" in result.details
+        assert "missed_kernels" in result.details
+        assert "KvRmsNormRopeCache" in result.details["missed_kernels"]
+        assert result.confidence == pytest.approx(0.5)
+
+    def test_all_hit_returns_measured(self, partial_match_data_dir):
+        """When all sub-kernels hit, return MEASURED."""
+        from tensor_cast.performance_model.profiling_database.profiling_data_source import (
+            SubKernelSpec,
+        )
+
+        ds = ProfilingDataSource(partial_match_data_dir)
+        specs = [
+            SubKernelSpec(
+                kernel_type="QuantBatchMatmulV3",
+                input_shapes=[(4099, 7168), (2112, 7168)],
+                dtype="DT_BF16",
+            ),
+        ]
+
+        op = _make_op_info(
+            torch.ops.tensor_cast.mlapo_quant.default,
+            [torch.empty(4099, 7168, device="meta", dtype=torch.bfloat16)],
+        )
+        result = ds._lookup_composite_decomposed(op, {}, lambda op, m: specs)
+        assert result is not None
+        assert result.source == QuerySource.MEASURED
+        assert result.confidence == 0.8
+        # kernel_type must be a comma-separated string, not a list
+        assert isinstance(result.details["kernel_type"], str)
+        assert "QuantBatchMatmulV3" in result.details["kernel_type"]
+
+    def test_all_miss_returns_none(self, partial_match_data_dir):
+        """When all sub-kernels miss, return None to allow analytic fallback."""
+        from tensor_cast.performance_model.profiling_database.profiling_data_source import (
+            SubKernelSpec,
+        )
+
+        ds = ProfilingDataSource(partial_match_data_dir)
+        specs = [
+            SubKernelSpec(
+                kernel_type="KvRmsNormRopeCache",
+                input_shapes=[(4099, 576)],
+                dtype="DT_BF16",
+            ),
+        ]
+
+        op = _make_op_info(
+            torch.ops.tensor_cast.mlapo_quant.default,
+            [torch.empty(4099, 7168, device="meta", dtype=torch.bfloat16)],
+        )
+        result = ds._lookup_composite_decomposed(op, {}, lambda op, m: specs)
+        assert result is None
+
+
+# --- DFC EP Size matching tests ---
+
+MOE_OP_MAPPING = """
+version: "test"
+device: TEST_DEVICE
+
+operator_mappings:
+  "tensor_cast.dispatch_ffn_combine.default":
+    kernel_type: DispatchFFNCombine
+    query_mode: moe_fused
+    tc_input_count: 1
+"""
+
+MOE_DFC_CSV = """\
+Input Shapes,Input Data Types,Input Formats,Output Shapes,Output Data Types,Output Formats,EP Size,Average Duration(us)
+"513,7168","DT_BF16","ND","513,7168","DT_BF16","ND",16,235.0
+"513,7168","DT_BF16","ND","513,7168","DT_BF16","ND",8,180.0
+"1024,7168","DT_BF16","ND","1024,7168","DT_BF16","ND",16,400.0
+"""
+
+
+@pytest.fixture
+def dfc_data_dir(tmp_path):
+    d = tmp_path / "dfc"
+    d.mkdir()
+    (d / "op_mapping.yaml").write_text(MOE_OP_MAPPING)
+    (d / "DispatchFFNCombine.csv").write_text(MOE_DFC_CSV.strip())
+    return d
+
+
+class TestLookupMoe:
+    def test_ep_size_exact_match(self, dfc_data_dir):
+        """Same shape, different EP sizes → match the right one."""
+        ds = ProfilingDataSource(
+            dfc_data_dir, parallel_config=_make_parallel_config(ep_size=16)
+        )
+        op = _make_op_info(
+            torch.ops.tensor_cast.dispatch_ffn_combine.default,
+            [
+                torch.empty(513, 7168, device="meta", dtype=torch.bfloat16),
+                torch.empty(513, dtype=torch.int64, device="meta"),
+            ],
+        )
+        result = ds.lookup(op)
+        assert result is not None
+        assert abs(result.latency_us - 235.0) < 0.01
+
+    def test_ep_size_8_matches_different_row(self, dfc_data_dir):
+        ds = ProfilingDataSource(
+            dfc_data_dir, parallel_config=_make_parallel_config(ep_size=8)
+        )
+        op = _make_op_info(
+            torch.ops.tensor_cast.dispatch_ffn_combine.default,
+            [
+                torch.empty(513, 7168, device="meta", dtype=torch.bfloat16),
+                torch.empty(513, dtype=torch.int64, device="meta"),
+            ],
+        )
+        result = ds.lookup(op)
+        assert result is not None
+        assert abs(result.latency_us - 180.0) < 0.01
+
+    def test_ep_size_not_configured_misses(self, dfc_data_dir):
+        """CSV has EP Size column but ProfilingDataSource has no ep_size → MISS."""
+        ds = ProfilingDataSource(dfc_data_dir)  # no ep_size
+        op = _make_op_info(
+            torch.ops.tensor_cast.dispatch_ffn_combine.default,
+            [
+                torch.empty(513, 7168, device="meta", dtype=torch.bfloat16),
+                torch.empty(513, dtype=torch.int64, device="meta"),
+            ],
+        )
+        result = ds.lookup(op)
+        assert result is None
+        assert ds.last_miss_reason == "ep_size_not_configured"
+
+    def test_shape_miss(self, dfc_data_dir):
+        """Shape doesn't match any CSV row."""
+        ds = ProfilingDataSource(
+            dfc_data_dir, parallel_config=_make_parallel_config(ep_size=16)
+        )
+        op = _make_op_info(
+            torch.ops.tensor_cast.dispatch_ffn_combine.default,
+            [
+                torch.empty(999, 7168, device="meta", dtype=torch.bfloat16),
+                torch.empty(999, dtype=torch.int64, device="meta"),
+            ],
+        )
+        result = ds.lookup(op)
+        assert result is None

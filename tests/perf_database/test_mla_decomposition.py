@@ -337,15 +337,17 @@ class TestCompositeLookupMLA:
         assert abs(result.latency_us - 59.0) < 0.1
         assert result.source == QuerySource.MEASURED
 
-    def test_mla_decode_fia_miss_returns_none(self, mla_data_dir):
-        """MLA decode: FIA miss (wrong batch_size) → None."""
+    def test_mla_decode_fia_miss_returns_partial(self, mla_data_dir):
+        """MLA decode: FIA miss (wrong batch_size) → PARTIAL."""
         ds = ProfilingDataSource(mla_data_dir)
         args = _make_mla_decode_args(batch_size=99, avg_seq_len=4096)
         op = _make_op_info(
             torch.ops.tensor_cast.multihead_latent_attention.default, args
         )
         result = ds.lookup(op)
-        assert result is None
+        assert result is not None
+        assert result.source == QuerySource.PARTIAL
+        assert result.details.get("partial") is True
 
     def test_mla_insufficient_args_returns_none(self, mla_data_dir):
         """MLA with insufficient args → decompose fails → None."""
@@ -679,8 +681,10 @@ class TestConfidenceLevels:
             torch.ops.tensor_cast.multihead_latent_attention.default, args
         )
         result = ds.lookup(op)
-        # FIA raw shape for batch=32 not in CSV → sub_kernel_miss → None
-        assert result is None
+        # FIA raw shape for batch=32 not in CSV → sub_kernel_miss → PARTIAL
+        assert result is not None
+        assert result.source == QuerySource.PARTIAL
+        assert result.details.get("partial") is True
 
 
 # ---- 4. Monotonicity ----
@@ -891,7 +895,7 @@ class TestCompositeMixedHitInterpolate:
         assert result.source == QuerySource.MEASURED
 
     def test_all_sub_kernels_miss_returns_none(self, mla_rich_data_dir):
-        """All sub-kernels miss (wrong batch_size for FIA, wrong shape for TBMM)."""
+        """All sub-kernels miss → None to allow analytic fallback."""
         base = ProfilingDataSource(mla_rich_data_dir)
         ds = InterpolatingDataSource(base)
         args = _make_mla_decode_args(
@@ -1023,6 +1027,25 @@ class TestMLADecomposeWithAttentionParams:
         assert specs[0].kernel_type == "MatMulV2"
         assert specs[1].kernel_type == "FusedInferAttentionScore"
 
+    def test_e3b_mla_prefill_matmulv2_tc_input_count(self):
+        """MLA prefill MatMulV2 needs tc_input_count=2 (CSV has bias columns)."""
+        args = _make_mla_prefill_args(num_tokens=256, num_heads=16, kv_lora_rank=512)
+        op = _make_op_info(
+            torch.ops.tensor_cast.multihead_latent_attention.default, args
+        )
+        specs = _decompose_mla(op, {})
+        assert specs[0].tc_input_count == 2
+
+    def test_e3c_mla_decode_tbmm_no_tc_input_count(self):
+        """MLA BF16 decode: TransposeBatchMatMul needs no tc_input_count override."""
+        args = _make_mla_decode_args(batch_size=4, num_heads=16)
+        op = _make_op_info(
+            torch.ops.tensor_cast.multihead_latent_attention.default, args
+        )
+        specs = _decompose_mla(op, {})
+        assert specs[0].tc_input_count is None  # TransposeBatchMatMul
+        assert specs[2].tc_input_count is None  # TransposeBatchMatMul
+
     def test_e4_mla_quant_decode_attention_params(self):
         """MLA quant decode also produces attention_params."""
         args = _make_mla_decode_args(batch_size=4, num_heads=16, kv_lora_rank=448)
@@ -1035,6 +1058,16 @@ class TestMLADecomposeWithAttentionParams:
         assert fia_spec.attention_params is not None
         assert fia_spec.query_mode == "attention"
 
+    def test_e4b_mla_quant_decode_qbmv3_tc_input_count(self):
+        """MLA quant decode: QuantBatchMatmulV3 needs tc_input_count=2."""
+        args = _make_mla_decode_args(batch_size=4, num_heads=16, kv_lora_rank=448)
+        op = _make_op_info(
+            torch.ops.tensor_cast.multihead_latent_attention_quant.default, args
+        )
+        specs = _decompose_mla_quant(op, {})
+        assert specs[0].tc_input_count == 2  # QuantBatchMatmulV3
+        assert specs[2].tc_input_count is None  # TransposeBatchMatMul
+
     def test_e5_mla_quant_prefill_fia(self):
         """MLA quant prefill: decomposes to MatMulV2 + FIA (v0.18.0)."""
         args = _make_mla_prefill_args(num_tokens=256, num_heads=16, kv_lora_rank=512)
@@ -1046,6 +1079,15 @@ class TestMLADecomposeWithAttentionParams:
         assert len(specs) == 2
         assert specs[0].kernel_type == "MatMulV2"
         assert specs[1].kernel_type == "FusedInferAttentionScore"
+
+    def test_e5b_mla_quant_prefill_matmulv2_tc_input_count(self):
+        """MLA quant prefill MatMulV2 needs tc_input_count=2."""
+        args = _make_mla_prefill_args(num_tokens=256, num_heads=16, kv_lora_rank=512)
+        op = _make_op_info(
+            torch.ops.tensor_cast.multihead_latent_attention_quant.default, args
+        )
+        specs = _decompose_mla_quant(op, {})
+        assert specs[0].tc_input_count == 2
 
 
 # ---- 10. Interpolation linearity verification ----
@@ -1225,6 +1267,15 @@ class TestDecomposeMlapo:
         )
         assert _decompose_mlapo(op, {}) is None
 
+    def test_matmulv2_specs_have_tc_input_count_2(self):
+        """MatMulV2 CSV has extra bias inputs; tc_input_count=2 is required."""
+        args = _make_mlapo_args()
+        op = _make_op_info(torch.ops.tensor_cast.mlapo.default, args)
+        specs = _decompose_mlapo(op, {})
+        assert specs[0].tc_input_count == 2  # fused_qkv_a_proj
+        assert specs[1].tc_input_count == 2  # q_b_proj
+        assert specs[2].tc_input_count is None  # KvRmsNormRopeCache
+
     def test_none_weight_returns_none(self):
         args = _make_mlapo_args()
         args[3] = None  # q_a_proj = None
@@ -1262,6 +1313,15 @@ class TestDecomposeMlapoQuant:
         specs = _decompose_mlapo_quant(op, {})
         # KvRmsNormRopeCache is now specs[2] (was [3] before fused merge)
         assert specs[2].input_shapes[0] == (136, 576)
+
+    def test_qbmv3_specs_have_tc_input_count_2(self):
+        """QuantBatchMatmulV3 CSV has extra bias inputs; tc_input_count=2 is required."""
+        args = _make_mlapo_args()
+        op = _make_op_info(torch.ops.tensor_cast.mlapo_quant.default, args)
+        specs = _decompose_mlapo_quant(op, {})
+        assert specs[0].tc_input_count == 2  # fused_qkv_a_proj
+        assert specs[1].tc_input_count == 2  # q_b_proj
+        assert specs[2].tc_input_count is None  # KvRmsNormRopeCache
 
     def test_insufficient_args_returns_none(self):
         """mlapo_quant requires len(args) >= 20."""
