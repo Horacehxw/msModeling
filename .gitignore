@@ -13,6 +13,7 @@ docs/perf_database/tasks/
 .conda/
 .venv/
 .claude/
+.playwright-mcp/
 
 # generated profiling data (tools/perf_data_collection output)
 perf_database/data/

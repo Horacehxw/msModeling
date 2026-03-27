@@ -1833,7 +1833,7 @@ def test_comm_allreduce_exact_still_measured(comm_data_dir):
     assert abs(result.latency_us - 689.96) < 0.01
 
 
-# --- MoE csv_file + tc_input_count tests ---
+# --- MoE tc_input_count tests ---
 
 MOE_OP_MAPPING_YAML = """\
 version: "0.14.0"
@@ -1841,12 +1841,10 @@ device: TEST_DEVICE
 
 operator_mappings:
   "tensor_cast.init_routing_v2.default":
-    kernel_type: MoeDistributeDispatchV2
-    csv_file: MoeTokenPermute
+    kernel_type: MoeTokenPermute
     tc_input_count: 2
   "tensor_cast.unpermute_tokens.default":
-    kernel_type: MoeDistributeCombineV2
-    csv_file: MoeTokenUnpermute
+    kernel_type: MoeTokenUnpermute
     tc_input_count: 1
 """
 
@@ -1959,29 +1957,10 @@ def test_moe_unpermute_shape_miss(moe_data_dir):
     assert result is None
 
 
-def test_csv_file_field_override(moe_data_dir):
-    """csv_file overrides kernel_type for CSV loading."""
+def test_kernel_type_equals_csv_filename(moe_data_dir):
+    """kernel_type is used directly as CSV filename (convention: kernel_type == CSV filename)."""
     ds = ProfilingDataSource(moe_data_dir)
-    assert not (moe_data_dir / "MoeDistributeDispatchV2.csv").exists()
     assert (moe_data_dir / "MoeTokenPermute.csv").exists()
-    op = _make_op_info(
-        torch.ops.tensor_cast.init_routing_v2.default,
-        [
-            torch.empty(4, 7168, device="meta", dtype=torch.bfloat16),
-            torch.empty(4, 8, device="meta", dtype=torch.int32),
-        ],
-    )
-    result = ds.lookup(op)
-    assert result is not None
-
-
-def test_csv_file_field_fallback(moe_data_dir):
-    """Without csv_file, kernel_type is used as CSV filename (regression guard)."""
-    ds = ProfilingDataSource(moe_data_dir)
-    mappings = ds._op_mapping["operator_mappings"]
-    mappings["tensor_cast.init_routing_v2.default"] = {
-        "kernel_type": "MoeTokenPermute",
-    }
     op = _make_op_info(
         torch.ops.tensor_cast.init_routing_v2.default,
         [

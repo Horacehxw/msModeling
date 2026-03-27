@@ -11,6 +11,8 @@ class QuerySource(Enum):
     MEASURED = auto()
     INTERPOLATED = auto()
     EXTRAPOLATED = auto()
+    # Forward-declared: returned by _lookup_composite_decomposed when some
+    # (but not all) sub-kernels hit, enabling partial composite estimation.
     PARTIAL = auto()
 
 

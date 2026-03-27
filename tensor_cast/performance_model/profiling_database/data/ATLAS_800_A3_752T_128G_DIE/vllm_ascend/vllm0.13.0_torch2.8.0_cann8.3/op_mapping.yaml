@@ -253,8 +253,7 @@ operator_mappings:
   # 非 EP 路径: npu_moe_init_routing_v2 / npu_moe_finalize_routing
 
   "tensor_cast.init_routing_v2.default":
-    kernel_type: MoeDistributeDispatchV2
-    csv_file: MoeTokenPermute
+    kernel_type: MoeTokenPermute
     tc_input_count: 2
     notes: >
       [MEDIUM] op-plugin: YAML:6146 (npu_moe_distribute_dispatch_v2) / MoeDistributeDispatchV2KernelOpApi.cpp.
@@ -265,8 +264,7 @@ operator_mappings:
       Profiling: DSV3 Decode MoeDistributeDispatchV2(2378x).
 
   "tensor_cast.unpermute_tokens.default":
-    kernel_type: MoeDistributeCombineV2
-    csv_file: MoeTokenUnpermute
+    kernel_type: MoeTokenUnpermute
     tc_input_count: 1
     notes: >
       [MEDIUM] op-plugin: YAML:6152 (npu_moe_distribute_combine_v2) / MoeDistributeCombineKernelV2OpApi.cpp.

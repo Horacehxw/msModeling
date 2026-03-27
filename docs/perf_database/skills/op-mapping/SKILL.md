@@ -51,6 +51,8 @@ Teach these to all sub-agents:
 7. **tc_input_count safety**: Only safe for truncating NPU-internal params (axis, scale), NOT for elementwise broadcast ops. See `ref/tc_input_count_rules.md`
 8. **zero_cost classification**: Must verify kernel Type never appears in profiling AND latency is captured by a fused kernel. See `ref/zero_cost_classification.md`
 9. **Elementwise query_mode**: For memory-bound elementwise ops (add, mul, div), use `query_mode: elementwise` to match on output shape with dtype-relaxed byte-ratio scaling. See `ref/shape_matching_catalog.md` Type 11.
+10. **kernel_type = CSV filename**: The `kernel_type` field MUST match the CSV filename exactly (without `.csv` extension). This is the `Type` column value from `kernel_details.csv` as produced by `parse_kernel_details.py`. NEVER use a different "canonical" kernel name that doesn't match the CSV. The `csv_file` field is PROHIBITED — it was removed as a design violation.
+11. **No sub-op → fused-op alternates**: `alternate_kernel_types` must be at the SAME abstraction level as the primary kernel_type (e.g., MatMulV2 → MatMulV3 = hardware variant, OK). NEVER use a fused/composite super-op as an alternate for a sub-op. Example: `DispatchFFNCombine` (fused MoE block = routing + N×matmul + combine) must NEVER be an alternate for `init_routing_v2`, `unpermute_tokens`, or `grouped_matmul` individually — it would cause massive latency overestimation. If a sub-op has no standalone CSV data because it's been absorbed into a fusion, let it miss and fall back to the analytic model.
 
 ---
 

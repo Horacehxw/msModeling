@@ -338,6 +338,8 @@ class SubKernelSpec:
     query_mode: str = "compute"  # "compute" | "attention"
     attention_params: Optional[Dict[str, Any]] = field(default=None)
     tc_input_count: Optional[int] = None
+    # Forward-declared: consumed by _lookup_composite_decomposed in follow-up PR
+    # to try alternate kernel CSVs when primary kernel_type misses.
     alternate_kernel_types: Optional[List[str]] = None
 
 
@@ -1639,20 +1641,10 @@ class ProfilingDataSource(DataSourcePerformanceModel):
         if tc_input_count is not None:
             tc_inputs = tc_inputs[:tc_input_count]
 
-        # csv_file: decouple CSV filename from kernel_type (e.g., MoE ops
-        # where kernel_type != CSV filename)
-        csv_file = mapping.get("csv_file")
-
         # Try each kernel_type until one matches
+        # Convention: kernel_type == CSV filename (no csv_file override needed)
         for kernel_type in kernel_types:
-            # csv_file override only applies to the primary kernel_type.
-            # alternate_kernel_types always use their own name as CSV filename.
-            # This is sufficient for current MoE ops; if a future alternate
-            # needs a different CSV name, extend csv_file to a per-kernel dict.
-            load_name = (
-                csv_file if csv_file and kernel_type == kernel_types[0] else kernel_type
-            )
-            df = self._load_csv(load_name)
+            df = self._load_csv(kernel_type)
             if df is None:
                 continue
 
@@ -1680,8 +1672,7 @@ class ProfilingDataSource(DataSourcePerformanceModel):
 
         # Log miss with shape details for debugging
         primary_kernel = kernel_types[0]
-        load_name = csv_file or primary_kernel
-        df = self._load_csv(load_name)
+        df = self._load_csv(primary_kernel)
         csv_shapes_list = []
         if df is not None:
             for _, row in df.iterrows():
