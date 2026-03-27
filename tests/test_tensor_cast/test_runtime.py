@@ -551,11 +551,11 @@ class PerfAnalysisTestCase(unittest.TestCase):
             )
             self.assertEqual(outputs.shape, (1, num_tokens, model.vocab_size))
         result = runtime.table_averages()
-        # DFC fusion replaces permute_tokens with dispatch_ffn_combine when compiled
+        # DFC fusion replaces init_routing_v2 with dispatch_ffn_combine when compiled
         self.assertTrue(
-            "tensor_cast.permute_tokens" in result
+            "tensor_cast.init_routing_v2" in result
             or "tensor_cast.dispatch_ffn_combine" in result,
-            "Expected permute_tokens or dispatch_ffn_combine in table output",
+            "Expected init_routing_v2 or dispatch_ffn_combine in table output",
         )
         self.assertIn("tensor_cast.concat_and_cache_mla", result)
         self.assertIn("tensor_cast.multihead_latent_attention", result)
