@@ -256,7 +256,7 @@ operator_mappings:
       (npu_moe_finalize_routing, YAML:6182, aclnn: aclnnMoeFinalizeRouting/V2).
       Profiling: DSV3 Decode MoeDistributeCombineV2(2378x).
 
-  "tensor_cast.moe_gating_topk.default":
+  "tensor_cast.moe_gating_top_k_softmax.default":
     kernel_type: MoeGatingTopK
     notes: >
       [HIGH] op-plugin: YAML:~6190 (npu_moe_gating_top_k) / MoeGatingTopKKernelNpuOpApi.cpp.

@@ -133,7 +133,7 @@ python serving_cast/main.py \
 - **Quantization**: `quantize`, `dequantize`, `static_quant_linear`, `fp8_linear`, `mxfp4_linear`
 - **Attention**: `attention`, `attention_quant`, `multihead_latent_attention`
 - **Communication**: `all_reduce`, `all_gather`, `all_to_all`
-- **MoE**: `permute_tokens`, `unpermute_tokens`
+- **MoE**: `init_routing_v2`, `unpermute_tokens`
 - **Cache**: `reshape_and_cache`, `concat_and_cache_mla`
 - **Fusion**: `matmul_all_reduce` (MC2), `swiglu`, `add_rms_norm2`, `apply_rope`
 
