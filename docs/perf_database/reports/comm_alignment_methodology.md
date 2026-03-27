@@ -1,15 +1,13 @@
 # 通信算子耗时建模方法论
 
-**版本**：v6.0
-**日期**：2026-03-19
+**版本**：v7.0
+**日期**：2026-03-27
 **作者**：HDY
 **适用场景**：HCCL 通信算子耗时预测建模，bench 对齐 Comm_NO
-**数据来源**：profiler-qwen3-0314 + profiler-dsv3-0316 + hccl_bench_v8.5（alternating/kernel/event/pipeline/profiler 五模式）
+**数据来源**：profiler-qwen3-0314 + profiler-dsv3-0316 + hccl_bench_v8.5（event/profiler 两模式，profiler 下含 alternating/kernel only 方案）
 
-> **v6.0 更新**：基于 0318 bench 五模式全面验证，确立 alternating 模式为默认推荐。
-> alternating 模式消除 1-5MB 预热偏高（从 19-63% 高估降至 ±3%）；
-> kernel 模式用于 <1MB 小消息（event 底噪 ~60us 淹没真实值）；
-> 新增固定开销修正用于 decode 小消息场景。
+> **v7.0 更新**：合并三层 Duration 模型与恒等关系为统一的 Profiler 时间体系章节；
+> 新增 §2.5 bench kernel 模式 vs 生产环境 profiler 的差异分析（pipeline 重叠机制）。
 
 ## 1. E2E 时间模型
 
@@ -47,17 +45,21 @@ overhead_factor = 1 + Free / (Computing + Comm_NO)
 
 ---
 
-## 2. 三层 Duration 模型
+## 2. 通信耗时模型
 
-通信算子的耗时存在三个测量层级：
+### 2.1 三层 Duration 模型
 
-| 层级 | 测量方式 | 包含内容 | 数据源 |
-|------|---------|---------|--------|
-| kernel_details | NPU timeline | hcom_kernel（HCCL 数据传输） | `kernel_details.csv` |
-| operator_details | operator timeline | AicpuKernel + hcom_kernel | `operator_details.csv` c10d::* |
-| bench (alternating) | host perf_counter | peer 流水执行，消除预热偏高 | microbench CSV |
+通信算子的耗时在 profiler 中存在三个测量层级，分别对应不同的 CSV 文件：
 
-### 2.1 operator_details 的物理分解
+| 层级 | CSV 文件 | 关键字段 | 物理含义 |
+|------|---------|---------|---------|
+| kernel_details | `kernel_details.csv` | hcom_* 的 Duration（去 AivKernel） | 纯 HCCL 数据传输时间 |
+| operator_details | `operator_details.csv` | c10d::* 的 Device Total Duration | AicpuKernel + hcom_kernel，含调度开销 |
+| step_trace | `step_trace.csv` | Communication / Comm_NO | 全 step 级通信时间 / 未被 overlap 的通信时间 |
+
+HCCL bench 采集的 hcom_kernel Duration 对应 kernel_details 层级。仿真目标：用 bench kernel Duration 近似生产环境 kernel_details Duration。
+
+### 2.2 operator_details 的物理分解
 
 ```
 operator_details (Device Total Duration) = AicpuKernel + hcom_kernel
@@ -70,17 +72,13 @@ operator_details (Device Total Duration) = AicpuKernel + hcom_kernel
 
 AicpuKernel 是否存在取决于模型/CANN 版本/通信算子实现，不能假设为 0。
 
----
+### 2.3 恒等关系
 
-## 3. 恒等关系验证
+**恒等关系 1：Communication = Σ kernel_details hcom_*（去 AivKernel）— 精确成立**
 
-### 3.1 恒等关系 1：Communication = Σ kernel_details hcom_*（去 AivKernel）— 精确成立
+全部 18 个场景（Qwen3 × 8 + DSV3 × 10）hcom/Comm = 1.0000，无一例外。AivKernel 条目的 Type 列也标记为 hcom_*，朴素求和会双重计数，去重后精确等于 Communication。
 
-全部 18 个场景（Qwen3 × 8 + DSV3 × 10）hcom/Comm = 1.0000，无一例外。
-
-AivKernel 条目的 Type 列也标记为 hcom_*，朴素求和会双重计数。去重后精确等于 Communication。
-
-### 3.2 恒等关系 2：Comm_NO = Σ operator_details — 仅部分成立
+**恒等关系 2：Comm_NO = Σ operator_details — 仅部分成立**
 
 operator_details 存在三层嵌套：`c10d::_allgather_base_` → `HcclAllGatherBase` → `HcclAllGather`，每层记录几乎相同的 Device Total Duration。取最底层 `Hccl*(不含Base)` 去重后：
 
@@ -94,7 +92,7 @@ operator_details 存在三层嵌套：`c10d::_allgather_base_` → `HcclAllGathe
 
 **根因**：operator_details Device Total Duration 是每次调用的完整 wall-clock Duration（含被 overlap 遮盖的部分），而 COMM_NO 是 step_trace 级别的未被 overlap 通信时间。两者语义不同，仅在 Overlap≈0 时相等。
 
-### 3.3 正确的关系链
+### 2.4 关系链
 
 ```
 Communication (step_trace) = Σ kernel_details hcom_* (去 AivKernel)  [精确，全部 18 场景]
@@ -104,31 +102,69 @@ operator_details ≠ COMM_NO                                            [仅 Ove
 
 ---
 
-## 4. Bench 采集模式分析（v6.0 新增）
+## 3. HCCL Bench 方案
 
-### 4.1 五种 bench 模式概述
+### 3.1 Bench vs 生产 Profiler
 
-| 模式 | 计时方式 | 特点 |
-|------|---------|------|
-| event | NPU Event 包围单次调用 | 含同步开销，小消息底噪 ~60us |
-| kernel | profiler 采集 hcom_kernel Duration | 纯 HCCL 传输时间，无同步开销 |
-| pipeline | host perf_counter 100 次无逐次 sync | 稳态吞吐，预热偏高 |
-| profiler | profiler 采集 operator_details Duration | 含 AicpuKernel |
-| alternating | peer 算子交替流水执行 | 消除预热偏高，推荐默认模式 |
+bench 的 kernel 模式和生产环境 profiler 采集使用完全相同的机制（CANN profiler → kernel_details.csv → hcom_* Duration），每次通信调用只产生 1 个 hcom 子 kernel（已验证）。但大消息下 bench 环境中同一 hcom kernel 比生产环境慢 ~90us。根因在于两种环境的算子执行模式截然不同：
 
-### 4.2 alternating 模式核心优势
+**bench kernel 模式**：
 
-alternating 模式让目标算子与 peer 算子交替执行（如 allGather + reduceScatter 流水），消除了 pipeline 模式中 1-5MB 消息的预热偏高问题：
+```
+profiler session 开启
+  → allReduce 16MB (1次)
+  → allReduce 16MB (1次)
+  → ... (共 BENCH_ITERS 次，同一个 msg_bytes)
+profiler session 关闭 → flush
+```
 
-- pipeline 模式在 1-5MB 范围高估 19-63%
-- alternating 模式在相同范围误差 ±3%
-- 大消息（≥3.5MB）两种模式趋同
+一个 session 内只有同一个大消息算子反复执行。每次 allReduce 16MB 产生大量 trace 数据（DMA 传输记录、HCCL 内部分片记录等），profiler 的 ring buffer 快速填满，触发同步 flush，flush 过程与下一次 allReduce 的 DMA 竞争 HBM 带宽。
 
-### 4.3 kernel 模式用于小消息
+**生产环境 profiler**：
 
-对于 <1MB 的小消息，event 模式底噪 ~60us 远大于实际 kernel 时间（如 allReduce nd=16 kernel 仅 ~13us），因此小消息必须使用 kernel 模式获取纯 HCCL 传输时间。
+```
+profiler session 开启
+  → RmsNorm (5us)
+  → MatMulV2 (180us)
+  → FusedInferAttentionScore (320us)
+  → MatMulV2 (140us)
+  → hcom_allReduce 7MB (388us)    ← 通信
+  → MatMulV2 (700us)
+  → SwiGlu (40us)
+  → MatMulV2 (400us)
+  → hcom_allReduce 7MB (388us)    ← 通信
+  → ... (数百个算子，64层)
+profiler session 关闭 → flush
+```
 
-### 4.4 固定开销修正
+一个 session 内有数百个不同类型的算子。通信算子之间夹着大量计算算子，这些计算算子执行期间：
+1. profiler 有时间将 ring buffer 中的 trace 数据异步 flush，不会积压
+2. 计算算子占用 AI Core，不竞争 HCCL 使用的 DMA/SDMA 通道
+3. 到下一个通信算子执行时，buffer 已清理，不触发同步 flush
+
+这也解释了为什么 alternating bench（用 event timing 而非 profiler）反而更接近生产值 — event timing 测的是端到端 wall-clock，不受 profiler 对 kernel 边界的切分方式影响。
+
+### 3.2 采集方案
+
+针对上述差异，profiler 模式下根据算子类型和 message bytes 范围采用不同方案：
+
+#### 3.2.1 alternating 方案（有 peer 算子场景）
+
+适用于 allGather / reduceScatter 等存在互补 peer 算子的场景。目标算子与 peer 算子交替流水执行（如 allGather + reduceScatter），消除 1-5MB 消息的预热偏高问题：
+
+- 单独执行 pipeline 模式在 1-5MB 范围高估 19-63%
+- alternating 方案在相同范围误差 ±3%
+- 大消息（≥3.5MB）两种方案趋同
+
+#### 3.2.2 kernel only 方案（无 peer 算子 / 小消息场景）
+
+适用于以下场景：
+- allReduce 等无互补 peer 算子的通信算子
+- <1MB 的小消息
+
+直接采集 hcom_kernel Duration，获取纯 HCCL 传输时间。
+
+### 3.3 固定开销
 
 decode 场景小消息的 profiling P50 = bench kernel + 固定开销（调度/同步/AicpuKernel）：
 
@@ -139,48 +175,31 @@ decode 场景小消息的 profiling P50 = bench kernel + 固定开销（调度/�
 | DSV3 | allGather | 8 | +1.2us |
 | DSV3 | reduceScatter | 8 | +2.0us |
 
-### 4.5 HCCL 协议切换异常
+### 3.4 协议切换异常
 
-DSV3 prefill allGather 768KB（nd=8, per_device ≈ 60KB）处于 HCCL 协议切换点，bench 无法复现此行为，需直接使用 profiler P50。
-
----
-
-## 5. 仿真策略总表（v6.0 新增）
-
-| 模型 | 阶段 | 算子 | msg_bytes 范围 | 策略 | 数据来源 |
-|------|------|------|--------------|------|---------|
-| Qwen3 | decode | allReduce | 所有 | bench + 固定开销 | alternating (profiler fallback) + 7.7us |
-| Qwen3 | decode | allGather | 所有 | bench + 固定开销 | kernel (profiler) + 14.6us |
-| Qwen3 | prefill | allGather | ≥1.26MB | 直接用 bench | alternating（误差 ±6%）|
-| Qwen3 | prefill | reduceScatter | ≥1.26MB | 直接用 bench | alternating（误差 ±3%）|
-| DSV3 | decode | allGather | ≤126KB (c=8) | bench + 固定开销 | kernel (profiler) + 1.2us |
-| DSV3 | decode | reduceScatter | 14KB (c=8) | bench + 固定开销 | kernel (profiler) + 2.0us |
-| DSV3 | prefill | allGather | 768KB | 用 profiler P50 | HCCL 协议切换点，bench 无法复现 |
-| DSV3 | prefill | allGather | ≥3.5MB | 直接用 bench | alternating（误差 ±3%）|
-| DSV3 | prefill | reduceScatter | ≥3.5MB | 直接用 bench | alternating（误差 ±2%）|
+DSV3 prefill allGather 768KB（nd=8, per_device ≈ 60KB）处于 HCCL 协议切换点，bench 无法复现此行为，需直接使用 profiler P50 回填。
 
 ---
 
-## 6. Bench 模式选择指南（v6.0 新增）
+## 4. 仿真策略
 
-| 算子 | 推荐模式 | 原因 |
-|------|---------|------|
-| allGather | alternating | peer=reduceScatter 流水执行，消除预热偏高 |
-| reduceScatter | alternating | peer=allGather 流水执行，消除预热偏高 |
-| allReduce | alternating (自动 profiler fallback) | 无 peer，NPU Event 底噪 ~270us 远大于 kernel 时间 ~13us |
-| all_to_all | kernel 或 event | 无 peer，按需选择 |
+最终方案：全部使用 kernel 方案采集 hcom_kernel Duration 作为仿真基准数据，针对异常点使用 profiler 实测数据回填。
 
-关键结论：
-
-1. alternating 模式消除 1-5MB 预热偏高（从 19-63% 高估降至 ±3%）
-2. kernel 模式用于 <1MB 小消息（event 底噪 ~60us 淹没真实值）
-3. 固定开销修正用于 decode 小消息（bench kernel + offset = profiling P50）
-4. HCCL 协议切换点（768KB nd=8, per_device ≈ 60KB）需用 profiler P50
-5. allReduce 无 peer 算子，alternating 自动 fallback 到 profiler 模式
+| 模型 | 阶段 | 算子 | msg_bytes 范围 | 策略 | 说明 |
+|------|------|------|--------------|------|------|
+| Qwen3 | decode | allReduce | 所有 | kernel + 固定开销 | kernel only 采集 + 7.7us |
+| Qwen3 | decode | allGather | 所有 | kernel + 固定开销 | kernel only 采集 + 14.6us |
+| Qwen3 | prefill | allGather | ≥1.26MB | kernel | alternating 采集（误差 ±6%）|
+| Qwen3 | prefill | reduceScatter | ≥1.26MB | kernel | alternating 采集（误差 ±3%）|
+| DSV3 | decode | allGather | ≤126KB (c=8) | kernel + 固定开销 | kernel only 采集 + 1.2us |
+| DSV3 | decode | reduceScatter | 14KB (c=8) | kernel + 固定开销 | kernel only 采集 + 2.0us |
+| DSV3 | prefill | allGather | 768KB | profiler P50 回填 | HCCL 协议切换异常点，bench 无法复现 |
+| DSV3 | prefill | allGather | ≥3.5MB | kernel | alternating 采集（误差 ±3%）|
+| DSV3 | prefill | reduceScatter | ≥3.5MB | kernel | alternating 采集（误差 ±2%）|
 
 ---
 
-## 7. 环境一致性要求
+## 5. 环境要求
 
 ```bash
 export HCCL_OP_EXPANSION_MODE="AIV"   # 建议
@@ -189,14 +208,14 @@ export TASK_QUEUE_ENABLE=1             # 建议
 
 ---
 
-## 8. 对比 Checklist（v6.0 更新）
+## 6. Checklist
 
 - [ ] 恒等关系 1：验证 Communication = Σ kd hcom（去 AivKernel），应精确 1.0000
 - [ ] 恒等关系 2：检查 Overlap 是否≈0，仅此时 operator_details ≈ COMM_NO
-- [ ] bench 模式选择：allGather/reduceScatter 用 alternating，allReduce 用 alternating (profiler fallback)
-- [ ] 小消息（<1MB）：使用 kernel 模式 + 固定开销修正
-- [ ] 大消息（≥3.5MB）：直接用 alternating bench 值
-- [ ] DSV3 768KB allGather：使用 profiler P50（HCCL 协议切换异常）
+- [ ] bench 采集方案：allGather/reduceScatter 用 profiler-alternating，allReduce 用 profiler-kernel only
+- [ ] 小消息（<1MB）：使用 kernel only 方案 + 固定开销修正
+- [ ] 大消息（≥3.5MB）：直接用 alternating 方案 kernel 值
+- [ ] DSV3 768KB allGather：使用 profiler P50 回填（HCCL 协议切换异常）
 - [ ] 确认 operator_details 嵌套去重（取 Hccl* 不含 Base）
 - [ ] Qwen3 Decode：allReduce 可能不在 operator_details 中（CUDAGraph）
 - [ ] DSV3：注意 MoE 通信方差大（P10 vs P90 差 10-100x）

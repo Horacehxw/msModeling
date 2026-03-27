@@ -1,11 +1,11 @@
 # 通信算子对齐报告
 
 **创建日期**：2026-03-12
-**最后更新**：2026-03-19
-**版本**：v3.0（alternating 模式 + 固定开销终版）
+**最后更新**：2026-03-27
+**版本**：v3.2（增加数据汇总）
 **负责人**：HDY
-**数据来源**：Qwen3-32B 多 ISL profiling + DSV3 多 ISL profiling（vLLM 0.15.0 + CANN 8.5 + AIV 模式，均关闭 stack）
-**Microbench 版本**：hccl/v8.5（C10-1 采集，单 session，含 tier=1/2，alternating + kernel + event 三模式）
+**数据来源**：Qwen3-32B 多 ISL profiling + DSV3 多 ISL profiling（vLLM 0.18.0 + CANN 8.5 + AIV 模式，均关闭 stack）
+**Microbench 版本**：hccl/v8.5（C10-1 采集，单 session，含 tier=1/2，alternating + kernel 两模式）
 
 ---
 
@@ -25,18 +25,28 @@
 
 ### 2.1 环境配置
 
+**软件版本**：CANN 8.5 / vLLM 0.18.0 / PyTorch 2.9.0
+
 | 模型 | TP | DP | 量化 | 关键配置 |
 |------|----|----|------|---------|
-| Qwen3-32B | 16 | 1 | BF16 | async-scheduling, CUDAGraph FULL_DECODE_ONLY, max-num-batched-tokens=65536 |
-| DSV3 | 8 | 2 | W8A8 | async-scheduling, CUDAGraph FULL_DECODE_ONLY, max-num-seqs=8, max_num_batched_tokens=2048, EP |
+| Qwen3-32B | 16 | 1 | BF16 | async-scheduling, CUDAGraph FULL_DECODE_ONLY, max-num-batched-tokens=65536, block-size=128 |
+| DSV3 | 8 | 2 | W8A8 | async-scheduling, CUDAGraph FULL_DECODE_ONLY, max-num-seqs=8, max-num-batched-tokens=8192, EP |
 
-关键环境变量（两个模型均开启）：
+关键环境变量：
 
 ```bash
-HCCL_OP_EXPANSION_MODE="AIV"      # AIV 加速通信
-TASK_QUEUE_ENABLE=1                # 任务队列优化
-VLLM_ASCEND_ENABLE_FUSED_MC2=1    # MC2 融合（DSV3 TP 通信）
-VLLM_ASCEND_ENABLE_FLASHCOMM1=1   # 启用 Sequence Parallelism
+# 两个模型共用
+HCCL_OP_EXPANSION_MODE="AIV"
+TASK_QUEUE_ENABLE=1
+VLLM_ASCEND_ENABLE_NZ=1
+
+# Qwen3 特有
+VLLM_ASCEND_ENABLE_FLASHCOMM1=1    # Sequence Parallelism
+
+# DSV3 特有
+VLLM_ASCEND_ENABLE_FUSED_MC2=1     # MC2 融合（TP 通信）
+VLLM_ASCEND_ENABLE_FLASHCOMM1=0    # DSV3 关闭
+VLLM_ASCEND_ENABLE_MLAPO=1         # MLA 优化
 ```
 
 ### 2.2 负载矩阵
@@ -71,7 +81,9 @@ VLLM_ASCEND_ENABLE_FLASHCOMM1=1   # 启用 Sequence Parallelism
 
 ---
 
-## 3. Step Trace 概览
+## 3. 生产 Profiling 数据
+
+### 3.1 Step Trace 概览
 
 `Factor = Stage / (Computing + Communication_Not_Overlapped)`，来自 step_trace_time.csv。
 
@@ -84,7 +96,7 @@ VLLM_ASCEND_ENABLE_FLASHCOMM1=1   # 启用 Sequence Parallelism
 
 **结论**：生产环境 overhead factor 整体 1.04x-1.10x，调度开销可控。
 
-### 3.1 Qwen3-32B 多 ISL Step Trace
+#### Qwen3-32B 多 ISL Step Trace
 
 | 场景 | Stage(ms) | Computing(ms) | Comm_NO(ms) | Free(ms) | Factor | Free% |
 |------|-----------|--------------|-------------|----------|--------|-------|
@@ -97,7 +109,7 @@ VLLM_ASCEND_ENABLE_FLASHCOMM1=1   # 启用 Sequence Parallelism
 | Decode c16r2 | 3083 | 2055 | 826 | 203 | 1.07x | 6.6% |
 | Decode c32r4 | 3196 | 2190 | 849 | 156 | 1.05x | 4.9% |
 
-### 3.2 DSV3 多 ISL/多 Concurrency Step Trace
+#### DSV3 多 ISL/多 Concurrency Step Trace
 
 | 场景 | Stage(ms) | Computing(ms) | Comm_NO(ms) | Free(ms) | Factor | Free% |
 |------|-----------|--------------|-------------|----------|--------|-------|
@@ -114,11 +126,11 @@ VLLM_ASCEND_ENABLE_FLASHCOMM1=1   # 启用 Sequence Parallelism
 
 ---
 
-## 4. 通信算子 Profiling 耗时
+### 3.2 通信算子耗时（kernel_details）
 
 取 p10-p90 stable median，kernel_details.csv 中 `hcom_*` 算子。
 
-### 4.1 Qwen3-32B（TP=16, Dense, BF16, num_devices=16）
+#### Qwen3-32B（TP=16, Dense, BF16, num_devices=16）
 
 **Prefill 多 ISL kernel_details**：
 
@@ -140,7 +152,7 @@ VLLM_ASCEND_ENABLE_FLASHCOMM1=1   # 启用 Sequence Parallelism
 | c16r2 | allReduce | 20,511 | 20.2 |
 | c32r4 | allReduce | 14,190 | 24.1 |
 
-### 4.2 DSV3（TP=8, DP=2, EP, W8A8, num_devices=8）
+#### DSV3（TP=8, DP=2, EP, W8A8, num_devices=8）
 
 **Prefill kernel_details**（主力 ISL）：
 
@@ -160,29 +172,66 @@ VLLM_ASCEND_ENABLE_FLASHCOMM1=1   # 启用 Sequence Parallelism
 
 ---
 
-## 5. Bench vs 生产 Profiler 整体对比
+## 4. Bench 对齐分析
 
-以下汇总 bench 实测结果与生产环境 profiler trace view 中通信算子 Duration 的逐场景对比。bench 数据来自三种采集模式（alternating / kernel / event），profiler 数据来自 operator_details 的 `Device Total Duration`（对齐 Comm_NO 语义）。
+### 4.1 全景对比
 
-### 5.1 Qwen3-32B（TP=16, nd=16）
+| 模型 | 阶段 | 算子 | msg_bytes | bench(us) | profiler(us) | 偏差 |
+|------|------|------|-----------|-----------|-------------|------|
+| Qwen3 | prefill | allGather | 1.3MB | 176.7 | 182.5 | -3% |
+| Qwen3 | prefill | allGather | 3.8MB | 366.6 | 366.6 | 0% |
+| Qwen3 | prefill | allGather | 5.0MB | 435.1 | 432.3 | +1% |
+| Qwen3 | prefill | allGather | 8.8MB | 679.0 | 722.4 | -6% |
+| Qwen3 | prefill | allGather | 21.4MB | 1,628.0 | 1,657.2 | -2% |
+| Qwen3 | prefill | allGather | 40.0MB | 3,080.2 | 3,141.1 | -2% |
+| Qwen3 | prefill | reduceScatter | 1.3MB | 216.3 | 221.2 | -2% |
+| Qwen3 | prefill | reduceScatter | 3.8MB | 440.7 | 442.1 | 0% |
+| Qwen3 | prefill | reduceScatter | 8.8MB | 808.5 | 887.2 | -9% |
+| Qwen3 | prefill | reduceScatter | 21.4MB | 2,044.3 | 2,115.1 | -3% |
+| Qwen3 | prefill | reduceScatter | 40.0MB | 3,664.6 | 3,795.8 | -3% |
+| Qwen3 | decode | allReduce | 160KB | 12.1 | 19.8 | +7.7us |
+| Qwen3 | decode | allGather | 74KB | 12.5 | 25.9 | +13.3us |
+| Qwen3 | decode | allGather | 278KB | 31.3 | 46.5 | +15.3us |
+| Qwen3 | decode | allGather | 297KB | 33.0 | 48.2 | +15.2us |
+| DSV3 | prefill | allGather | 3.5MB | 166.9 | 172.0 | -3% |
+| DSV3 | prefill | reduceScatter | 3.5MB | 202.1 | 197.9 | +2% |
+| DSV3 | decode | allGather | 1KB | 5.4 | 6.4 | +1.0us |
+| DSV3 | decode | allGather | 7KB | 5.5 | 6.8 | +1.4us |
+| DSV3 | decode | allGather | 14KB | 5.6 | 7.0 | +1.3us |
+| DSV3 | decode | reduceScatter | 14KB | 6.1 | 8.1 | +2.0us |
 
-**Prefill**（bench 模式：alternating）：
+Prefill 大消息偏差 ±6%（比例一致），Decode 小消息偏差为固定绝对值（与 msg_bytes 无关）。
 
-| ISL | 算子 | msg_bytes | bench(us) | profiler(us) | 偏差 | 判定 |
-|-----|------|-----------|-----------|-------------|------|------|
-| 4096 | allGather | 1.3MB | 176.7 | 182.5 | -3% | PASS |
-| 4096 | allGather | 3.8MB | 366.6 | 366.6 | 0% | PASS |
-| 4096 | allGather | 5.0MB | 435.1 | 432.3 | +1% | PASS |
-| 8192 | allGather | 8.8MB | 679.0 | 722.4 | -6% | PASS |
-| 8192 | allGather | 21.4MB | 1,628.0 | 1,657.2 | -2% | PASS |
-| 1024 | allGather | 40.0MB | 3,080.2 | 3,141.1 | -2% | PASS |
-| 4096 | reduceScatter | 1.3MB | 216.3 | 221.2 | -2% | PASS |
-| 4096 | reduceScatter | 3.8MB | 440.7 | 442.1 | 0% | PASS |
-| 8192 | reduceScatter | 8.8MB | 808.5 | 887.2 | -9% | PASS |
-| 8192 | reduceScatter | 21.4MB | 2,044.3 | 2,115.1 | -3% | PASS |
-| 1024 | reduceScatter | 40.0MB | 3,664.6 | 3,795.8 | -3% | PASS |
+### 4.2 异常点与修正
 
-**Decode**（bench 模式：kernel / alternating profiler-fallback）：
+| 异常点 | 现象 | 原因 | 修正方式 | 修正后偏差 |
+|--------|------|------|---------|-----------|
+| DSV3 allGather 768KB nd=8 | bench 偏高 107-147% | HCCL 协议切换点，bench 与生产选择不同传输协议 | 使用 profiler P50（75.4us） | 0% |
+| Qwen3 decode allReduce | bench 12.1us vs profiler 19.8us | 生产环境调度链路固定延迟 | bench + 7.7us | ±1us |
+| Qwen3 decode allGather | bench 12.5-33us vs profiler 25.9-48.2us | 同上，TP=16 开销更大 | bench + 14.6us | ±1us |
+| DSV3 decode allGather | bench 5.4-5.6us vs profiler 6.4-7.0us | 同上，TP=8 开销较小 | bench + 1.2us | ±0.2us |
+
+### 4.3 分场景明细
+
+bench 实测结果与生产环境 profiler 的逐场景对比。bench 数据来自 alternating / kernel 两种采集模式，profiler 数据来自 kernel_details 的 hcom_* Duration。
+
+**Qwen3-32B Prefill**（bench 模式：alternating, TP=16, nd=16）：
+
+| ISL | 算子 | msg_bytes | bench(us) | profiler(us) | 偏差 |
+|-----|------|-----------|-----------|-------------|------|
+| 4096 | allGather | 1.3MB | 176.7 | 182.5 | -3% |
+| 4096 | allGather | 3.8MB | 366.6 | 366.6 | 0% |
+| 4096 | allGather | 5.0MB | 435.1 | 432.3 | +1% |
+| 8192 | allGather | 8.8MB | 679.0 | 722.4 | -6% |
+| 8192 | allGather | 21.4MB | 1,628.0 | 1,657.2 | -2% |
+| 1024 | allGather | 40.0MB | 3,080.2 | 3,141.1 | -2% |
+| 4096 | reduceScatter | 1.3MB | 216.3 | 221.2 | -2% |
+| 4096 | reduceScatter | 3.8MB | 440.7 | 442.1 | 0% |
+| 8192 | reduceScatter | 8.8MB | 808.5 | 887.2 | -9% |
+| 8192 | reduceScatter | 21.4MB | 2,044.3 | 2,115.1 | -3% |
+| 1024 | reduceScatter | 40.0MB | 3,664.6 | 3,795.8 | -3% |
+
+**Qwen3-32B Decode**（bench 模式：kernel, TP=16, nd=16）：
 
 | Concurrency | 算子 | msg_bytes | bench(us) | profiler(us) | diff(us) | 判定 |
 |-------------|------|-----------|-----------|-------------|----------|------|
@@ -191,16 +240,14 @@ VLLM_ASCEND_ENABLE_FLASHCOMM1=1   # 启用 Sequence Parallelism
 | c=16 | allGather | 278KB | 31.3 | 46.5 | +15.3 | 固定开销 |
 | c=16 | allGather | 297KB | 33.0 | 48.2 | +15.2 | 固定开销 |
 
-### 5.2 DSV3（TP=8, nd=8）
+**DSV3 Prefill**（bench 模式：alternating, TP=8, nd=8）：
 
-**Prefill**（bench 模式：alternating）：
+| ISL | 算子 | msg_bytes | bench(us) | profiler(us) | 偏差 |
+|-----|------|-----------|-----------|-------------|------|
+| 2048 | allGather | 3.5MB | 166.9 | 172.0 | -3% |
+| 2048 | reduceScatter | 3.5MB | 202.1 | 197.9 | +2% |
 
-| ISL | 算子 | msg_bytes | bench(us) | profiler(us) | 偏差 | 判定 |
-|-----|------|-----------|-----------|-------------|------|------|
-| 2048 | allGather | 3.5MB | 166.9 | 172.0 | -3% | PASS |
-| 2048 | reduceScatter | 3.5MB | 202.1 | 197.9 | +2% | PASS |
-
-**Decode**（bench 模式：kernel，c=8 满载）：
+**DSV3 Decode**（bench 模式：kernel, c=8 满载, TP=8, nd=8）：
 
 | 算子 | msg_bytes | bench(us) | profiler(us) | diff(us) | 判定 |
 |------|-----------|-----------|-------------|----------|------|
@@ -209,61 +256,7 @@ VLLM_ASCEND_ENABLE_FLASHCOMM1=1   # 启用 Sequence Parallelism
 | allGather | 14KB | 5.6 | 7.0 | +1.3 | 固定开销 |
 | reduceScatter | 14KB | 6.1 | 8.1 | +2.0 | 固定开销 |
 
-### 5.3 对比小结
-
-整体对比呈现两种清晰模式：
-
-| 模式 | 场景 | 特征 | 处理方式 |
-|------|------|------|---------|
-| **比例一致** | Prefill ≥1MB | bench ≈ profiler（偏差 ±6%） | 直接用 bench |
-| **固定偏移** | Decode 小消息 | profiler = bench + 固定值 | bench + 固定开销 |
-
-例外：DSV3 allGather 768KB nd=8，bench 偏高 107-147%（HCCL 协议切换点，见 §8）。
-
----
-
-## 6. Bench 测试验证
-
-上节整体对比表明 bench 在 prefill 大消息场景可直接使用。本节聚焦验证 alternating 模式相比旧 event 模式的改善效果——旧 event 模式在 1-5MB 区间系统性偏高 19-63%，alternating 模式将偏差压缩到 ±6%。
-
-### 6.1 Qwen3 prefill allGather（TP=16）
-
-| 场景 | msg_bytes | bench(us) | prof(us) | 偏差 | 旧 event 偏差 |
-|------|-----------|-----------|---------|------|-------------|
-| ISL=4096 | 1.3MB | 176.7 | 182.5 | -3% | +63% |
-| ISL=4096 | 3.8MB | 366.6 | 366.6 | 0% | +30% |
-| ISL=4096 | 5.0MB | 435.1 | 432.3 | +1% | +23% |
-| ISL=8192 | 8.8MB | 679.0 | 722.4 | -6% | +8% |
-| ISL=8192 | 21.4MB | 1628.0 | 1657.2 | -2% | +4% |
-| ISL=1024 | 40.0MB | 3080.2 | 3141.1 | -2% | 0% |
-
-### 6.2 Qwen3 prefill reduceScatter（TP=16）
-
-| 场景 | msg_bytes | bench(us) | prof(us) | 偏差 | 旧 event 偏差 |
-|------|-----------|-----------|---------|------|-------------|
-| ISL=4096 | 1.3MB | 216.3 | 221.2 | -2% | +37% |
-| ISL=4096 | 3.8MB | 440.7 | 442.1 | 0% | +19% |
-| ISL=8192 | 8.8MB | 808.5 | 887.2 | -9% | +2% |
-| ISL=8192 | 21.4MB | 2044.3 | 2115.1 | -3% | -4% |
-| ISL=1024 | 40.0MB | 3664.6 | 3795.8 | -3% | -1% |
-
-### 6.3 DSV3 prefill（TP=8）
-
-| 场景 | 算子 | msg_bytes | bench(us) | prof(us) | 偏差 | 旧 event 偏差 |
-|------|------|-----------|-----------|---------|------|-------------|
-| ISL=2048 | allGather | 3.5MB | 166.9 | 172.0 | -3% | +51% |
-| ISL=2048 | reduceScatter | 3.5MB | 202.1 | 197.9 | +2% | +45% |
-
-### 6.4 小结
-
-- alternating 模式在 1.3-5MB 区间将偏差从 +19%~+63% 压缩到 ±3%
-- 大消息（≥8.8MB）偏差 ±6%，与旧 event 模式差异不大（大消息本身预热影响小）
-- DSV3 3.5MB 从 +45-51% 降到 ±3%，改善最为显著
-- **结论：alternating 模式应作为 prefill 大消息 bench 的默认采集模式**
-
----
-
-## 7. 固定开销分析
+### 4.4 固定开销
 
 Decode 小消息场景，bench 与 profiler 之间存在与 msg_bytes 无关的固定差值，仿真时应在 bench 值上叠加。
 
@@ -282,11 +275,11 @@ Decode 小消息场景，bench 与 profiler 之间存在与 msg_bytes 无关的�
 
 ---
 
-## 8. HCCL 协议切换点
+### 4.5 协议切换异常
 
 > DSV3 nd=8 allGather 768KB 在所有 bench 模式下都远高于生产 profiler，属于 HCCL 内部协议切换导致的不可复现区间。
 
-### 8.1 768KB 三模式 bench vs 生产 profiler
+**768KB 三模式 bench vs 生产 profiler**：
 
 | bench 模式 | 768KB nd=8 (us) | 生产 profiler (us) | 偏高 |
 |-----------|----------------|-------------------|------|
@@ -296,7 +289,7 @@ Decode 小消息场景，bench 与 profiler 之间存在与 msg_bytes 无关的�
 
 三种模式均偏高 107-147%，说明这不是 bench 模式问题，而是 HCCL 在独立 microbench 与生产环境中选择了不同的传输协议。
 
-### 8.2 nd=8 allGather kernel Duration 跳变
+**nd=8 allGather kernel Duration 跳变**：
 
 | msg_bytes | per_device | kernel Duration(us) |
 |-----------|-----------|---------------------|
@@ -307,43 +300,9 @@ Decode 小消息场景，bench 与 profiler 之间存在与 msg_bytes 无关的�
 
 per_device ≈ 60KB 处发生 5x 跳变，对应 HCCL 从小消息协议（如 recursive halving-doubling）切换到大消息协议（如 ring）。生产环境中 768KB 可能仍走小消息协议（因 pipeline 上下文不同），导致 bench 无法复现。
 
-### 8.3 处理策略
-
-768KB 属于协议切换不可复现区间，**不使用 bench 值，改用 profiler P50（75.4us）**。
+**处理策略**：768KB 属于协议切换不可复现区间，**不使用 bench 值，改用 profiler P50（75.4us）**。
 
 ---
-
-## 9. 仿真策略总表
-
-| 模型 | 阶段 | 算子 | msg_bytes 范围 | 策略 | 数据来源 |
-|------|------|------|--------------|------|---------|
-| Qwen3 | decode | allReduce | 所有 | bench + 固定开销 | alternating (profiler fallback) + 7.7us |
-| Qwen3 | decode | allGather | 所有 | bench + 固定开销 | kernel (profiler) + 14.6us |
-| Qwen3 | prefill | allGather | ≥1.26MB | 直接用 bench | alternating（误差 ±6%）|
-| Qwen3 | prefill | reduceScatter | ≥1.26MB | 直接用 bench | alternating（误差 ±3%）|
-| DSV3 | decode | allGather | ≤126KB (c=8) | bench + 固定开销 | kernel (profiler) + 1.2us |
-| DSV3 | decode | reduceScatter | 14KB (c=8) | bench + 固定开销 | kernel (profiler) + 2.0us |
-| DSV3 | prefill | allGather | 768KB | 用 profiler P50 | HCCL 协议切换点，bench 无法复现 |
-| DSV3 | prefill | allGather | ≥3.5MB | 直接用 bench | alternating（误差 ±3%）|
-| DSV3 | prefill | reduceScatter | ≥3.5MB | 直接用 bench | alternating（误差 ±2%）|
-
-**策略说明**：
-
-1. **直接用 bench**：alternating 模式 bench 值直接作为仿真预测值，适用于 prefill 大消息
-2. **bench + 固定开销**：bench 值 + 模型/算子特定的固定开销，适用于 decode 小消息
-3. **profiler P50**：直接使用生产 profiling 的 P50 值，仅用于 HCCL 协议切换不可复现区间
-
----
-
-## 10. 遗留问题
-
-| # | 问题 | 优先级 | 行动 | 状态 |
-|---|------|--------|------|------|
-| P8 | DSV3 allToAll 封装在 DispatchFFNCombine | 中 | 拆分子 kernel | Open |
-
-已关闭：P1（communication_profiled 内联值 → bench 方案已作为最终方案，固定开销与 TP 相关、与模型无关，适用于其他模型）、P2（correction_factor → 已被固定开销模型替代）、P3/P4（数据冗余/rank 差异，Noted）、P5（Decode c8 Free 异常）、P6（46x 变化为统计量变化）、P7（allGather 2.2MB pipeline 化）、P9（bench CSV 插值偏差 3%）、P10（768KB 协议切换 → build_comm_csv.py 已在后处理阶段将 CSV 中该值替换为 profiler P50，DataSource 无需额外 fallback）、P11（固定开销参数 → 已确认与 TP 数量相关、与具体模型无关，无需逐模型验证）。
-
-**备注**：DSV3 低并发（concurrency < max-num-seqs）下存在 chunked prefill 排队效应，通信算子实际延迟受调度排队影响，bench 单算子隔离执行无法复现。本报告所有数据和策略均基于满载场景。该现象后续可用于指导模型调度优化。
 
 ---
 
@@ -369,19 +328,7 @@ AIV 模式微基准 vs 原非 AIV 微基准（num_devices=16, tier=1）：
 | reduceScatter TP=8 | 3.5MB | 255.1 | 262.3 | 3% |
 | allGather TP=8 | 3.5MB | 252.1 | 249.0 | 1% |
 
-### C. 三层 Duration 模型参考
-
-通信算子耗时存在三个测量层级：kernel_details < bench < operator_details。
-
-| 层级 | 测量方式 | 包含内容 |
-|------|---------|---------|
-| kernel_details Duration | Ascend Profiler NPU timeline | 仅 NPU 上 HCCL kernel 执行片段 |
-| bench Duration | host 端 perf_counter + synchronize | HCCL dispatch + NPU 执行 + host-device sync |
-| operator_details Duration | Ascend Profiler operator timeline | 含 HCCL 同步等待、stream 管理、rank barrier |
-
-Prefill kernel/bench ratio 0.59-0.82x，符合 kernel < bench 预期。
-
-### D. DSV3 特有注意事项
+### C. DSV3 特有注意事项
 
 1. DSV3 通信算子为 `hcom_allGather_` / `hcom_reduceScatter_`，无 `allgatherAicpuKernel` 路径
 2. MC2 融合：所有场景无独立 allReduce，TP 通信走 MC2 融合算子
