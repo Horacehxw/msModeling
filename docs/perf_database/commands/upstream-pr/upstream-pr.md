@@ -23,12 +23,14 @@ Build, update, or rebuild the upstream PR branches for submitting perf-database 
 
 ### Develop → feat/perf-database Merge Principles
 
-When syncing upstream develop into our branch:
-1. **接口命名遵从主线** — `profiling_database`, `DataSourcePerformanceModel`, `--profiling-database`, `single_card_tps`
-2. **实测算子接入功能遵从我们的实现** — M1-M6 metrics, shape matching, op_mapping, CSV lookup engine
-3. **一个功能只有一个模块** — 不允许 re-export wrapper 或双模块共存（e.g., no perf_database/ + profiling_database/ coexistence）
+When syncing upstream develop into our branch, **基于对整个项目的理解和工程实践来判断**，而不是机械地选边：
+
+1. **理解变更的全链路影响** — 每个 develop 改动，追踪它在我们代码里的所有下游引用（op 定义 → 调用方 → 编译 pass → op_mapping → 测试）。重命名一个 op 意味着整条链路都要更新
+2. **不引入冗余** — 如果 develop 重命名了一个 op（如 permute_tokens → init_routing_v2），不要同时保留旧名 op 定义（除非有明确的向后兼容需求）。op_mapping 可以保留旧名映射（数据层兼容）
+3. **一个功能只有一个模块** — 不允许 re-export wrapper 或双模块共存
 4. **feat/perf-database 只做 merge 不做 rebase** — 团队成员的分支永远不 break
 5. **Unit test 不能 fail, M1→M6 不能严重回退**
+6. **拿不准就停下来问用户** — 而不是先做一个"看起来合理"的选择然后事后修复
 
 ### PR 构建原则
 
