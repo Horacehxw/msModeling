@@ -14,7 +14,10 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from statistics import mean
 
-from fia_common import parse_runtime_int, parse_shape_or_none, split_metadata_field
+try:
+    from fia_common import parse_runtime_int, parse_shape_or_none, split_metadata_field
+except ModuleNotFoundError:
+    from .fia_common import parse_runtime_int, parse_shape_or_none, split_metadata_field
 
 
 RUNTIME_ACTUAL_SEQ_LENGTHS_SHAPE = "Runtime actual_seq_lengths_shape"

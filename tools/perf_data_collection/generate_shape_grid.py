@@ -17,7 +17,7 @@ OP_REPLAY_DIR = CURRENT_DIR / "op_replay"
 if str(OP_REPLAY_DIR) not in sys.path:
     sys.path.insert(0, str(OP_REPLAY_DIR))
 
-from common import SUPPORTED_DEVICES, check_version, normalize_device_name, normalize_vllm_ascend_version
+from common import DEFAULT_DEVICE, SUPPORTED_DEVICES, check_version, get_target_data_dir
 
 
 DEFAULT_DATA_DIR = (
@@ -122,15 +122,17 @@ def resolve_data_dir(
     data_dir: Path | None,
     device: str | None,
     vllm_ascend_version: str | None,
+    torch_version: str | None,
+    cann_version: str | None,
 ) -> Path:
     if data_dir is not None:
         return data_dir
     if device and vllm_ascend_version:
-        return (
-            DEFAULT_DATA_DIR
-            / normalize_device_name(device)
-            / "vllm_ascend"
-            / normalize_vllm_ascend_version(vllm_ascend_version)
+        return get_target_data_dir(
+            device=device,
+            vllm_ascend_version=vllm_ascend_version,
+            torch_version=torch_version,
+            cann_version=cann_version,
         )
     return DEFAULT_DATA_DIR
 
@@ -150,11 +152,12 @@ def parse_args() -> argparse.Namespace:
             "CSV root directory. If omitted, the script uses either "
             "{repo}/tensor_cast/performance_model/profiling_database/data or "
             "{repo}/.../data/{device}/vllm_ascend/{version}/ when --device and "
-            "--vllm-ascend-version are provided."
+            "--vllm-version are provided."
         ),
     )
     parser.add_argument(
         "--device",
+        default=DEFAULT_DEVICE,
         choices=SUPPORTED_DEVICES,
         help=(
             "Target device name used as input folder: "
@@ -162,9 +165,20 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--vllm-ascend-version",
+        "--vllm-version",
+        dest="vllm_version",
         type=check_version,
-        help="vLLM-Ascend version, e.g. 0.9.2.",
+        help="vLLM version, e.g. 0.9.2.",
+    )
+    parser.add_argument(
+        "--torch-version",
+        type=check_version,
+        help="Optional PyTorch version, e.g. 2.9.0.",
+    )
+    parser.add_argument(
+        "--cann-version",
+        type=check_version,
+        help="Optional CANN version, e.g. 8.5.",
     )
     parser.add_argument(
         "--rows",
@@ -2030,13 +2044,17 @@ def iter_csv_files(data_dir: Path) -> Iterable[Path]:
 
 def main() -> None:
     args = parse_args()
-    if (args.device is None) != (args.vllm_ascend_version is None):
-        raise ValueError("--device and --vllm-ascend-version must be provided together.")
     if args.rows <= 0:
         raise ValueError("--rows must be greater than 0.")
     if args.min_value > args.max_value:
         raise ValueError("--min-value must be less than or equal to --max-value.")
-    data_dir = resolve_data_dir(args.data_dir, args.device, args.vllm_ascend_version)
+    data_dir = resolve_data_dir(
+        args.data_dir,
+        args.device,
+        args.vllm_version,
+        args.torch_version,
+        args.cann_version,
+    )
     if not data_dir.is_dir():
         raise ValueError(f"Data directory does not exist: {data_dir}")
 
@@ -2073,3 +2091,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+

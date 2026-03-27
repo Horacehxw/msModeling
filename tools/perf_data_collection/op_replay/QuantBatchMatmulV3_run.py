@@ -19,39 +19,32 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from common import (
-    build_input_tensor,
-    build_standard_argparser,
-    ensure_npu_available,
-    get_replay_repeat_count,
-    get_runtime_modules,
-    get_target_data_dir,
-    iter_repeated_csv_rows,
-    parse_list_field,
-    parse_shape,
-)
-
-
-DTYPE_ALIASES = {
-    "FLOAT": "DT_FLOAT",
-    "FLOAT16": "DT_FLOAT16",
-    "BF16": "DT_BF16",
-    "DOUBLE": "DT_DOUBLE",
-    "INT8": "DT_INT8",
-    "UINT8": "DT_UINT8",
-    "INT16": "DT_INT16",
-    "INT32": "DT_INT32",
-    "INT64": "DT_INT64",
-    "BOOL": "DT_BOOL",
-}
-
-
-def normalize_dtype_name(dtype_name: str) -> str:
-    normalized = dtype_name.strip()
-    if normalized.startswith("DT_"):
-        return normalized
-    return DTYPE_ALIASES.get(normalized, normalized)
-
+try:
+    from .common import (
+        build_input_tensor,
+        build_standard_argparser,
+        ensure_npu_available,
+        get_replay_repeat_count,
+        get_runtime_modules,
+        get_target_data_dir,
+        iter_repeated_csv_rows,
+        normalize_dtype_name,
+        parse_list_field,
+        parse_shape,
+    )
+except ImportError:
+    from common import (
+        build_input_tensor,
+        build_standard_argparser,
+        ensure_npu_available,
+        get_replay_repeat_count,
+        get_runtime_modules,
+        get_target_data_dir,
+        iter_repeated_csv_rows,
+        normalize_dtype_name,
+        parse_list_field,
+        parse_shape,
+    )
 
 def to_output_dtype(dtype_name: str):
     runtime_torch, _ = get_runtime_modules()
@@ -295,9 +288,9 @@ def build_argparser():
         ),
         usage_examples=[
             "py -3 tools/perf_data_collection/op_replay/QuantBatchMatmulV3_run.py "
-            "--device ATLAS_800_A3_752T_128G_DIE --vllm-ascend-version 0.13.0",
+            "--device ATLAS_800_A3_752T_128G_DIE --vllm-version 0.13.0",
             "python tools/perf_data_collection/op_replay/QuantBatchMatmulV3_run.py "
-            "--device TEST_DEVICE --vllm-ascend-version 0.9.2",
+            "--device TEST_DEVICE --vllm-version 0.9.2",
         ],
         version_help="vLLM-Ascend version, e.g. 0.13.0.",
     )
@@ -335,7 +328,10 @@ def main() -> None:
 
     target_data_dir = get_target_data_dir(
         device=args.device,
-        vllm_ascend_version=args.vllm_ascend_version,
+        vllm_ascend_version=args.vllm_version,
+        database_path=args.database_path,
+        torch_version=args.torch_version,
+        cann_version=args.cann_version,
     )
     csv_paths = sorted(target_data_dir.rglob("QuantBatchMatmulV3.csv"))
     if not csv_paths:
@@ -358,3 +354,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
