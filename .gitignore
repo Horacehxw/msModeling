@@ -39,3 +39,6 @@ PROF_*/
 
 # Ephemeral metrics output (regenerable via /project-status)
 results/
+
+# Humanize plugin artifacts
+.humanize/
