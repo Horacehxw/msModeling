@@ -1685,7 +1685,10 @@ class ProfilingDataSource(DataSourcePerformanceModel):
             for _, row in df.iterrows():
                 csv_shapes_list.append(str(row.get("Input Shapes", "")))
         # Determine miss reason: input count mismatch vs shape mismatch
-        # When tc_input_count is set, truncate CSV count too for fair comparison
+        # When tc_input_count is set, truncate CSV count too for fair comparison.
+        # Account for SwiGlu normalization: TC sends 2 inputs (gate, up) but
+        # CSV has 1 fused input — _inputs_match merges them, so the effective
+        # TC count is 1 when SwiGlu normalization applies.
         if df is not None and len(df) > 0:
             csv_first_shapes = _parse_shape_str(str(df.iloc[0].get("Input Shapes", "")))
             effective_csv_count = len(csv_first_shapes)
@@ -1693,6 +1696,13 @@ class ProfilingDataSource(DataSourcePerformanceModel):
             if tc_input_count is not None:
                 effective_csv_count = min(effective_csv_count, tc_input_count)
                 effective_tc_count = min(effective_tc_count, tc_input_count)
+            # SwiGlu: _inputs_match merges 2 TC inputs → 1 fused input
+            if (
+                primary_kernel in _SWIGLU_KERNELS
+                and effective_tc_count == 2
+                and effective_csv_count == 1
+            ):
+                effective_tc_count = 1
             if effective_tc_count != effective_csv_count:
                 self.last_miss_reason = "input_count_mismatch"
             else:

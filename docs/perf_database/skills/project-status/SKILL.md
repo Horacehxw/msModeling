@@ -238,7 +238,9 @@ for csv_file in ['MatMulV2.csv', 'QuantBatchMatmulV3.csv']:
 
 # --- Qwen3 Prefill ---
 # --quantize-linear-action DISABLED (BF16)
-# --enable-flashcomm-v1 对标 vLLM ENABLE_FLASHCOMM1=1
+# --enable-flashcomm-v1 对标 vLLM ENABLE_FLASHCOMM1=1 (仅 Prefill)
+# Decode 不加 --enable-flashcomm-v1: FlashComm 仅用于 Prefill 的 allGather/reduceScatter,
+# Decode 走 allReduce, 加此 flag 会改变 op graph 导致 M3 降低 ~18pp
 python3.10 -m tensor_cast.scripts.text_generate Qwen/Qwen3-32B \
   --num-queries $NQ --query-length $QL --word-embedding-tp row \
   --device ATLAS_800_A3_752T_128G_DIE --world-size 16 --tp-size 16 \
@@ -248,6 +250,7 @@ python3.10 -m tensor_cast.scripts.text_generate Qwen/Qwen3-32B \
   --export-metrics results/qwen3_prefill_metrics.json --log-level info
 
 # --- Qwen3 Decode ---
+# 注意: 不加 --enable-flashcomm-v1 (Decode 不使用 FlashComm)
 python3.10 -m tensor_cast.scripts.text_generate Qwen/Qwen3-32B \
   --num-queries $NQ --query-length 1 --context-length 4096 --word-embedding-tp row \
   --device ATLAS_800_A3_752T_128G_DIE --world-size 16 --tp-size 16 \
@@ -256,11 +259,14 @@ python3.10 -m tensor_cast.scripts.text_generate Qwen/Qwen3-32B \
   --export-metrics results/qwen3_decode_metrics.json --log-level info
 
 # --- DSv3 Prefill ---
+# --enable-shared-expert-tp 对标 vLLM enable_expert_parallel 下的 shared expert TP 分片
+# 不加此 flag 时 shared expert shapes 不按 TP 分片, 导致 M3 降低 ~10pp
 python3.10 -m tensor_cast.scripts.text_generate deepseek-ai/DeepSeek-V3 \
   --num-queries $NQ --query-length $QL --word-embedding-tp row \
   --device ATLAS_800_A3_752T_128G_DIE --world-size 16 --tp-size 8 --dp-size 2 --ep-size 16 \
   --quantize-linear-action W8A8_STATIC \
   --performance-model profiling --compile --profiling-database "$DATA_DIR" \
+  --enable-shared-expert-tp \
   --export-metrics results/dsv3_prefill_metrics.json --log-level info
 
 # --- DSv3 Decode ---
@@ -269,6 +275,7 @@ python3.10 -m tensor_cast.scripts.text_generate deepseek-ai/DeepSeek-V3 \
   --device ATLAS_800_A3_752T_128G_DIE --world-size 16 --tp-size 8 --dp-size 2 --ep-size 16 \
   --quantize-linear-action W8A8_STATIC \
   --performance-model profiling --compile --profiling-database "$DATA_DIR" \
+  --enable-shared-expert-tp \
   --export-metrics results/dsv3_decode_metrics.json --log-level info
 
 # ==========================================
