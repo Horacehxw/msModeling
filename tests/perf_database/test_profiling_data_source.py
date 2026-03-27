@@ -15,6 +15,15 @@ from tensor_cast.performance_model.profiling_database.profiling_data_source impo
 )
 
 
+# --- QuerySource enum tests ---
+
+
+def test_query_source_partial_exists():
+    """QuerySource.PARTIAL enum value exists for composite partial match."""
+    assert hasattr(QuerySource, "PARTIAL")
+    assert QuerySource.PARTIAL.value is not None
+
+
 # --- fractal_nz_to_nd tests (design doc S4.9, Appendix B) ---
 
 
