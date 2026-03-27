@@ -145,7 +145,7 @@ class DispatchFFNCombinePass(TensorCastGraphModulePass):
     def _is_permute_token(self, node: fx.Node) -> bool:
         return (
             node.op == "call_function"
-            and node.target == torch.ops.tensor_cast.permute_tokens.default
+            and node.target == torch.ops.tensor_cast.init_routing_v2.default
         )
 
     def _is_unpermute_token(self, node: fx.Node) -> bool:
