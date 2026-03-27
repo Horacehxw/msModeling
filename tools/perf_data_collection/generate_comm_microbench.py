@@ -3,20 +3,20 @@
 Generates torch.distributed scripts for HCCL communication benchmarking:
 - all_reduce, all_gather, reduce_scatter, all_to_all
 - topology_tier is derived from rank + group via CommGrid logic (not manually specified)
-- Outputs CSV in the format required by ProfilingDataSource (§4.7)
+- Outputs CSV in the format required by ProfilingDataSource (S4.7)
 
-Design doc reference: §6.3 (Communication Microbenchmark)
+Design doc reference: S6.3 (Communication Microbenchmark)
 
-CSV output format (§4.7):
+CSV output format (S4.7):
     message_bytes,num_devices,dtype,topology_tier,Duration(us),bandwidth_gbps
 
 topology_tier semantics (mirrors CommAnalyticModel._get_topology_idx_for_group):
     Determined by the outermost grid dimension where ranks in the group differ.
-    For ATLAS_800_A3 with grid shape [48, 8, 2] (48 pods × 8 nodes × 2 dies):
+    For ATLAS_800_A3 with grid shape [48, 8, 2] (48 pods x 8 nodes x 2 dies):
         tier 0 = inter_pod  (ranks span multiple pods, stride=16)
         tier 1 = intra_pod  (ranks within one pod, span multiple nodes, stride=2)
         tier 2 = die_level  (ranks within one node, 2 dies, stride=1)
-        e.g. TP=16 uses ranks 0..15 (pod0, all 8 nodes × 2 dies) → tier=1
+        e.g. TP=16 uses ranks 0..15 (pod0, all 8 nodes x 2 dies) -> tier=1
 
     The group_ranks argument controls which ranks participate, which determines
     the tier automatically. Use --grid-shape to match your hardware topology.
@@ -32,20 +32,15 @@ Usage examples:
         --ops all_reduce --grid-shape 48 8 2 \\
         --num-devices 16 64 128 --topology-tier 0 1 2
 
-    # Run directly with profiler mode (default, aligns Comm_NO)
+    # Run directly with kernel mode (default, aligns Communication in step_trace)
     torchrun --nproc_per_node=16 generate_comm_microbench.py \\
-        --do-run --output-csv ./hccl_v8.5/hcom_allReduce_.csv \\
+        --do-run --output-dir ./hccl_data \\
         --ops all_reduce --grid-shape 48 8 2
 
     # Run with event mode (fast, hcom_kernel only)
     torchrun --nproc_per_node=16 generate_comm_microbench.py \\
         --do-run --bench-mode event --output-dir ./hccl_data \\
         --ops all_reduce all_gather --grid-shape 48 8 2
-
-    # Run with pipeline mode (original, backward compat)
-    torchrun --nproc_per_node=16 generate_comm_microbench.py \\
-        --do-run --bench-mode pipeline --output-dir ./hccl_data \\
-        --ops all_reduce --grid-shape 48 8 2
 """
 
 import argparse
@@ -68,23 +63,30 @@ BENCH_ITERS = 100
 
 # Profiler bench mode constants
 PROFILER_WARMUP_ITERS = 5   # profiler-internal warmup steps (separate from op warmup)
-PROFILER_ACTIVE_ITERS = 10  # active profiling steps → 10 Duration samples, take median
+PROFILER_ACTIVE_ITERS = 10  # active profiling steps -> 10 Duration samples, take median
 PROFILER_WAIT_ITERS = 0
+PROFILER_ACTIVE_ITERS_LARGE = 1  # single active iter per session to minimise profiler ring-buffer pressure
+PROFILER_LARGE_MSG_SESSIONS = 10  # repeat separate sessions and take median (compensates active=1)
+PROFILER_LARGE_MSG_THRESHOLD = 524288  # 512KB: above this, use per-msg separate sessions
 
-_BENCH_MODES = ["profiler", "event", "pipeline", "kernel", "alternating"]
+_BENCH_MODES = ["event", "kernel"]
 
 _COMM_OPS = ["all_reduce", "all_gather", "reduce_scatter", "all_to_all"]
 
-# Maps bench op_type → c10d operator name prefix(es) in operator_details.csv.
-# Uses startswith matching to handle suffix variations across PyTorch/CANN versions.
-_OP_TO_C10D_NAMES = {
-    "all_reduce": ["c10d::allreduce_"],
-    "all_gather": ["c10d::_allgather_base_"],
-    "reduce_scatter": ["c10d::_reduce_scatter_base_"],
-    "all_to_all": ["c10d::alltoall_", "c10d::all_to_all"],
+# Fixed dispatch overhead corrections (us) from comm_alignment_methodology.md S4.3.
+# These represent vLLM production dispatch overhead (scheduler -> c10d wrapper ->
+# HCCL group lookup -> stream sync) that exists in production but not in bench's
+# isolated single-op execution.  Applied when writing CSV results.
+# Key: (op_type, num_devices) -> overhead_us
+_DISPATCH_OVERHEAD: Dict[Tuple[str, int], float] = {
+    ("all_reduce", 16): 7.7,
+    ("all_gather", 16): 14.6,
+    ("all_gather", 8): 1.2,
+    ("reduce_scatter", 16): 14.6,
+    ("reduce_scatter", 8): 2.0,
 }
 
-# Maps op_type → kernel_details.csv Type prefix for hcom_* kernels
+# Maps op_type -> kernel_details.csv Type prefix for hcom_* kernels
 _OP_TO_KERNEL_TYPE = {
     "all_reduce": "hcom_allReduce_",
     "all_gather": "hcom_allGather_",
@@ -92,7 +94,7 @@ _OP_TO_KERNEL_TYPE = {
     "all_to_all": "hcom_alltoallv_",
 }
 
-# Maps op_type → canonical CSV filename expected by ProfilingDataSource / op_mapping.yaml
+# Maps op_type -> canonical CSV filename expected by ProfilingDataSource / op_mapping.yaml
 _OP_TO_CSV_FILENAME = {
     "all_reduce": "hcom_allReduce_.csv",
     "all_gather": "hcom_allGather_.csv",
@@ -138,7 +140,7 @@ _DTYPE_TO_CSV = {
     "torch.int8": "DT_INT8",
 }
 
-# CSV columns per §4.7
+# CSV columns per S4.7
 _CSV_COLUMNS = ["message_bytes", "num_devices", "dtype", "topology_tier", "Duration(us)", "bandwidth_gbps"]
 
 
@@ -162,9 +164,9 @@ def resolve_topology_tier(group_ranks: List[int], grid_shape: List[int]) -> int:
     largest start_dim <= diff_dim (most specific topology that covers the span).
 
     For ATLAS_800_A3 grid_shape=[pods, nodes, dies]:
-        All ranks same node  → diff_dim=2 → tier=2 (SIO / die-level)
-        Ranks span nodes     → diff_dim=1 → tier=1 (1-level CLOS / intra-pod)
-        Ranks span pods      → diff_dim=0 → tier=0 (2-level CLOS / inter-pod)
+        All ranks same node  -> diff_dim=2 -> tier=2 (SIO / die-level)
+        Ranks span nodes     -> diff_dim=1 -> tier=1 (1-level CLOS / intra-pod)
+        Ranks span pods      -> diff_dim=0 -> tier=0 (2-level CLOS / inter-pod)
     """
     ndim = len(grid_shape)
     coords = [_rank_to_coord(r, grid_shape) for r in group_ranks]
@@ -198,7 +200,7 @@ def build_group_for_tier(
 
     Example (grid_shape=[3,8,2], rank=5, num_devices=16, tier=1):
         rank 5 coord = [0, 2, 1]
-        tier=1 means we span dims [1,2] → group size per pod = 8*2=16
+        tier=1 means we span dims [1,2] -> group size per pod = 8*2=16
         group = ranks 0..15 (pod 0, all nodes, all dies)
     """
     ndim = len(grid_shape)
@@ -384,68 +386,8 @@ def _bench_tail(op_type: str, bench_mode: str = "kernel") -> str:
     """)
 
     if bench_mode == "kernel":
-        body = dedent(f"""\
-        # --- Peer op mapping for kernel (alternating) mode ---
-        _PEER_OP = {{
-            "all_gather": "reduce_scatter",
-            "reduce_scatter": "all_gather",
-        }}
-
-        def _create_peer_op(group):
-            peer_type = _PEER_OP.get("{op_type}")
-            if peer_type is None:
-                return None
-            if peer_type == "all_gather":
-                local_t = torch.randn(NUM_ELEMENTS, dtype=DTYPE, device=DEVICE)
-                gather_list = [torch.empty_like(local_t) for _ in GROUP_RANKS]
-                def peer_op():
-                    dist.all_gather(gather_list, local_t, group=group)
-            elif peer_type == "reduce_scatter":
-                input_list = [torch.randn(NUM_ELEMENTS, dtype=DTYPE, device=DEVICE) for _ in GROUP_RANKS]
-                output_t = torch.empty(NUM_ELEMENTS, dtype=DTYPE, device=DEVICE)
-                def peer_op():
-                    dist.reduce_scatter(output_t, input_list, group=group)
-            else:
-                return None
-            return peer_op
-
-        peer_run_op = _create_peer_op(group)
-
-        # Warmup: alternating if peer exists
-        for _ in range(WARMUP_ITERS):
-            if peer_run_op is not None:
-                peer_run_op()
-            run_op()
-        if DEVICE == "npu":
-            torch.npu.synchronize()
-
-        # Benchmark: per-iteration event timing with alternating execution
-        durations_us = []
-        for _ in range(BENCH_ITERS):
-            if peer_run_op is not None:
-                peer_run_op()
-                if DEVICE == "npu":
-                    torch.npu.synchronize()
-
-            if DEVICE == "npu":
-                start_evt = torch.npu.Event(enable_timing=True)
-                end_evt = torch.npu.Event(enable_timing=True)
-                start_evt.record()
-                run_op()
-                end_evt.record()
-                torch.npu.synchronize()
-                durations_us.append(start_evt.elapsed_time(end_evt) * 1000)  # ms -> us
-            else:
-                t0 = time.perf_counter()
-                run_op()
-                durations_us.append((time.perf_counter() - t0) * 1e6)
-
-        duration_us = statistics.median(durations_us)
-        _write_result(rank, duration_us, output_csv)
-        """)
-        return _indent(body, 4) + "\n" + csv_and_main
-
-    elif bench_mode == "event":
+        # kernel mode generated scripts use event-style measurement
+        # (profiler-based kernel_details parsing is only used in --do-run mode)
         body = dedent(f"""\
         # Warmup
         for _ in range(WARMUP_ITERS):
@@ -476,7 +418,7 @@ def _bench_tail(op_type: str, bench_mode: str = "kernel") -> str:
         return _indent(body, 4) + "\n" + csv_and_main
 
     else:
-        # pipeline mode: original logic (backward compat)
+        # event mode
         body = dedent(f"""\
         # Warmup
         for _ in range(WARMUP_ITERS):
@@ -484,17 +426,24 @@ def _bench_tail(op_type: str, bench_mode: str = "kernel") -> str:
         if DEVICE == "npu":
             torch.npu.synchronize()
 
-        # Benchmark
-        if DEVICE == "npu":
-            torch.npu.synchronize()
-        start = time.perf_counter()
+        # Benchmark: per-iteration event timing, take median
+        durations_us = []
         for _ in range(BENCH_ITERS):
-            run_op()
-        if DEVICE == "npu":
-            torch.npu.synchronize()
-        elapsed = time.perf_counter() - start
+            if DEVICE == "npu":
+                torch.npu.synchronize()
+                start_evt = torch.npu.Event(enable_timing=True)
+                end_evt = torch.npu.Event(enable_timing=True)
+                start_evt.record()
+                run_op()
+                end_evt.record()
+                torch.npu.synchronize()
+                durations_us.append(start_evt.elapsed_time(end_evt) * 1000)  # ms -> us
+            else:
+                t0 = time.perf_counter()
+                run_op()
+                durations_us.append((time.perf_counter() - t0) * 1e6)
 
-        duration_us = elapsed / BENCH_ITERS * 1e6
+        duration_us = statistics.median(durations_us)
         _write_result(rank, duration_us, output_csv)
         """)
         return _indent(body, 4) + "\n" + csv_and_main
@@ -525,7 +474,7 @@ def generate_comm_script(
         group_ranks: Explicit list of ranks in the group
         dtype: Tensor dtype string
         grid_shape: Hardware grid shape for documentation
-        bench_mode: "kernel" (alternating), "event" (per-iter), or "pipeline" (original)
+        bench_mode: "kernel" (default, event-style for generated scripts) or "event"
     """
     header = _script_header(
         op_type, message_bytes, num_devices, topology_tier, group_ranks, dtype,
@@ -556,13 +505,12 @@ def _build_run_op(
         tensor = torch.randn(num_elements, dtype=dtype, device=device)
         def run_op(): dist.all_reduce(tensor, group=group)
     elif op_type == "all_gather":
-        # Use tensor-based API so operator_details records c10d::_allgather_base_
-        # (matching _OP_TO_C10D_NAMES and inference profiling).
+        # Use tensor-based API so kernel_details records hcom_allGather_
         local_tensor = torch.randn(num_elements, dtype=dtype, device=device)
         output_tensor = torch.empty(num_elements * num_devices, dtype=dtype, device=device)
         def run_op(): dist.all_gather_into_tensor(output_tensor, local_tensor, group=group)
     elif op_type == "reduce_scatter":
-        # Use tensor-based API so operator_details records c10d::_reduce_scatter_base_
+        # Use tensor-based API so kernel_details records hcom_reduceScatter_
         input_tensor = torch.randn(num_elements * num_devices, dtype=dtype, device=device)
         output_tensor = torch.empty(num_elements, dtype=dtype, device=device)
         def run_op(): dist.reduce_scatter_tensor(output_tensor, input_tensor, group=group)
@@ -576,24 +524,6 @@ def _build_run_op(
     return run_op
 
 
-# Peer op mapping for alternating mode.
-# In production, allGather follows reduceScatter and vice versa (MC2 pattern).
-_PEER_OP = {
-    "all_gather": "reduce_scatter",
-    "reduce_scatter": "all_gather",
-}
-
-
-def _build_peer_run_op(
-    op_type: str, message_bytes: int, dtype_str: str, device: str, group, group_ranks: List[int],
-) -> Optional[Callable]:
-    """Build a peer run_op for alternating execution, or None if no peer defined."""
-    peer_type = _PEER_OP.get(op_type)
-    if peer_type is None:
-        return None
-    return _build_run_op(peer_type, message_bytes, dtype_str, device, group, group_ranks)
-
-
 def run_benchmark(
     op_type: str,
     message_bytes: int,
@@ -602,19 +532,19 @@ def run_benchmark(
     dtype_str: str,
     output_csv: Optional[str],
     group=None,
-    bench_mode: str = "profiler",
+    bench_mode: str = "kernel",
 ) -> Optional[dict]:
     """Run a single benchmark directly in the current process.
 
     Args:
         group: pre-created dist.ProcessGroup. If None, creates one internally
                (only safe when called once per group_ranks combination).
-        bench_mode: "profiler" (方案 B, aligns Comm_NO), "kernel" (hcom_* Duration, aligns Communication),
-                    "event" (方案 A, hcom_kernel only), or "pipeline" (original, backward compat).
+        bench_mode: "kernel" (profiler -> kernel_details hcom_* Duration, aligns Communication),
+                    "event" (per-iteration NPU Event timing, hcom_kernel only).
 
     Note:
-        In profiler/kernel mode, only the first rank in group_ranks runs the profiler.
-        Other ranks use pipeline mode to participate in collective communication
+        In kernel mode, only the first rank in group_ranks runs the profiler.
+        Other ranks use event mode to participate in collective communication
         without starting their own profiler (avoids resource contention and /tmp bloat).
     """
     try:
@@ -670,28 +600,17 @@ def run_benchmark(
         raise ValueError(f"Unknown op_type: {op_type}")
 
     # ---- Measurement: dispatch by bench_mode ----
-    # In profiler mode, only the first rank in the group runs the profiler to
+    # In kernel mode, only the first rank in the group runs the profiler to
     # avoid resource contention (multiple profilers writing /tmp simultaneously).
     # All ranks must execute the same number of run_op() calls to avoid hangs.
-    if bench_mode == "profiler" and is_npu:
-        is_leader = (rank == group_ranks[0])
-        duration_us = _run_bench_profiler(run_op, op_type, is_npu, is_leader=is_leader)
-        if duration_us is None:
-            return None  # follower ranks don't report results
-    elif bench_mode == "kernel" and is_npu:
+    if bench_mode == "kernel" and is_npu:
         is_leader = (rank == group_ranks[0])
         duration_us = _run_bench_kernel(run_op, op_type, is_npu, is_leader=is_leader)
         if duration_us is None:
             return None  # follower ranks don't report results
-    elif bench_mode == "alternating":
-        peer_run_op = _build_peer_run_op(
-            op_type, message_bytes, dtype_str, device, group, group_ranks,
-        )
-        duration_us = _run_bench_alternating(run_op, is_npu, peer_run_op=peer_run_op)
-    elif bench_mode == "event":
-        duration_us = _run_bench_event(run_op, is_npu)
     else:
-        duration_us = _run_bench_pipeline(run_op, is_npu)
+        # event mode (or non-NPU fallback)
+        duration_us = _run_bench_event(run_op, is_npu)
 
     bandwidth_gbps = message_bytes / (duration_us * 1e-6) / 1e9
 
@@ -711,12 +630,36 @@ def run_benchmark(
             f"  duration={duration_us:.2f}us  bw={bandwidth_gbps:.2f}GB/s"
         )
         if output_csv:
-            _append_csv(output_csv, result)
+            _append_csv(output_csv, result, op_type=op_type)
 
     return result
 
 
-def _append_csv(path: str, row: dict) -> None:
+def _apply_dispatch_overhead(row: dict, op_type: str) -> dict:
+    """Return a new row with dispatch overhead added if applicable.
+
+    Overhead is applied uniformly to all message sizes. In the unified kernel
+    mode, all data comes from the same profiler source (kernel_details), so
+    there is no alternating/kernel source distinction. The overhead values
+    are small (1.2-14.6us) and represent fixed dispatch latency that is
+    independent of message size.
+    """
+    nd = row.get("num_devices", 0)
+    overhead = _DISPATCH_OVERHEAD.get((op_type, nd), 0.0)
+    if overhead <= 0:
+        return row
+    r = dict(row)
+    r["Duration(us)"] = round(r["Duration(us)"] + overhead, 2)
+    msg_bytes = r["message_bytes"]
+    dur_us = r["Duration(us)"]
+    r["bandwidth_gbps"] = round(msg_bytes / (dur_us * 1e-6) / 1e9, 2) if dur_us > 0 else 0.0
+    return r
+
+
+def _append_csv(path: str, row: dict, op_type: str = "") -> None:
+    """Append a result row to CSV, applying dispatch overhead if op_type given."""
+    if op_type:
+        row = _apply_dispatch_overhead(row, op_type)
     p = Path(path)
     write_header = not p.exists()
     with p.open("a", newline="") as f:
@@ -727,44 +670,8 @@ def _append_csv(path: str, row: dict) -> None:
 
 
 # ============================================================================
-# Bench mode: profiler (方案 B — aligns with operator_details = Comm_NO)
+# Bench helpers: warmup, profiler loop, batched profiler session
 # ============================================================================
-
-def _parse_comm_duration(prof_dir: str, op_type: str) -> List[float]:
-    """Parse operator_details.csv from profiler output, extract Device Total Duration.
-
-    Profiler output structure (Ascend CANN 8.5):
-        prof_dir/
-            ASCEND_PROFILER_OUTPUT_{timestamp}/
-                {rank_id}/
-                    operator_details.csv
-
-    The c10d::* entry is the top-level operator whose Device Total Duration
-    includes both hcom_kernel and AicpuKernel, matching Comm_NO exactly.
-    """
-    target_prefixes = _OP_TO_C10D_NAMES[op_type]
-    durations: List[float] = []
-
-    pattern = os.path.join(prof_dir, "**", "operator_details.csv")
-    csv_files = glob.glob(pattern, recursive=True)
-
-    if not csv_files:
-        print(f"WARNING: No operator_details.csv found in {prof_dir}", file=sys.stderr)
-        return durations
-
-    csv_path = sorted(csv_files)[0]  # rank 0
-
-    with open(csv_path, newline="") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            name = row.get("Name", "")
-            if any(name.startswith(p) for p in target_prefixes):
-                dur = float(row.get("Device Total Duration(us)", "0"))
-                if dur > 0:
-                    durations.append(dur)
-
-    return durations
-
 
 def _warmup_and_sync(run_op, is_npu: bool) -> None:
     """Shared warmup: run WARMUP_ITERS iterations then sync."""
@@ -791,69 +698,16 @@ def _profiler_loop_steps(run_op, is_npu: bool) -> None:
             torch.npu.synchronize()
 
 
-def _run_bench_profiler(run_op, op_type: str, is_npu: bool, *, is_leader: bool = True) -> Optional[float]:
-    """Run bench via torch_npu.profiler, return median Device Total Duration (us).
+def _active_iters_for_msg(msg_bytes: int) -> int:
+    """Return profiler active iterations based on message size.
 
-    This measures the same physical quantity as operator_details in inference
-    profiling, which equals Comm_NO per-call (including AicpuKernel overhead).
-
-    When is_leader=False, executes the same call pattern without starting a
-    profiler (follower mode for non-leader ranks in collective communication).
+    Large messages (>=512KB) use active=1 per session to minimise profiler
+    ring-buffer pressure.  The caller compensates by running multiple
+    separate sessions (PROFILER_LARGE_MSG_SESSIONS) and taking the median.
     """
-    _warmup_and_sync(run_op, is_npu)
-
-    if not is_leader:
-        _profiler_loop_steps(run_op, is_npu)
-        return None
-
-    prof_dir = tempfile.mkdtemp(prefix="comm_bench_prof_")
-
-    try:
-        import torch
-        import torch_npu  # noqa: F811
-
-        experimental_config = torch_npu.profiler._ExperimentalConfig(
-            aic_metrics=torch_npu.profiler.AiCMetrics.PipeUtilization,
-            profiler_level=torch_npu.profiler.ProfilerLevel.Level1,
-            l2_cache=False,
-            data_simplification=True,
-        )
-
-        with torch_npu.profiler.profile(
-            activities=[
-                torch_npu.profiler.ProfilerActivity.CPU,
-                torch_npu.profiler.ProfilerActivity.NPU,
-            ],
-            schedule=torch_npu.profiler.schedule(
-                wait=PROFILER_WAIT_ITERS,
-                warmup=PROFILER_WARMUP_ITERS,
-                active=PROFILER_ACTIVE_ITERS,
-                repeat=1,
-            ),
-            on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(prof_dir),
-            experimental_config=experimental_config,
-        ) as prof:
-            total_steps = PROFILER_WAIT_ITERS + PROFILER_WARMUP_ITERS + PROFILER_ACTIVE_ITERS
-            for _step in range(total_steps):
-                run_op()
-                if is_npu:
-                    torch.npu.synchronize()
-                prof.step()
-
-        durations = _parse_comm_duration(prof_dir, op_type)
-        if not durations:
-            raise RuntimeError(
-                f"No {_OP_TO_C10D_NAMES[op_type]} entries found in "
-                f"operator_details.csv under {prof_dir}"
-            )
-
-        return statistics.median(durations)
-
-    finally:
-        try:
-            shutil.rmtree(prof_dir)
-        except OSError as e:
-            print(f"WARNING: Failed to clean up profiler dir {prof_dir}: {e}", file=sys.stderr)
+    if msg_bytes >= PROFILER_LARGE_MSG_THRESHOLD:
+        return PROFILER_ACTIVE_ITERS_LARGE
+    return PROFILER_ACTIVE_ITERS
 
 
 def _run_bench_profiler_batch(
@@ -866,13 +720,18 @@ def _run_bench_profiler_batch(
     is_npu: bool,
     is_leader: bool,
     parse_fn: Optional[Callable[[str, str], List[float]]] = None,
+    no_sync: bool = False,
 ) -> Optional[Dict[int, float]]:
     """Run ONE profiler session for all msg_sizes, return {msg_bytes: median_us}.
 
     CANN profiler cannot be started/stopped repeatedly in the same process.
     This function batches all msg_sizes into a single profiler session to avoid
-    the crash. Each msg_size gets PROFILER_ACTIVE_ITERS iterations in the active
-    phase; durations are split by position in operator_details.csv.
+    the crash. Each msg_size gets a per-size number of active iterations
+    (reduced for large messages >=512KB to limit profiler overhead); durations
+    are split by position in the parsed CSV.
+
+    When no_sync=True, skips torch.npu.synchronize() between iterations,
+    allowing HCCL pipeline overlap (matches production behavior).
 
     All ranks in group_ranks must call this function together (collective ops).
     Only is_leader=True rank runs the profiler; others run the same call pattern.
@@ -880,37 +739,36 @@ def _run_bench_profiler_batch(
     """
     import torch
 
-    # Build run_op for each msg_size
-    run_ops: List[Tuple[int, Callable]] = [
-        (mb, _build_run_op(op_type, mb, dtype_str, device, group, group_ranks))
+    # Build run_op for each msg_size, with per-size active iters
+    run_ops: List[Tuple[int, Callable, int]] = [
+        (mb, _build_run_op(op_type, mb, dtype_str, device, group, group_ranks),
+         _active_iters_for_msg(mb))
         for mb in msg_bytes_list
     ]
 
     # Warmup all msg_sizes (outside profiler)
-    for _, run_op in run_ops:
+    for _, run_op, _ in run_ops:
         for _ in range(WARMUP_ITERS):
             run_op()
     if is_npu:
         torch.npu.synchronize()
 
-    n_sizes = len(run_ops)
-    total_active = n_sizes * PROFILER_ACTIVE_ITERS
-    total_steps = PROFILER_WAIT_ITERS + PROFILER_WARMUP_ITERS + total_active
+    total_active = sum(n_iters for _, _, n_iters in run_ops)
 
     if not is_leader:
         # Follower: match exact call pattern without profiler
-        # Wait + warmup phase: use first op
         first_run_op = run_ops[0][1]
         for _ in range(PROFILER_WAIT_ITERS + PROFILER_WARMUP_ITERS):
             first_run_op()
-            if is_npu:
+            if is_npu and not no_sync:
                 torch.npu.synchronize()
-        # Active phase: each msg_size for PROFILER_ACTIVE_ITERS
-        for _, run_op in run_ops:
-            for _ in range(PROFILER_ACTIVE_ITERS):
+        for _, run_op, n_iters in run_ops:
+            for _ in range(n_iters):
                 run_op()
-                if is_npu:
+                if is_npu and not no_sync:
                     torch.npu.synchronize()
+        if is_npu and no_sync:
+            torch.npu.synchronize()
         return None
 
     prof_dir = tempfile.mkdtemp(prefix="comm_bench_prof_")
@@ -941,29 +799,30 @@ def _run_bench_profiler_batch(
             on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(prof_dir),
             experimental_config=experimental_config,
         ) as prof:
-            # Wait + warmup phase: use first op (data discarded by profiler)
             for _ in range(PROFILER_WAIT_ITERS + PROFILER_WARMUP_ITERS):
                 first_run_op()
-                if is_npu:
+                if is_npu and not no_sync:
                     torch.npu.synchronize()
                 prof.step()
-            # Active phase: each msg_size for PROFILER_ACTIVE_ITERS
-            for _, run_op in run_ops:
-                for _ in range(PROFILER_ACTIVE_ITERS):
+            for _, run_op, n_iters in run_ops:
+                for _ in range(n_iters):
                     run_op()
-                    if is_npu:
+                    if is_npu and not no_sync:
                         torch.npu.synchronize()
                     prof.step()
+            if is_npu and no_sync:
+                torch.npu.synchronize()
 
-        # Parse all durations (chronological order in CSV)
-        _parse = parse_fn or _parse_comm_duration
+        _parse = parse_fn or _parse_kernel_comm_duration
         durations = _parse(prof_dir, op_type)
 
         if not durations:
-            raise RuntimeError(
-                f"No duration entries found for {op_type} in {prof_dir} "
-                f"(parse_fn={_parse.__name__})"
+            print(
+                f"WARNING: No duration entries found for {op_type} in {prof_dir} "
+                f"(parse_fn={_parse.__name__}). Returning empty results.",
+                file=sys.stderr,
             )
+            return {}
 
         expected = total_active
         if len(durations) < expected:
@@ -973,12 +832,11 @@ def _run_bench_profiler_batch(
                 file=sys.stderr,
             )
 
-        # Split durations by msg_size: entries [i*N : (i+1)*N] → msg_bytes_list[i]
         results: Dict[int, float] = {}
-        for i, (msg_bytes, _) in enumerate(run_ops):
-            start_idx = i * PROFILER_ACTIVE_ITERS
-            end_idx = start_idx + PROFILER_ACTIVE_ITERS
-            chunk = durations[start_idx:end_idx]
+        offset = 0
+        for msg_bytes, _, n_iters in run_ops:
+            chunk = durations[offset:offset + n_iters]
+            offset += n_iters
             if chunk:
                 results[msg_bytes] = statistics.median(chunk)
             else:
@@ -994,16 +852,16 @@ def _run_bench_profiler_batch(
 
 
 # ============================================================================
-# Bench mode: kernel (直接采集 hcom_* kernel Duration, 去 AivKernel)
+# Bench mode: kernel (hcom_* kernel Duration, excluding AivKernel)
 # ============================================================================
 
 def _parse_kernel_comm_duration(prof_dir: str, op_type: str) -> List[float]:
     """Parse kernel_details.csv, extract hcom_* Duration excluding AivKernel.
 
     This measures the same physical quantity as Communication in step_trace:
-        Communication = Σ kernel_details hcom_* Duration (去 AivKernel)
+        Communication = Sum kernel_details hcom_* Duration (excluding AivKernel)
 
-    Deduplication: kernel_details.csv records each HCCL op twice —
+    Deduplication: kernel_details.csv records each HCCL op twice --
     once as hcom_* (Stream ID = NaN) and once as AivKernel (on HCCL stream).
     We filter by: Type starts with 'hcom_' AND Name does NOT contain 'AivKernel'.
     """
@@ -1032,15 +890,17 @@ def _parse_kernel_comm_duration(prof_dir: str, op_type: str) -> List[float]:
     return durations
 
 
-def _run_bench_kernel(run_op, op_type: str, is_npu: bool, *, is_leader: bool = True) -> Optional[float]:
+def _run_bench_kernel(run_op, op_type: str, is_npu: bool, *, is_leader: bool = True,
+                      no_sync: bool = False) -> Optional[float]:
     """Run bench via torch_npu.profiler, return median hcom_* kernel Duration (us).
 
-    Uses the same profiler collection as _run_bench_profiler() but parses
-    kernel_details.csv instead of operator_details.csv, extracting only
-    hcom_* Duration (excluding AivKernel duplicates).
+    Parses kernel_details.csv, extracting only hcom_* Duration (excluding
+    AivKernel duplicates). This aligns exactly with:
+        Communication (step_trace) = Sum kernel_details hcom_* Duration (excluding AivKernel)
 
-    This aligns exactly with:
-        Communication (step_trace) = Σ kernel_details hcom_* Duration (去 AivKernel)
+    When no_sync=True, skips torch.npu.synchronize() between iterations during
+    the profiler active phase, allowing HCCL calls to pipeline on the device
+    stream (matches production behavior).
 
     When is_leader=False, executes the same call pattern without starting a
     profiler (follower mode for non-leader ranks in collective communication).
@@ -1081,16 +941,21 @@ def _run_bench_kernel(run_op, op_type: str, is_npu: bool, *, is_leader: bool = T
             total_steps = PROFILER_WAIT_ITERS + PROFILER_WARMUP_ITERS + PROFILER_ACTIVE_ITERS
             for _step in range(total_steps):
                 run_op()
-                if is_npu:
+                if is_npu and not no_sync:
                     torch.npu.synchronize()
                 prof.step()
+            # When no_sync, ensure all device ops complete before reading results
+            if is_npu and no_sync:
+                torch.npu.synchronize()
 
         durations = _parse_kernel_comm_duration(prof_dir, op_type)
         if not durations:
-            raise RuntimeError(
-                f"No {_OP_TO_KERNEL_TYPE[op_type]} entries found in "
-                f"kernel_details.csv under {prof_dir}"
+            print(
+                f"WARNING: No {_OP_TO_KERNEL_TYPE[op_type]} entries found in "
+                f"kernel_details.csv under {prof_dir}. Returning None.",
+                file=sys.stderr,
             )
+            return None
 
         return statistics.median(durations)
 
@@ -1102,7 +967,7 @@ def _run_bench_kernel(run_op, op_type: str, is_npu: bool, *, is_leader: bool = T
 
 
 # ============================================================================
-# Bench mode: event (方案 A — measures hcom_kernel only, no AicpuKernel)
+# Bench mode: event (event mode -- measures hcom_kernel only, no AicpuKernel)
 # ============================================================================
 
 def _run_bench_event(run_op, is_npu: bool) -> float:
@@ -1127,7 +992,7 @@ def _run_bench_event(run_op, is_npu: bool) -> float:
             run_op()
             end_event.record()
             torch.npu.synchronize()
-            durations_us.append(start_event.elapsed_time(end_event) * 1000)  # ms → us
+            durations_us.append(start_event.elapsed_time(end_event) * 1000)  # ms -> us
     else:
         for _ in range(BENCH_ITERS):
             t0 = time.perf_counter()
@@ -1135,85 +1000,6 @@ def _run_bench_event(run_op, is_npu: bool) -> float:
             durations_us.append((time.perf_counter() - t0) * 1e6)
 
     return statistics.median(durations_us)
-
-
-# ============================================================================
-# Bench mode: alternating (peer→target pipelined, no sync between them)
-# ============================================================================
-
-def _run_bench_alternating(run_op, is_npu: bool, peer_run_op=None) -> float:
-    """Run bench with alternating peer→target execution, NO sync between them.
-
-    Simulates production pattern where allGather↔reduceScatter alternate
-    every layer on the same HCCL stream. The peer op keeps HCCL internal
-    buffers and RDMA links warm so the target op hits the hot path.
-
-    Key difference from event mode: no torch.npu.synchronize() between
-    peer and target — they execute back-to-back on the device stream.
-    NPU Event timing only captures the target op's device execution.
-
-    If peer_run_op is None, falls back to standard event-mode measurement.
-    """
-    import torch
-
-    if peer_run_op is None:
-        return _run_bench_event(run_op, is_npu)
-
-    # Warmup: alternating without sync (match production pattern)
-    for _ in range(WARMUP_ITERS):
-        peer_run_op()
-        run_op()
-    if is_npu:
-        torch.npu.synchronize()
-
-    durations_us: List[float] = []
-    if is_npu:
-        start_event = torch.npu.Event(enable_timing=True)
-        end_event = torch.npu.Event(enable_timing=True)
-        for _ in range(BENCH_ITERS):
-            # Peer op: pipelined on same stream, NO sync after it
-            peer_run_op()
-            # Measure target op only
-            start_event.record()
-            run_op()
-            end_event.record()
-            torch.npu.synchronize()
-            durations_us.append(start_event.elapsed_time(end_event) * 1000)  # ms → us
-    else:
-        for _ in range(BENCH_ITERS):
-            peer_run_op()
-            t0 = time.perf_counter()
-            run_op()
-            durations_us.append((time.perf_counter() - t0) * 1e6)
-
-    return statistics.median(durations_us)
-
-
-# ============================================================================
-# Bench mode: pipeline (original — kept for backward compatibility)
-# ============================================================================
-
-def _run_bench_pipeline(run_op, is_npu: bool) -> float:
-    """Original pipeline measurement: 100 iterations without per-iteration sync.
-
-    WARNING: This measures pipeline steady-state throughput, NOT single-call
-    latency. The result does NOT align with operator_details / Comm_NO.
-    Kept only for backward compatibility and A/B comparison.
-    """
-    import torch
-
-    _warmup_and_sync(run_op, is_npu)
-
-    if is_npu:
-        torch.npu.synchronize()
-    start = time.perf_counter()
-    for _ in range(BENCH_ITERS):
-        run_op()
-    if is_npu:
-        torch.npu.synchronize()
-    elapsed = time.perf_counter() - start
-
-    return elapsed / BENCH_ITERS * 1e6
 
 
 # ============================================================================
@@ -1286,7 +1072,7 @@ def build_argparser() -> argparse.ArgumentParser:
         default=[48, 8, 2],
         help=(
             "Hardware grid shape (outermost to innermost), e.g. '48 8 2' for "
-            "ATLAS_800_A3 (48 pods × 8 nodes × 2 dies, stride=[16,2,1]). "
+            "ATLAS_800_A3 (48 pods x 8 nodes x 2 dies, stride=[16,2,1]). "
             "Used to resolve topology_tier from group composition. (default: 48 8 2)"
         ),
     )
@@ -1312,22 +1098,17 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output-csv",
         default=None,
-        help="CSV file to append results to (used with --do-run, format per §4.7)",
+        help="CSV file to append results to (used with --do-run, format per S4.7)",
     )
     parser.add_argument(
         "--bench-mode",
-        default="profiler",
+        default="kernel",
         choices=_BENCH_MODES,
         help=(
-            "Measurement mode (default: profiler). "
-            "'profiler': torch_npu.profiler → operator_details Device Total Duration "
-            "(aligns Comm_NO, includes AicpuKernel). "
-            "'kernel': torch_npu.profiler → kernel_details hcom_* Duration "
+            "Measurement mode (default: kernel). "
+            "'kernel': torch_npu.profiler -> kernel_details hcom_* Duration "
             "(excludes AivKernel, aligns Communication in step_trace). "
-            "'alternating': event timing with peer→target pipelined execution "
-            "(no sync between peer and target, simulates production allGather↔reduceScatter). "
-            "'event': per-iteration NPU Event timing (hcom_kernel only, fast). "
-            "'pipeline': original 100-iteration pipeline (backward compat, does NOT align Comm_NO)."
+            "'event': per-iteration NPU Event timing (hcom_kernel only, fast)."
         ),
     )
     return parser
@@ -1339,7 +1120,6 @@ def _iter_configs(
     topology_tiers: Optional[List[int]],
     grid_shape: List[int],
     bytes_grid: List[int],
-    dtype: str,
 ) -> List[Tuple]:
     """Yield (op_type, message_bytes, num_devices, topology_tier, group_ranks) tuples.
 
@@ -1388,7 +1168,7 @@ def main() -> None:
 
     configs = _iter_configs(
         args.ops, args.num_devices, args.topology_tier,
-        grid_shape, bytes_grid, args.dtype,
+        grid_shape, bytes_grid,
     )
 
     if args.run:
@@ -1426,7 +1206,7 @@ def main() -> None:
         # Pre-create one process group per unique group_ranks to avoid
         # repeated hcclCommInitRootInfoConfig calls (HCCL error code 1).
         # dist.new_group() must be called by ALL ranks in the world even if
-        # they are not in the group — so we call it unconditionally here.
+        # they are not in the group -- so we call it unconditionally here.
         group_cache: dict = {}
         unique_groups = []
         seen = set()
@@ -1444,7 +1224,7 @@ def main() -> None:
         # HCCL compiles different internal kernels per message size; warming up
         # only the smallest size leaves mid-range sizes (1~5MB) un-compiled,
         # causing the first real measurement to include JIT overhead.
-        # Always use pipeline mode for warmup (fast, no profiler overhead).
+        # Always use event mode for warmup (fast, no profiler overhead).
         if rank == 0:
             print("Running global warmup to trigger HCCL JIT compilation "
                   f"({len(configs)} configs)...")
@@ -1458,15 +1238,19 @@ def main() -> None:
                     resolve_topology_tier(list(group_ranks), grid_shape),
                     args.dtype, output_csv=None,
                     group=group_cache[tuple(group_ranks)],
-                    bench_mode="pipeline",
+                    bench_mode="event",
                 )
 
         if rank == 0:
             print(f"Global warmup done. Starting benchmarks (mode={args.bench_mode})...\n")
 
-        if args.bench_mode == "profiler" and _has_torch_npu():
-            # Profiler mode: batch all msg_sizes per (op, group) into ONE
-            # profiler session to avoid CANN profiler repeated start/stop crash.
+
+        if args.bench_mode == "kernel" and _has_torch_npu():
+            # Kernel mode: profiler -> kernel_details.csv, no inter-iteration sync.
+            # To avoid profiler ring-buffer pressure on large messages, split:
+            #   - Small messages (<512KB): batched into ONE profiler session
+            #   - Large messages (>=512KB): each msg_bytes gets its OWN profiler
+            #     session with active=1, repeated N times, then take median.
             batched: OrderedDict = OrderedDict()
             for op_type, msg_bytes, num_devices, tier, group_ranks in configs:
                 key = (op_type, tuple(group_ranks))
@@ -1475,107 +1259,54 @@ def main() -> None:
                 batched[key].append((msg_bytes, num_devices, tier))
 
             is_npu = True
-            local_rank = int(os.environ.get("LOCAL_RANK", rank))
             device = f"npu:{local_rank}"
 
-            for (op_type, gr_tuple), items in batched.items():
+            total_batches = len(batched)
+            for batch_idx, ((op_type, gr_tuple), items) in enumerate(batched.items()):
                 group_ranks = list(gr_tuple)
                 group = group_cache[gr_tuple]
                 is_member = rank in group_ranks
 
                 if is_member:
                     is_leader = rank == group_ranks[0]
-                    msg_bytes_list = [mb for mb, _, _ in items]
+
+                    # Split into small and large msg_bytes
+                    small_items = [(mb, nd, t) for mb, nd, t in items
+                                   if mb < PROFILER_LARGE_MSG_THRESHOLD]
+                    large_items = [(mb, nd, t) for mb, nd, t in items
+                                   if mb >= PROFILER_LARGE_MSG_THRESHOLD]
 
                     if is_leader:
-                        print(f"[profiler-batch] op={op_type}  group={group_ranks}  "
-                              f"msg_sizes={len(msg_bytes_list)}  active_iters={PROFILER_ACTIVE_ITERS}")
+                        print(f"\n[kernel] batch {batch_idx+1}/{total_batches}  "
+                              f"op={op_type}  group={group_ranks}  "
+                              f"small(<{PROFILER_LARGE_MSG_THRESHOLD//1024}KB)="
+                              f"{len(small_items)}(batch, active={PROFILER_ACTIVE_ITERS})  "
+                              f"large(>={PROFILER_LARGE_MSG_THRESHOLD//1024}KB)="
+                              f"{len(large_items)}(per-msg session"
+                              f"\u00d7{PROFILER_LARGE_MSG_SESSIONS}, "
+                              f"active={PROFILER_ACTIVE_ITERS_LARGE})")
 
-                    results = _run_bench_profiler_batch(
-                        op_type, msg_bytes_list, args.dtype, device,
-                        group, group_ranks, is_npu, is_leader,
-                    )
-
-                    if results and is_leader:
-                        for msg_bytes, nd, tier in items:
-                            if msg_bytes not in results:
-                                continue
-                            duration_us = results[msg_bytes]
-                            bandwidth_gbps = msg_bytes / (duration_us * 1e-6) / 1e9
-                            row = {
-                                "message_bytes": msg_bytes,
-                                "num_devices": nd,
-                                "dtype": _DTYPE_TO_CSV.get(args.dtype, "DT_BF16"),
-                                "topology_tier": tier,
-                                "Duration(us)": round(duration_us, 2),
-                                "bandwidth_gbps": round(bandwidth_gbps, 2),
-                            }
-                            print(
-                                f"  op={op_type}  bytes={msg_bytes}  devices={nd}"
-                                f"  tier={tier}  duration={duration_us:.2f}us"
-                                f"  bw={bandwidth_gbps:.2f}GB/s"
+                    # 1) Small messages: one batch session
+                    if small_items:
+                        small_msg_list = [mb for mb, _, _ in small_items]
+                        try:
+                            results = _run_bench_profiler_batch(
+                                op_type, small_msg_list, args.dtype, device,
+                                group, group_ranks, is_npu, is_leader,
+                                parse_fn=_parse_kernel_comm_duration,
+                                no_sync=True,
                             )
-                            csv_path = _csv_for_op(op_type)
-                            if csv_path:
-                                _append_csv(csv_path, row)
-
-                # World barrier: keep ALL ranks in sync across batches.
-                # Without this, non-member ranks skip ahead and enter the
-                # next batch's warmup collective ops before members finish,
-                # causing hangs when the next batch requires more ranks.
-                dist.barrier()
-        elif args.bench_mode == "alternating" and _has_torch_npu():
-            # Alternating mode: ops with a peer (allGather↔reduceScatter) use
-            # pipelined event timing; ops without a peer (allReduce) use
-            # profiler-batch (operator_details Device Total Duration, which
-            # includes AicpuKernel) to avoid NPU Event sync overhead
-            # dominating short-duration kernels.
-            has_peer_configs = [c for c in configs if _PEER_OP.get(c[0]) is not None]
-            no_peer_configs = [c for c in configs if _PEER_OP.get(c[0]) is None]
-
-            # 1) Ops with peer: per-point alternating measurement
-            for op_type, msg_bytes, num_devices, tier, group_ranks in has_peer_configs:
-                run_benchmark(
-                    op_type, msg_bytes, group_ranks, tier, args.dtype,
-                    _csv_for_op(op_type),
-                    group=group_cache[tuple(group_ranks)],
-                    bench_mode="alternating",
-                )
-
-            # 2) Ops without peer: profiler-batch (kernel mode) for accuracy
-            if no_peer_configs:
-                batched: OrderedDict = OrderedDict()
-                for op_type, msg_bytes, num_devices, tier, group_ranks in no_peer_configs:
-                    key = (op_type, tuple(group_ranks))
-                    if key not in batched:
-                        batched[key] = []
-                    batched[key].append((msg_bytes, num_devices, tier))
-
-                is_npu = True
-                local_rank = int(os.environ.get("LOCAL_RANK", rank))
-                device = f"npu:{local_rank}"
-
-                for (op_type, gr_tuple), items in batched.items():
-                    group_ranks = list(gr_tuple)
-                    group = group_cache[gr_tuple]
-                    is_member = rank in group_ranks
-
-                    if is_member:
-                        is_leader = rank == group_ranks[0]
-                        msg_bytes_list = [mb for mb, _, _ in items]
-
-                        if is_leader:
-                            print(f"[alternating/profiler-fallback] op={op_type}  "
-                                  f"group={group_ranks}  msg_sizes={len(msg_bytes_list)}")
-
-                        results = _run_bench_profiler_batch(
-                            op_type, msg_bytes_list, args.dtype, device,
-                            group, group_ranks, is_npu, is_leader,
-                        )
+                        except Exception as e:
+                            if is_leader:
+                                print(f"  ERROR [small-batch] op={op_type}: {e}",
+                                      file=sys.stderr)
+                            results = None
 
                         if results and is_leader:
-                            for msg_bytes, nd, tier in items:
+                            for msg_bytes, nd, tier in small_items:
                                 if msg_bytes not in results:
+                                    print(f"  SKIP op={op_type} bytes={msg_bytes} "
+                                          f"(no data in batch result)", file=sys.stderr)
                                     continue
                                 duration_us = results[msg_bytes]
                                 bandwidth_gbps = msg_bytes / (duration_us * 1e-6) / 1e9
@@ -1590,51 +1321,49 @@ def main() -> None:
                                 print(
                                     f"  op={op_type}  bytes={msg_bytes}  devices={nd}"
                                     f"  tier={tier}  duration={duration_us:.2f}us"
-                                    f"  bw={bandwidth_gbps:.2f}GB/s"
+                                    f"  bw={bandwidth_gbps:.2f}GB/s  [small-batch]"
                                 )
                                 csv_path = _csv_for_op(op_type)
                                 if csv_path:
-                                    _append_csv(csv_path, row)
+                                    _append_csv(csv_path, row, op_type=op_type)
 
-                    dist.barrier()
-        elif args.bench_mode == "kernel" and _has_torch_npu():
-            # Kernel mode: batch profiler session parsing kernel_details.csv
-            # (same batch strategy as profiler mode to avoid CANN restart crash)
-            batched: OrderedDict = OrderedDict()
-            for op_type, msg_bytes, num_devices, tier, group_ranks in configs:
-                key = (op_type, tuple(group_ranks))
-                if key not in batched:
-                    batched[key] = []
-                batched[key].append((msg_bytes, num_devices, tier))
+                    # 2) Large messages: per-msg separate profiler sessions
+                    for large_idx, (msg_bytes, nd, tier) in enumerate(large_items):
+                        if is_leader:
+                            print(f"  [large {large_idx+1}/{len(large_items)}] "
+                                  f"op={op_type}  bytes={msg_bytes}  "
+                                  f"sessions=0/{PROFILER_LARGE_MSG_SESSIONS}...",
+                                  end="", flush=True)
 
-            is_npu = True
-            local_rank = int(os.environ.get("LOCAL_RANK", rank))
-            device = f"npu:{local_rank}"
+                        durations_across_sessions: List[float] = []
+                        session_errors = 0
+                        for repeat_idx in range(PROFILER_LARGE_MSG_SESSIONS):
+                            try:
+                                result = _run_bench_profiler_batch(
+                                    op_type, [msg_bytes], args.dtype, device,
+                                    group, group_ranks, is_npu, is_leader,
+                                    parse_fn=_parse_kernel_comm_duration,
+                                    no_sync=True,
+                                )
+                                if result and is_leader and msg_bytes in result:
+                                    durations_across_sessions.append(result[msg_bytes])
+                            except Exception as e:
+                                session_errors += 1
+                                if is_leader:
+                                    print(f"\n    WARN session {repeat_idx+1} failed: {e}",
+                                          file=sys.stderr, end="", flush=True)
 
-            for (op_type, gr_tuple), items in batched.items():
-                group_ranks = list(gr_tuple)
-                group = group_cache[gr_tuple]
-                is_member = rank in group_ranks
+                        if is_leader:
+                            ok = len(durations_across_sessions)
+                            fail = session_errors
+                            print(f"\r  [large {large_idx+1}/{len(large_items)}] "
+                                  f"op={op_type}  bytes={msg_bytes}  "
+                                  f"sessions={ok}/{ok+fail}"
+                                  f"{f' ({fail} failed)' if fail else ''}",
+                                  end="")
 
-                if is_member:
-                    is_leader = rank == group_ranks[0]
-                    msg_bytes_list = [mb for mb, _, _ in items]
-
-                    if is_leader:
-                        print(f"[kernel-batch] op={op_type}  "
-                              f"group={group_ranks}  msg_sizes={len(msg_bytes_list)}")
-
-                    results = _run_bench_profiler_batch(
-                        op_type, msg_bytes_list, args.dtype, device,
-                        group, group_ranks, is_npu, is_leader,
-                        parse_fn=_parse_kernel_comm_duration,
-                    )
-
-                    if results and is_leader:
-                        for msg_bytes, nd, tier in items:
-                            if msg_bytes not in results:
-                                continue
-                            duration_us = results[msg_bytes]
+                        if durations_across_sessions and is_leader:
+                            duration_us = statistics.median(durations_across_sessions)
                             bandwidth_gbps = msg_bytes / (duration_us * 1e-6) / 1e9
                             row = {
                                 "message_bytes": msg_bytes,
@@ -1645,23 +1374,26 @@ def main() -> None:
                                 "bandwidth_gbps": round(bandwidth_gbps, 2),
                             }
                             print(
-                                f"  op={op_type}  bytes={msg_bytes}  devices={nd}"
-                                f"  tier={tier}  duration={duration_us:.2f}us"
+                                f"  duration={duration_us:.2f}us"
                                 f"  bw={bandwidth_gbps:.2f}GB/s"
                             )
                             csv_path = _csv_for_op(op_type)
                             if csv_path:
-                                _append_csv(csv_path, row)
+                                _append_csv(csv_path, row, op_type=op_type)
+                        elif is_leader:
+                            print(f"  FAILED (0 valid sessions)", file=sys.stderr)
 
+                # World barrier: ALL ranks must participate (including non-members)
+                # to prevent non-member ranks from racing ahead to the next batch.
                 dist.barrier()
         else:
-            # Event / pipeline mode: per-point measurement (no profiler session issue)
+            # Event mode: per-point measurement (no profiler session needed)
             for op_type, msg_bytes, num_devices, tier, group_ranks in configs:
                 run_benchmark(
                     op_type, msg_bytes, group_ranks, tier, args.dtype,
                     _csv_for_op(op_type),
                     group=group_cache[tuple(group_ranks)],
-                    bench_mode=args.bench_mode,
+                    bench_mode="event",
                 )
 
         dist.destroy_process_group()
@@ -1689,7 +1421,8 @@ def main() -> None:
         print(f"  message_bytes: {len(bytes_grid)} sizes ({bytes_grid[0]}~{bytes_grid[-1]} bytes)")
         print()
         print("To run a script:")
-        print(f"  torchrun --nproc_per_node=<N> {output_dir}/comm_<op>_B<bytes>_D<N>_T<tier>.py --output-csv results.csv")
+        print(f"  torchrun --nproc_per_node=<N> {output_dir}/"
+              "comm_<op>_B<bytes>_D<N>_T<tier>.py --output-csv results.csv")
 
 
 def _has_torch_npu() -> bool:
