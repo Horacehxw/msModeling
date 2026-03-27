@@ -47,7 +47,7 @@
     "tensor_cast.concat_and_cache_mla.default",
     "tensor_cast.mlapo_quant.default",
     "tensor_cast.multihead_latent_attention.default",
-    "tensor_cast.permute_tokens.default",
+    "tensor_cast.init_routing_v2.default",
     "tensor_cast.quantize.default",
     "tensor_cast.rms_norm.default",
     "tensor_cast.static_quant_linear.default",
@@ -1115,7 +1115,7 @@
       ]
     },
     {
-      "op_name": "tensor_cast.permute_tokens.default",
+      "op_name": "tensor_cast.init_routing_v2.default",
       "count": 58,
       "total_duration_us": 1914.0,
       "unique_shape_variants": 1,

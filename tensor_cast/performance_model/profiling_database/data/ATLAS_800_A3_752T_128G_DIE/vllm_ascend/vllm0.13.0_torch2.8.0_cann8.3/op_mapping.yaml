@@ -252,7 +252,7 @@ operator_mappings:
   # EP 路径: npu_moe_distribute_dispatch_v2 / npu_moe_distribute_combine_v2
   # 非 EP 路径: npu_moe_init_routing_v2 / npu_moe_finalize_routing
 
-  "tensor_cast.permute_tokens.default":
+  "tensor_cast.init_routing_v2.default":
     kernel_type: MoeDistributeDispatchV2
     csv_file: MoeTokenPermute
     tc_input_count: 2
@@ -275,7 +275,7 @@ operator_mappings:
       (npu_moe_finalize_routing, YAML:6115, aclnn: aclnnMoeFinalizeRouting/V2).
       Profiling: DSV3 Decode MoeDistributeCombineV2(2378x).
 
-  "tensor_cast.moe_gating_topk.default":
+  "tensor_cast.moe_gating_top_k_softmax.default":
     kernel_type: MoeGatingTopK
     notes: >
       [HIGH] op-plugin: YAML:6123 (npu_moe_gating_top_k) / MoeGatingTopKKernelNpuOpApi.cpp.

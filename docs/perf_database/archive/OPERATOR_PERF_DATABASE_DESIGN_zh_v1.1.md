@@ -620,7 +620,7 @@ tensorcast_op_to_schema:
   "tensor_cast.dequant_swiglu_quant.default": swiglu     # 待实现
 
   # MoE 路由
-  "tensor_cast.permute_tokens.default": moe_dispatch
+  "tensor_cast.init_routing_v2.default": moe_dispatch
   "tensor_cast.unpermute_tokens.default": moe_combine
   "aten.topk.default": moe_gating  # 注意：aten.topk 也用于采样，此处仅近似处理 MoE 场景，待 9.1 节适配后改用专用算子
 

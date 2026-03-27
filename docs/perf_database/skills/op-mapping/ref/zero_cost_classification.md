@@ -40,7 +40,7 @@ NPU 的 `MoeGatingTopK` 融合了:
 
 TC 将其分解为:
 ```
-moe_gating_topk(logits, bias, k)  ← 有映射,捕获融合延迟
+moe_gating_top_k_softmax(logits, bias, k)  ← 有映射,捕获融合延迟
   ↓ 然后 TC 继续分解路由逻辑:
 aten.topk()           ← 已被 MoeGatingTopK 包含 → zero_cost
 aten.sum.dim_IntList() ← 已被 MoeGatingTopK 包含 → zero_cost
@@ -56,7 +56,7 @@ NPU 的 `DispatchFFNCombine` 融合了:
 
 TC 将其分解为独立算子(当 DFC pass 不生效时):
 ```
-permute_tokens     → 有映射 (MoeDistributeDispatchV2, alternate: DFC)
+init_routing_v2    → 有映射 (MoeDistributeDispatchV2, alternate: DFC)
 grouped_matmul×N   → 有映射 (GroupedMatmul, alternate: DFC)
 swiglu             → 有映射 (SwiGlu)
 unpermute_tokens   → 有映射 (MoeDistributeCombineV2, alternate: DFC)

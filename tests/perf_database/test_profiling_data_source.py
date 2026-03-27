@@ -1831,7 +1831,7 @@ version: "0.14.0"
 device: TEST_DEVICE
 
 operator_mappings:
-  "tensor_cast.permute_tokens.default":
+  "tensor_cast.init_routing_v2.default":
     kernel_type: MoeDistributeDispatchV2
     csv_file: MoeTokenPermute
     tc_input_count: 2
@@ -1867,10 +1867,10 @@ def moe_data_dir(tmp_path):
 
 
 def test_moe_permute_hit(moe_data_dir):
-    """permute_tokens (4,7168)+(4,8) matches first CSV row -> 6.12 us."""
+    """init_routing_v2 (4,7168)+(4,8) matches first CSV row -> 6.12 us."""
     ds = ProfilingDataSource(moe_data_dir)
     op = _make_op_info(
-        torch.ops.tensor_cast.permute_tokens.default,
+        torch.ops.tensor_cast.init_routing_v2.default,
         [
             torch.empty(4, 7168, device="meta", dtype=torch.bfloat16),
             torch.empty(4, 8, device="meta", dtype=torch.int32),
@@ -1885,7 +1885,7 @@ def test_moe_permute_dtype_filter(moe_data_dir):
     """BF16 inputs should not match the FLOAT row."""
     ds = ProfilingDataSource(moe_data_dir)
     op = _make_op_info(
-        torch.ops.tensor_cast.permute_tokens.default,
+        torch.ops.tensor_cast.init_routing_v2.default,
         [
             torch.empty(19, 1, device="meta", dtype=torch.bfloat16),
             torch.empty(19, device="meta", dtype=torch.int32),
@@ -1899,7 +1899,7 @@ def test_moe_permute_shape_miss(moe_data_dir):
     """(5,7168)+(5,8) has no matching row -> None."""
     ds = ProfilingDataSource(moe_data_dir)
     op = _make_op_info(
-        torch.ops.tensor_cast.permute_tokens.default,
+        torch.ops.tensor_cast.init_routing_v2.default,
         [
             torch.empty(5, 7168, device="meta", dtype=torch.bfloat16),
             torch.empty(5, 8, device="meta", dtype=torch.int32),
@@ -1956,7 +1956,7 @@ def test_csv_file_field_override(moe_data_dir):
     assert not (moe_data_dir / "MoeDistributeDispatchV2.csv").exists()
     assert (moe_data_dir / "MoeTokenPermute.csv").exists()
     op = _make_op_info(
-        torch.ops.tensor_cast.permute_tokens.default,
+        torch.ops.tensor_cast.init_routing_v2.default,
         [
             torch.empty(4, 7168, device="meta", dtype=torch.bfloat16),
             torch.empty(4, 8, device="meta", dtype=torch.int32),
@@ -1970,11 +1970,11 @@ def test_csv_file_field_fallback(moe_data_dir):
     """Without csv_file, kernel_type is used as CSV filename (regression guard)."""
     ds = ProfilingDataSource(moe_data_dir)
     mappings = ds._op_mapping["operator_mappings"]
-    mappings["tensor_cast.permute_tokens.default"] = {
+    mappings["tensor_cast.init_routing_v2.default"] = {
         "kernel_type": "MoeTokenPermute",
     }
     op = _make_op_info(
-        torch.ops.tensor_cast.permute_tokens.default,
+        torch.ops.tensor_cast.init_routing_v2.default,
         [
             torch.empty(4, 7168, device="meta", dtype=torch.bfloat16),
             torch.empty(4, 8, device="meta", dtype=torch.int32),
@@ -2006,31 +2006,29 @@ _skip_no_cann85 = pytest.mark.skipif(
 )
 
 
-# MoE real CANN tests (permute_tokens, unpermute_tokens, moe_gating_topk)
+# MoE real CANN tests (init_routing_v2, unpermute_tokens, moe_gating_top_k_softmax)
 # moved to G1 PR — they depend on tensor_cast.ops.fused_moe which is G1 scope.
 
 
-def test_moe_gating_topk_op_exists():
-    """moe_gating_topk should be a registered tensor_cast op."""
+def test_moe_gating_top_k_softmax_op_exists():
+    """moe_gating_top_k_softmax should be a registered tensor_cast op."""
 
-    assert hasattr(torch.ops.tensor_cast, "moe_gating_topk"), (
-        "moe_gating_topk op not registered"
+    assert hasattr(torch.ops.tensor_cast, "moe_gating_top_k_softmax"), (
+        "moe_gating_top_k_softmax op not registered"
     )
 
 
-def test_moe_gating_topk_output_shapes():
-    """moe_gating_topk returns (topk_weights, topk_indices) with correct shapes."""
+def test_moe_gating_top_k_softmax_output_shapes():
+    """moe_gating_top_k_softmax returns (topk_weights, topk_indices) with correct shapes."""
 
     logits = torch.randn(8, 256)  # 8 tokens, 256 experts
-    expert_bias = torch.zeros(256)
-    topk_weights, topk_indices = torch.ops.tensor_cast.moe_gating_topk(
+    topk_weights, topk_indices = torch.ops.tensor_cast.moe_gating_top_k_softmax(
         logits,
-        expert_bias,
         8,  # top_k=8
     )
     assert topk_weights.shape == (8, 8)
     assert topk_indices.shape == (8, 8)
-    assert topk_indices.dtype == torch.int32
+    assert topk_indices.dtype == torch.int64
 
 
 # --- C1: MLA/MLAPO unblock tests ---

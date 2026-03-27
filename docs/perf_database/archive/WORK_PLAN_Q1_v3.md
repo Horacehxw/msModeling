@@ -215,7 +215,7 @@ HDY |C6+MC2查 |--- C9 --|--- C7 DSV3映射 ----|C8+C10-|
 - HDY 3.6 确认 DSV3 Profiling 中是否有计算+通信融合类 kernel Type（含 MC2 及其他融合形式）
 - **结论（已确认）**：
   - **MC2（MatMul+AllReduce 融合）**：DSV3 Profiling 中无专用 kernel Type，matmul（`QuantBatchMatmulV3`）和通信（`hcom_reduceScatter_` / `hcom_allGather_`）分开记录 → 保留 `composite: true` + `sub_kernels: [QuantBatchMatmulV3, hcom_allReduce_]` 分解查询
-  - **DispatchFFNCombine（计算+通信融合）**：DSV3 Profiling 中**存在**此融合 kernel，融合了 `all_to_all×2 + GroupedMatmul×2 + SwiGlu + MoE routing`，耗时占端到端 **35.3%**，是 DSV3 最重要的单一 kernel。TC 将其分解为 `permute_tokens + grouped_matmul×2 + swiglu + unpermute_tokens + all_to_all×2`，op_mapping.yaml 已配置 `composite: true` 处理，无需新增直接映射
+  - **DispatchFFNCombine（计算+通信融合）**：DSV3 Profiling 中**存在**此融合 kernel，融合了 `all_to_all×2 + GroupedMatmul×2 + SwiGlu + MoE routing`，耗时占端到端 **35.3%**，是 DSV3 最重要的单一 kernel。TC 将其分解为 `init_routing_v2 + grouped_matmul×2 + swiglu + unpermute_tokens + all_to_all×2`，op_mapping.yaml 已配置 `composite: true` 处理，无需新增直接映射
 
 ---
 

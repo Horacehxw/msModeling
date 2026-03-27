@@ -224,7 +224,7 @@ kernel_type_variants:
 
 #### S-9: MoE 路由算子映射依赖场景假设
 
-**现状**: `permute_tokens` 映射到 `MoeDistributeDispatchV2`（EP 场景），非 EP 场景应映射到 `MoeInitRouting`。当前无条件映射。
+**现状**: `init_routing_v2` 映射到 `MoeDistributeDispatchV2`（EP 场景），非 EP 场景应映射到 `MoeInitRouting`。当前无条件映射。
 
 **产品化方向**: 与 S-6 相同，需 `kernel_type_variants` 按 EP/非 EP 条件选择。
 

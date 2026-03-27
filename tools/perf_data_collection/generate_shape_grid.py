@@ -575,7 +575,7 @@ def generate_dynamic_quant_shapes(
     return [main], [main, (seq,)]
 
 
-def generate_moe_gating_topk_shapes(
+def generate_moe_gating_top_k_softmax_shapes(
     template_inputs: list[tuple[int, ...]],
     template_outputs: list[tuple[int, ...]],
     rng: random.Random,
@@ -1804,7 +1804,7 @@ def generate_shapes_for_kernel(
             return generate_apply_topk_top_p_custom_shapes(template_inputs, rng, min_value, max_value)
         return generate_apply_topk_top_p_shapes(template_inputs, rng, min_value, max_value)
     if kernel_type == "MoeGatingTopK":
-        return generate_moe_gating_topk_shapes(
+        return generate_moe_gating_top_k_softmax_shapes(
             template_inputs,
             template_outputs,
             rng,

@@ -269,7 +269,7 @@ class OperatorSchema(ABC):
 | --- | --- | --- |
 | `GEMMSchema` | m, n, k, quant_mode | `aten.mm`、`static_quant_linear`、`fp8_linear`、`grouped_matmul_quant` |
 | `AttentionSchema` | batch, query_len, context_len, num_heads, num_kv_heads, head_dim, kv_lora_rank | `attention`、`attention_quant`、`multihead_latent_attention` |
-| `MoESchema` | num_tokens, num_experts, top_k, hidden_size, intermediate_size | `grouped_matmul`、`permute_tokens`、`unpermute_tokens` |
+| `MoESchema` | num_tokens, num_experts, top_k, hidden_size, intermediate_size | `grouped_matmul`、`init_routing_v2`、`unpermute_tokens` |
 | `NormalizationSchema` | num_tokens, hidden_size | `rms_norm`、`add_rms_norm` |
 | `FusedSchema` | （随融合内核而异） | 映射至组成算子 |
 | `CommunicationSchema` | op_type, num_devices, message_size | `all_reduce`、`all_gather`、`all_to_all` |
@@ -400,7 +400,7 @@ operator_schemas:
       - name: "MoeDistributeCombineV2"
       - name: "MoeGatingTopK"
     tensorcast_ops:
-      - "tensor_cast.permute_tokens.default"
+      - "tensor_cast.init_routing_v2.default"
       - "tensor_cast.unpermute_tokens.default"
 
   fused:

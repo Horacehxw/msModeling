@@ -245,13 +245,13 @@ operator_mappings:
       torch binding: torch.ops._C_ascend.dispatch_ffn_combine.
       aclnn: aclnnDispatchFFNCombine (INT8/W8A8) / aclnnDispatchFFNCombineBF16 (BF16).
       CANN: OP_ADD(DispatchFFNCombine) in dispatch_ffn_combine_def.cpp. Profiling: DispatchFFNCombine(928x, 35.3%).
-      TC fusion pass (DispatchFFNCombinePass): replaces permute_tokens + grouped_matmul(×N) + unpermute_tokens
+      TC fusion pass (DispatchFFNCombinePass): replaces init_routing_v2 + grouped_matmul(×N) + unpermute_tokens
       into single fused op with args (x, expert_indices).
       TC has 2 tensor args (x, expert_indices); NPU has 7 (x, w1, w2, expert_idx, scale1, scale2, probs).
       tc_input_count=1: match on x shape (batch, hidden_size) only — weights are model-fixed.
       shape_flags: [flatten_batch — TC x is 3D (bs, seq, hidden), NPU CSV is 2D (batch, hidden)].
 
-  "tensor_cast.permute_tokens.default":
+  "tensor_cast.init_routing_v2.default":
     kernel_type: MoeDistributeDispatchV2
     csv_file: MoeTokenPermute
     tc_input_count: 2
@@ -271,18 +271,11 @@ operator_mappings:
       aclnn: aclnnMoeDistributeCombineV2/V3/V4. EP path.
       CANN 8.5 aclgraph: 被 DispatchFFNCombine 超级融合吸收.
 
-  "tensor_cast.moe_gating_topk.default":
+  "tensor_cast.moe_gating_top_k_softmax.default":
     kernel_type: MoeGatingTopK
     notes: >
       [HIGH] op-plugin: MoeGatingTopKKernelNpuOpApi.cpp.
       aclnn: aclnnMoeGatingTopK.
-
-  "tensor_cast.moe_gating_top_k_softmax.default":
-    kernel_type: MoeGatingTopK
-    notes: >
-      [HIGH] Alias for moe_gating_topk with fused softmax.
-      Same NPU kernel (aclnnMoeGatingTopK), different TC op signature
-      (2 args: logits, top_k) vs moe_gating_topk (3 args: logits, bias, top_k).
 
 
   # ========== 6. Attention ==========
@@ -645,7 +638,7 @@ operator_mappings:
     notes: >
       [HIGH] TC MoE routing artifact. NPU fuses top-k into MoeGatingTopK.
       TopKV2 kernel never appears in CANN 8.5 vLLM profiling.
-      TC's moe_gating_topk op already captures this latency.
+      TC's moe_gating_top_k_softmax op already captures this latency.
 
   "aten.where.self":
     zero_cost: true
@@ -674,7 +667,7 @@ operator_mappings:
     notes: >
       [HIGH] TC MoE routing artifact. NPU fuses sum into MoeGatingTopK.
       ReduceSum/ReduceSumD never appear in CANN 8.5 vLLM profiling.
-      TC's moe_gating_topk op already captures this latency.
+      TC's moe_gating_top_k_softmax op already captures this latency.
 
   "aten.clone.default":
     zero_cost: true

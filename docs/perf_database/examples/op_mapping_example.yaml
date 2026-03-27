@@ -237,7 +237,7 @@ operator_mappings:
   # EP 路径: npu_moe_distribute_dispatch_v2 / npu_moe_distribute_combine_v2
   # 非 EP 路径: npu_moe_init_routing_v2 / npu_moe_finalize_routing
 
-  "tensor_cast.permute_tokens.default":
+  "tensor_cast.init_routing_v2.default":
     kernel_type: MoeDistributeDispatchV2
     notes: >
       [MEDIUM] op-plugin: YAML:6217 (npu_moe_distribute_dispatch_v2) / MoeDistributeDispatchV2KernelOpApi.cpp.

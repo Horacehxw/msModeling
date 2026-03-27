@@ -36,7 +36,7 @@
 | 12 | InterleaveRope | 0.32% | `tensor_cast.apply_rope.default`（alternate） | 已配置 | DeepSeek interleave RoPE |
 | 13 | AddRmsNormBias | 0.31% | `tensor_cast.add_rms_norm.default` | 已配置 | CANN 8.5 fused norm |
 | 14 | DynamicQuant | 0.28% | `tensor_cast.dynamic_quantize_symmetric.default` | 已配置 | 动态量化 |
-| 15 | MoeGatingTopK | 0.21% | `tensor_cast.moe_gating_topk.default` | 已配置 | MoE gating + top-k routing |
+| 15 | MoeGatingTopK | 0.21% | `tensor_cast.moe_gating_top_k_softmax.default` | 已配置 | MoE gating + top-k routing |
 
 **Top-15 覆盖率**：13/15 有直接 TC op 映射（87%），2 种 TC 不模拟（TransData/Transpose，合计 1.38%）
 
@@ -81,7 +81,7 @@ DispatchFFNCombine 是 DSV3 最重要的单一 kernel（35.3%），融合了：
 
 TC 将其分解为独立 ops：
 ```
-permute_tokens → all_to_all → grouped_matmul_quant_swiglu → grouped_matmul_quant → all_to_all → unpermute_tokens
+init_routing_v2 → all_to_all → grouped_matmul_quant_swiglu → grouped_matmul_quant → all_to_all → unpermute_tokens
 ```
 
 ### 当前 op_mapping 配置
@@ -89,7 +89,7 @@ permute_tokens → all_to_all → grouped_matmul_quant_swiglu → grouped_matmul
 多个 TC ops 设置了 `alternate_kernel_types: [DispatchFFNCombine]`：
 - `tensor_cast.grouped_matmul_quant.default`
 - `tensor_cast.grouped_matmul_quant_swiglu.default`
-- `tensor_cast.permute_tokens.default`
+- `tensor_cast.init_routing_v2.default`
 - `tensor_cast.unpermute_tokens.default`
 
 ### 已知问题
@@ -100,7 +100,7 @@ permute_tokens → all_to_all → grouped_matmul_quant_swiglu → grouped_matmul
 
 1. 为 DispatchFFNCombine 单独采集 microbenchmark（`generate_microbench.py` 支持 `torch.ops._C_ascend.dispatch_ffn_combine`）
 2. 仅保留 `grouped_matmul_quant_swiglu` 的 DispatchFFNCombine alternate（它是最主要的计算部分）
-3. 其余 sub ops（permute_tokens, unpermute_tokens, grouped_matmul_quant）移除 DispatchFFNCombine alternate，改用 analytic fallback
+3. 其余 sub ops（init_routing_v2, unpermute_tokens, grouped_matmul_quant）移除 DispatchFFNCombine alternate，改用 analytic fallback
 4. 或者：为 DispatchFFNCombine 添加 composite 分解比例配置（需要 profiling 数据支撑）
 
 ---

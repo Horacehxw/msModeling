@@ -116,7 +116,7 @@ def test_fused_op_hr_groups_dfc_as_one():
         ("aten.mm.default", "MatMulV2", ((136, 5120), (5120, 768)), 45.3e-6),
     ]
     miss_details = [
-        ("tensor_cast.permute_tokens.default", "csv_not_found", []),
+        ("tensor_cast.init_routing_v2.default", "csv_not_found", []),
         ("tensor_cast.grouped_matmul_quant_swiglu.default", "csv_not_found", []),
         ("tensor_cast.unpermute_tokens.default", "csv_not_found", []),
         ("tensor_cast.all_to_all.default", "csv_not_found", []),
@@ -125,7 +125,7 @@ def test_fused_op_hr_groups_dfc_as_one():
 
     fused_groups = {
         "DispatchFFNCombine": [
-            "tensor_cast.permute_tokens",
+            "tensor_cast.init_routing_v2",
             "tensor_cast.grouped_matmul",
             "tensor_cast.unpermute_tokens",
             "tensor_cast.all_to_all",

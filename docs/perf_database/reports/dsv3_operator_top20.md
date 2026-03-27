@@ -56,13 +56,13 @@
 | 融合类型 | kernel Type | 是否存在 | 处理方式 |
 |---------|------------|---------|---------|
 | MC2（MatMul + AllReduce） | 无专用 kernel | 否 | `composite` 分解：`QuantBatchMatmulV3` + `hcom_allReduce_` |
-| MoE EP 融合 | DispatchFFNCombine | **是**（35.3%） | `composite` 分解：`permute_tokens + grouped_matmul×2 + swiglu + unpermute_tokens + all_to_all×2` |
+| MoE EP 融合 | DispatchFFNCombine | **是**（35.3%） | `composite` 分解：`init_routing_v2 + grouped_matmul×2 + swiglu + unpermute_tokens + all_to_all×2` |
 
 ### op_mapping 覆盖状态（C7 参考）
 
 | kernel Type | TC op 映射 | 状态 |
 |------------|-----------|------|
-| DispatchFFNCombine | `tensor_cast.grouped_matmul_quant_swiglu` + `permute/unpermute_tokens` | composite，已配置 |
+| DispatchFFNCombine | `tensor_cast.grouped_matmul_quant_swiglu` + `init_routing_v2/unpermute_tokens` | composite，已配置 |
 | hcom_reduceScatter_ | `tensor_cast.reduce_scatter` | 已配置 |
 | hcom_allGather_ | `tensor_cast.all_gather` | 已配置 |
 | QuantBatchMatmulV3 | `tensor_cast.static_quant_linear` | 已配置 |
@@ -76,7 +76,7 @@
 | InterleaveRope | `tensor_cast.apply_rope` | alternate，已配置 |
 | AddRmsNormBias | `tensor_cast.add_rms_norm` | 已配置（CANN 8.5） |
 | DynamicQuant | `tensor_cast.dynamic_quantize_*` | 已配置 |
-| MoeGatingTopK | `tensor_cast.moe_gating_topk` | 已配置 |
+| MoeGatingTopK | `tensor_cast.moe_gating_top_k_softmax` | 已配置 |
 | KvRmsNormRopeCache | `tensor_cast.kv_rmsnorm_rope_cache` | 已配置 |
 | Add | `aten.add.Tensor` | 已配置 |
 | RmsNorm | `tensor_cast.rms_norm` | 已配置 |

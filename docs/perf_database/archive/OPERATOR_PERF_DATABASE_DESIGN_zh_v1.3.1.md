@@ -891,7 +891,7 @@ def discover_operators(profiling_output: Path, op_mapping_yaml: Path) -> Dict:
 大部分 TensorCast op → Profiling kernel Type 映射 shape 一致（如 MatMul、RmsNorm、SwiGlu、通信算子）。需要特殊处理的有：
 - **FusedAttention**：TC 用 `(num_tokens, hidden_size)`，Profiling 用 `(batch, num_heads, q_len, head_dim)`，通过 `attention_special` 模式处理
 - **MLA**：1:N 映射（一个 TC op 对应 TransposeBatchMatMul + FIA），当前通过 `composite: true` + `_lookup_composite()` 分解查询覆盖（v1.3.1），长期需 decomposition pass
-- **permute_tokens**：TC 只含本地 permute，Profiling 的 MoeDistributeDispatchV2 含通信，通信由 all_to_all 分开计时
+- **init_routing_v2**：TC 只含本地 permute，Profiling 的 MoeDistributeDispatchV2 含通信，通信由 all_to_all 分开计时
 
 > 完整映射表和已发现的 bug 见附录 H。
 
@@ -1034,7 +1034,7 @@ Phase 2 实施通信算子 microbenchmark 数据库：
 | npu_fused_infer_attention_score | 否（pybind） | 已有 `tensor_cast.attention` 对应 |
 | npu_grouped_matmul | 否（pybind） | 已有 `tensor_cast.grouped_matmul` 对应 |
 | npu_mm_all_reduce_base (MC2) | 否（pybind） | 未覆盖，需新增 TensorCast 融合 pass |
-| npu_moe_distribute_dispatch/combine | 否（pybind） | 已有 `tensor_cast.permute_tokens/unpermute_tokens` |
+| npu_moe_distribute_dispatch/combine | 否（pybind） | 已有 `tensor_cast.init_routing_v2/unpermute_tokens` |
 | npu_dequant_swiglu_quant | 否（pybind） | develop 分支已有融合 pass |
 | npu_kv_rmsnorm_rope_cache | 否（pybind） | 未覆盖 |
 | npu_dynamic_quant | 否（pybind） | 已有 `tensor_cast.dynamic_quantize_*` |
@@ -1122,7 +1122,7 @@ op-plugin 库（https://github.com/Ascend/op-plugin）的 `op_plugin/config/op_p
 | tensor_cast.attention | FusedInferAttentionScore | 需转换 | TC 用 (num_tokens, hidden_size)，Profiling 用 (batch, num_heads, q_len, head_dim)。通过 `attention_special` 查询模式处理 |
 | tensor_cast.multihead_latent_attention | 1:N 映射 | MISMATCH | 一个 TC op 对应多个 kernel (TransposeBatchMatMul + FIA)。Q1 通过 `composite: true` + `_lookup_composite()` 分解查询子内核并求和；长期需 MLA decomposition pass |
 | tensor_cast.mlapo | 无直接对应 | N/A | Qwen3 对应 split_qkv_rmsnorm_rope_kernel，DSV3 对应多个分立 kernel |
-| tensor_cast.permute_tokens | MoeDistributeDispatchV2 | 部分 | TC 只含本地 permute，Profiling 含通信；TC 的通信由 all_to_all 分开计时 |
+| tensor_cast.init_routing_v2 | MoeDistributeDispatchV2 | 部分 | TC 只含本地 permute，Profiling 含通信；TC 的通信由 all_to_all 分开计时 |
 | tensor_cast.add_rms_norm | AddRmsNorm / InplaceAddRmsNorm | ✓ | |
 | tensor_cast.swiglu | SwiGlu | ✓ | DequantSwigluQuant 是更大的融合，需单独 pass |
 | 所有 comm ops | hcom_allReduce_ 等 | ✓ | message_bytes + num_devices 对齐 |

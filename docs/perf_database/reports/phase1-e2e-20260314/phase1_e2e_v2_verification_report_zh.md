@@ -132,7 +132,7 @@ DSv3 的 3 个 quantize MISS 经 debug trace 逐 shape 验证，根因各不相�
 | 变更 | 说明 |
 |------|------|
 | MLA/MLAPO 解除硬编码拒绝 | composite lookup 恢复 |
-| moe_gating_topk op | 匹配 NPU MoeGatingTopK kernel |
+| moe_gating_top_k_softmax op | 匹配 NPU MoeGatingTopK kernel |
 | tc_input_count 配置 | 7 ops (quantize, embedding 等) |
 | MISS reason 修正 | tc_input_count 双侧截断 |
 | TC_ENABLE_INTERPOLATION 开关 | 默认 OFF |
@@ -321,7 +321,7 @@ DSv3 MISS 数量显著高于 Qwen3，主要因 MoE routing 辅助 ops 和 DFC �
 
 #### C.3.5 DFC 融合组 (5 个 MISS)
 
-`permute_tokens`, `grouped_matmul`, `cat`(256×expert), `unpermute_tokens` — 均为 `fused_kernel_gap`。NPU 将整个 MoE dispatch+compute+combine 融合为 DispatchFFNCombine kernel，TC 逐 op 模拟。
+`init_routing_v2`, `grouped_matmul`, `cat`(256×expert), `unpermute_tokens` — 均为 `fused_kernel_gap`。NPU 将整个 MoE dispatch+compute+combine 融合为 DispatchFFNCombine kernel，TC 逐 op 模拟。
 
 #### C.3.6 Post-MoE & Embedding
 

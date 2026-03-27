@@ -33,7 +33,7 @@ _MISS_REASON_LABELS = {
 # Default fused op groups — maps NPU fusion name to constituent TC op prefixes
 DEFAULT_FUSED_GROUPS = {
     "DispatchFFNCombine": [
-        "tensor_cast.permute_tokens",
+        "tensor_cast.init_routing_v2",
         "tensor_cast.grouped_matmul",  # prefix covers all variants
         "tensor_cast.unpermute_tokens",
         "tensor_cast.all_to_all",

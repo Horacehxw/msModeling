@@ -16,9 +16,9 @@
 
 | 类别 | TC 算子 | NPU Kernel | 查询路径 | 任务 |
 |------|---------|-----------|---------|------|
-| MoE 路由 | `permute_tokens` | `MoeDistributeDispatchV2` | compute（标准 shape 匹配） | G1 |
+| MoE 路由 | `init_routing_v2` | `MoeDistributeDispatchV2` | compute（标准 shape 匹配） | G1 |
 | MoE 路由 | `unpermute_tokens` | `MoeDistributeCombineV2` | compute（标准 shape 匹配） | G1 |
-| MoE 路由 | `moe_gating_topk` | `MoeGatingTopK` | compute（标准 shape 匹配） | G1 |
+| MoE 路由 | `moe_gating_top_k_softmax` | `MoeGatingTopK` | compute（标准 shape 匹配） | G1 |
 | MLA attention | `multihead_latent_attention` | TransposeBatchMatMul + FusedInferAttentionScore | composite（B2 占位，G2 完整实现） | G2 |
 | MLA attention | `multihead_latent_attention_quant` | TransposeBatchMatMul + FusedInferAttentionScore | composite（B2 占位，G2 完整实现） | G2 |
 | MLA prolog | `mlapo` | MatMulV2 + KvRmsNormRopeCache | composite（G2） | G2 |
@@ -33,7 +33,7 @@
 **文件**：`tensor_cast/ops/fused_moe.py`
 
 ```python
-@register_tensor_cast_op("permute_tokens")
+@register_tensor_cast_op("init_routing_v2")
 def _(
     x: torch.Tensor,           # args[0]: (num_tokens, hidden_size)
     topk_indices: torch.Tensor, # args[1]: (num_tokens, top_k)
@@ -48,7 +48,7 @@ def _(
     # 返回: (num_tokens, top_k, hidden_size)
 ```
 
-> `moe_gating_topk` 当前未在 develop 分支注册为 TC 算子（TC 用 `aten.topk` 实现路由）。
+> `moe_gating_top_k_softmax` 当前未在 develop 分支注册为 TC 算子（TC 用 `aten.topk` 实现路由）。
 > op_mapping.yaml 中有 `profiling.MoeGatingTopK` 占位条目，G1 暂不实现其查询逻辑。
 
 ### 2.2 CSV 格式
@@ -114,7 +114,7 @@ MoE CSV 的 Input Shapes 包含 TC 不传递的 NPU 内部参数（空字段 `;;
 ### 2.4 op_mapping.yaml 配置（建议）
 
 ```yaml
-"tensor_cast.permute_tokens.default":
+"tensor_cast.init_routing_v2.default":
   kernel_type: MoeDistributeDispatchV2
   tc_input_count: 2   # TC 只传 x + topk_indices，CSV 有更多 NPU 内部参数
 
@@ -314,7 +314,7 @@ NPU 上分解为：
 |------|------|------|--------|
 | G1：`tc_input_count` 机制实现 | 待开始 | 3.18 | ZH |
 | G1：MoE 算子查询逻辑 + 单元测试 | 待开始 | 3.18 | ZH |
-| G1：`moe_gating_topk` TC 算子注册 | 待确认是否 G1 范围 | 3.18 | ZH/TCX |
+| G1：`moe_gating_top_k_softmax` TC 算子注册 | 待确认是否 G1 范围 | 3.18 | ZH/TCX |
 | G2：`multihead_latent_attention` prefill/decode 分解 | 阻塞（等 CSV） | 3.20 | ZH |
 | G2：`mlapo` / `mlapo_quant` 分解 | 阻塞（等 CSV） | 3.20 | ZH |
 | FIA microbenchmark CSV 采集 | 待交付 | 3.18 | TCX |
@@ -328,4 +328,4 @@ NPU 上分解为：
 
 2. **MLA prefill kv_c_normed shape**：prefill 路径的 MatMulV2 第一个输入 kv_c_normed 不在 `multihead_latent_attention` 的 args 中，需要从 kv_cache shape 反推 kv_lora_rank。确认 kv_cache shape 约定：`(total_blocks, block_size, kv_lora_rank + qk_rope_head_dim)`，kv_lora_rank 可从 `kv_cache.shape[-1] - qk_rope_head_dim` 计算，但 qk_rope_head_dim 是 scalar 参数，不在 args 中。**需要确认 prefill 路径的 shape 提取方式。**
 
-3. **moe_gating_topk 是否纳入 G1**：TC 当前用 `aten.topk` 实现，NPU 有专用 `MoeGatingTopK` kernel。G1 是否需要新增 TC 算子注册，还是仅做 op_mapping 占位？
+3. **moe_gating_top_k_softmax 是否纳入 G1**：TC 当前用 `aten.topk` 实现，NPU 有专用 `MoeGatingTopK` kernel。G1 是否需要新增 TC 算子注册，还是仅做 op_mapping 占位？

@@ -48,7 +48,7 @@ class DispatchFFNCombinePass(TensorCastGraphModulePass):
         graph = gm.graph
         modified = False
 
-        # Pre-scan: find all permute_tokens (start) and unpermute_tokens (end) nodes
+        # Pre-scan: find all init_routing_v2 (start) and unpermute_tokens (end) nodes
         all_permute_starts = []
         all_unpermute_ends = []
 
@@ -58,7 +58,7 @@ class DispatchFFNCombinePass(TensorCastGraphModulePass):
             if self._is_unpermute_token(node):
                 all_unpermute_ends.append(node)
 
-        # Traverse from each permute_tokens to find corresponding unpermute_tokens
+        # Traverse from each init_routing_v2 to find corresponding unpermute_tokens
         processed_nodes = set()
         max_traverse_depth = 600
 
@@ -192,7 +192,7 @@ class DispatchFFNCombinePass(TensorCastGraphModulePass):
 
         # Validate required operator counts
         if not has_permute:
-            return False, "missing_permute_tokens"
+            return False, "missing_init_routing_v2"
         if not has_unpermute:
             return False, "missing_unpermute_tokens"
         if not has_ffn_compute:

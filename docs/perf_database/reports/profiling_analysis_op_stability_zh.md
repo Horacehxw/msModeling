@@ -141,7 +141,7 @@
 | **昇腾微架构** | AIV core 执行通信数据搬运时受 HCCL stream 竞争影响 | 中等 | mac=17us 恒定, AIV=8261us 波动 |
 
 **仿真建模建议:**
-- **不可直接查表**. 必须分解为 sub_kernels: `permute_tokens + GroupedMatmul×2 + GroupedMatmulSwigluQuant + unpermute_tokens + all_to_all×2`
+- **不可直接查表**. 必须分解为 sub_kernels: `init_routing_v2 + GroupedMatmul×2 + GroupedMatmulSwigluQuant + unpermute_tokens + all_to_all×2`
 - 若分解 profiling 数据不可得, 可对 DispatchFFNCombine 取 **P25** (≈纯计算下限), 通信部分用带宽模型叠加
 - 长期: 用不带 FUSED_MC2 的 eager profiling 获取分解后各子 kernel 的独立数据
 

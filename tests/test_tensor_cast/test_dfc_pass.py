@@ -57,7 +57,7 @@ class DfcPassTestCase(unittest.TestCase):
         self.assertIn(
             "tensor_cast.dispatch_ffn_combine.default", result["table_result"]
         )
-        self.assertNotIn("tensor_cast.permute_tokens.default", result["table_result"])
+        self.assertNotIn("tensor_cast.init_routing_v2.default", result["table_result"])
         self.assertNotIn("tensor_cast.unpermute_tokens.default", result["table_result"])
 
     def test_dfc_output_shape_matches_baseline(self):
@@ -137,5 +137,5 @@ class DfcPassTestCase(unittest.TestCase):
         self.assertIn(
             "tensor_cast.dispatch_ffn_combine.default", result["table_result"]
         )
-        self.assertNotIn("tensor_cast.permute_tokens.default", result["table_result"])
+        self.assertNotIn("tensor_cast.init_routing_v2.default", result["table_result"])
         self.assertNotIn("tensor_cast.unpermute_tokens.default", result["table_result"])
