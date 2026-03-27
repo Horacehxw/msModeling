@@ -228,8 +228,8 @@ class TestLookupAttentionEnriched:
         assert ds.lookup(op) is None
 
 
-class TestLookupAttentionByParams:
-    """Tests for _lookup_attention_by_params() (composite path)."""
+class TestQueryByAttnParams:
+    """Tests for _query_by_attn_params() shared attention query core."""
 
     @pytest.fixture
     def ds(self, tmp_path):
@@ -237,20 +237,54 @@ class TestLookupAttentionByParams:
         shutil.copytree(_FIXTURE_DIR, dst)
         return ProfilingDataSource(str(dst), _make_mock_device_profile())
 
-    def test_p1_exact_match(self, ds):
+    def test_exact_match(self, ds):
+        """Primary kernel_type matches → returns (latency, kernel_type)."""
         params = {"q_shape_3d": (4, 16, 512), "avg_seq_len": 2048}
-        lat = ds._lookup_attention_by_params(
-            "FusedInferAttentionScore", params, "DT_BF16"
+        result = ds._query_by_attn_params(
+            ["FusedInferAttentionScore"], params, "DT_BF16"
         )
-        assert lat is not None
+        assert result is not None
+        lat, kernel = result
         assert abs(lat - 28.0) < 1.0
+        assert kernel == "FusedInferAttentionScore"
 
-    def test_p2_miss(self, ds):
+    def test_miss(self, ds):
+        """Shape not in CSV → None."""
         params = {"q_shape_3d": (99, 16, 512), "avg_seq_len": 2048}
-        lat = ds._lookup_attention_by_params(
-            "FusedInferAttentionScore", params, "DT_BF16"
+        result = ds._query_by_attn_params(
+            ["FusedInferAttentionScore"], params, "DT_BF16"
         )
-        assert lat is None
+        assert result is None
+
+    def test_alternate_kernel_fallback(self, ds):
+        """Primary misses, alternate kernel hits."""
+        params = {"q_shape_3d": (4, 16, 512), "avg_seq_len": 2048}
+        # "NoSuchKernel" will miss, "FusedInferAttentionScore" should hit
+        result = ds._query_by_attn_params(
+            ["NoSuchKernel", "FusedInferAttentionScore"], params, "DT_BF16"
+        )
+        assert result is not None
+        lat, kernel = result
+        assert abs(lat - 28.0) < 1.0
+        assert kernel == "FusedInferAttentionScore"
+
+    def test_missing_params(self, ds):
+        """Missing q_shape_3d → None."""
+        result = ds._query_by_attn_params(
+            ["FusedInferAttentionScore"], {"avg_seq_len": 2048}, "DT_BF16"
+        )
+        assert result is None
+
+    def test_block_padding_tolerance(self, ds):
+        """TC T=512, CSV T=496 → block-padding match."""
+        params = {"q_shape_3d": (512, 4, 128), "avg_seq_len": 4096}
+        result = ds._query_by_attn_params(
+            ["FusedInferAttentionScore"], params, "DT_BF16"
+        )
+        assert result is not None
+        lat, kernel = result
+        assert abs(lat - 64.2) < 1.0
+        assert kernel == "FusedInferAttentionScore"
 
 
 # ---- Helper: build enriched CSV with Runtime columns in tmp_path ----
@@ -561,3 +595,338 @@ class TestLatencyColPriority:
 
         df = pd.DataFrame({"other": [1.0]})
         assert ProfilingDataSource._latency_col(df) == "Duration(us)"
+
+
+# ---- input_layout tie-breaker tests ----
+
+_ENRICHED_HEADER_WITH_LAYOUT = (
+    "OP State,Accelerator Core,Input Shapes,Input Data Types,Input Formats,"
+    "Output Shapes,Output Data Types,Output Formats,Average Duration(us),"
+    "Median Duration(us),Std Duration(us),Average aicore_time(us),"
+    "Average aic_total_cycles,Average aic_mac_time(us),Average aic_mac_ratio,"
+    "Average aic_scalar_time(us),Average aic_scalar_ratio,"
+    "Average aic_mte1_time(us),Average aic_mte1_ratio,"
+    "Average aic_mte2_time(us),Average aic_mte2_ratio,"
+    "Average aic_fixpipe_time(us),Average aic_fixpipe_ratio,"
+    "Average aic_icache_miss_rate,Average aiv_time(us),"
+    "Average aiv_total_cycles,Average aiv_vec_time(us),"
+    "Average aiv_vec_ratio,Average aiv_scalar_time(us),"
+    "Average aiv_scalar_ratio,Average aiv_mte2_time(us),"
+    "Average aiv_mte2_ratio,Average aiv_mte3_time(us),"
+    "Average aiv_mte3_ratio,Average aiv_icache_miss_rate,"
+    "Average cube_utilization(%),"
+    "avg_seq_len,Runtime sparse_mode,Runtime num_key_value_heads,"
+    "Runtime input_layout"
+)
+
+
+def _fia_row_with_layout(
+    q_shape_str, dtype_str, out_shape_str, duration, avg_seq, sparse, kv_heads, layout
+):
+    """Build one enriched FIA CSV row with input_layout column."""
+    return (
+        f'dynamic,MIX_AIC,"""{q_shape_str}""",'
+        f"{dtype_str},"
+        f"ND;ND;ND,"
+        f'"""{out_shape_str}""",DT_BF16;FLOAT,ND;ND,'
+        f"{duration},{_STATS},"
+        f"{avg_seq},{sparse},{kv_heads},{layout}"
+    )
+
+
+def _build_enriched_db_with_layout(tmp_path, rows, subdir="enriched_layout_db"):
+    """Create a tmp db dir with enriched FIA CSV (with layout col) + minimal op_mapping."""
+    db = tmp_path / subdir
+    db.mkdir()
+    csv_lines = [_ENRICHED_HEADER_WITH_LAYOUT] + rows
+    (db / "FusedInferAttentionScore.csv").write_text(
+        "\n".join(csv_lines), encoding="utf-8"
+    )
+    (db / "op_mapping.yaml").write_text(
+        "operator_mappings:\n"
+        '  "tensor_cast.attention.default":\n'
+        "    kernel_type: FusedInferAttentionScore\n"
+        "    query_mode: attention_special\n",
+        encoding="utf-8",
+    )
+    return db
+
+
+class TestInputLayoutTieBreaker:
+    """Tests for input_layout tie-breaker in _query_by_attn_params."""
+
+    @pytest.fixture
+    def ds(self, tmp_path):
+        rows = [
+            # TND (prefill), kv_heads=4, sparse=3, avg_seq=4096, 70us
+            _fia_row_with_layout(
+                "128,4,128;12307,128,128;12307,128,128;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;",
+                "DT_BF16;DT_BF16;DT_BF16" + ";DT_UNDEFINED" * 28,
+                "128,4,128;",
+                70.0,
+                4096,
+                3,
+                4,
+                "TND",
+            ),
+            # BNSD_NBSD (decode), kv_heads=4, sparse=0, avg_seq=4096, 30us
+            _fia_row_with_layout(
+                "128,4,128;12307,128,128;12307,128,128;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;",
+                "DT_BF16;DT_BF16;DT_BF16" + ";DT_UNDEFINED" * 28,
+                "128,4,128;",
+                30.0,
+                4096,
+                0,
+                4,
+                "BNSD_NBSD",
+            ),
+        ]
+        db = _build_enriched_db_with_layout(tmp_path, rows)
+        return ProfilingDataSource(str(db), _make_mock_device_profile())
+
+    def test_layout_tnd_selects_prefill(self, ds):
+        """input_layout=TND matches TND row (70us), not BNSD_NBSD (30us)."""
+        params = {
+            "q_shape_3d": (128, 4, 128),
+            "avg_seq_len": 4096,
+            "sparse_mode": 3,
+            "num_kv_heads": 4,
+            "input_layout": "TND",
+        }
+        result = ds._query_by_attn_params(
+            ["FusedInferAttentionScore"], params, "DT_BF16"
+        )
+        assert result is not None
+        lat, kernel = result
+        assert abs(lat - 70.0) < 1.0
+
+    def test_layout_bnsd_selects_decode(self, ds):
+        """input_layout=BNSD_NBSD matches decode row (30us)."""
+        params = {
+            "q_shape_3d": (128, 4, 128),
+            "avg_seq_len": 4096,
+            "sparse_mode": 0,
+            "num_kv_heads": 4,
+            "input_layout": "BNSD_NBSD",
+        }
+        result = ds._query_by_attn_params(
+            ["FusedInferAttentionScore"], params, "DT_BF16"
+        )
+        assert result is not None
+        lat, kernel = result
+        assert abs(lat - 30.0) < 1.0
+
+    def test_layout_none_still_matches(self, ds):
+        """input_layout=None → layout filter skipped, first match wins."""
+        params = {
+            "q_shape_3d": (128, 4, 128),
+            "avg_seq_len": 4096,
+            "sparse_mode": 3,
+            "num_kv_heads": 4,
+            "input_layout": None,
+        }
+        result = ds._query_by_attn_params(
+            ["FusedInferAttentionScore"], params, "DT_BF16"
+        )
+        assert result is not None
+
+    def test_layout_mismatch_miss(self, tmp_path):
+        """CSV only has TND, query with BNSD_NBSD + sparse=3 → MISS."""
+        rows = [
+            _fia_row_with_layout(
+                "128,4,128;12307,128,128;12307,128,128;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;",
+                "DT_BF16;DT_BF16;DT_BF16" + ";DT_UNDEFINED" * 28,
+                "128,4,128;",
+                70.0,
+                4096,
+                3,
+                4,
+                "TND",
+            ),
+        ]
+        db = _build_enriched_db_with_layout(tmp_path, rows, "layout_miss_db")
+        ds = ProfilingDataSource(str(db), _make_mock_device_profile())
+        params = {
+            "q_shape_3d": (128, 4, 128),
+            "avg_seq_len": 4096,
+            "sparse_mode": 3,
+            "num_kv_heads": 4,
+            "input_layout": "BNSD_NBSD",
+        }
+        result = ds._query_by_attn_params(
+            ["FusedInferAttentionScore"], params, "DT_BF16"
+        )
+        assert result is None
+
+
+class TestInputLayoutFromLookupAttention:
+    """Tests that _lookup_attention derives input_layout from query ndim."""
+
+    @pytest.fixture
+    def ds_with_layout(self, tmp_path):
+        # Two rows same shape but different layout
+        rows = [
+            # TND (prefill), kv_heads=8, sparse=3, avg_seq=4096, 70us
+            _fia_row_with_layout(
+                "128,4,128;12307,128,128;12307,128,128;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;",
+                "DT_BF16;DT_BF16;DT_BF16" + ";DT_UNDEFINED" * 28,
+                "128,4,128;",
+                70.0,
+                4096,
+                3,
+                8,
+                "TND",
+            ),
+            # BNSD_NBSD (decode), kv_heads=8, sparse=0, avg_seq=4096, 30us
+            _fia_row_with_layout(
+                "128,4,128;12307,128,128;12307,128,128;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;",
+                "DT_BF16;DT_BF16;DT_BF16" + ";DT_UNDEFINED" * 28,
+                "128,4,128;",
+                30.0,
+                4096,
+                0,
+                8,
+                "BNSD_NBSD",
+            ),
+        ]
+        db = _build_enriched_db_with_layout(tmp_path, rows, "layout_e2e_db")
+        return ProfilingDataSource(str(db), _make_mock_device_profile())
+
+    def test_3d_query_derives_tnd(self, ds_with_layout):
+        """3D query shape → input_layout=TND → matches TND row."""
+        op = _make_attention_op_with_query_lens(
+            (128, 4, 128),
+            (12307, 8, 128),
+            [4096] * 128,
+            [128] * 1,  # prefill → sparse_mode=3
+            torch.bfloat16,
+        )
+        result = ds_with_layout.lookup(op)
+        assert result is not None
+        assert abs(result.latency_us - 70.0) < 1.0
+
+    def test_4d_query_derives_bnsd(self, ds_with_layout):
+        """4D query shape → input_layout=BNSD_NBSD → matches BNSD row."""
+        # 4D query: (B, N, S, D) → normalize to 3D (B, N, D) since S=1
+        op = _make_attention_op_with_query_lens(
+            (128, 4, 1, 128),
+            (12307, 8, 128),
+            [4096] * 128,
+            [1] * 128,  # decode → sparse_mode=0
+            torch.bfloat16,
+        )
+        result = ds_with_layout.lookup(op)
+        assert result is not None
+        assert abs(result.latency_us - 30.0) < 1.0
+
+
+# ---- MISS reason granularity tests ----
+
+
+class TestAttentionMissReason:
+    """Tests for fine-grained miss reasons in attention lookup."""
+
+    def test_csv_not_found_reason(self, tmp_path):
+        """No CSV file for kernel → csv_not_found."""
+        db = tmp_path / "empty_db"
+        db.mkdir()
+        (db / "op_mapping.yaml").write_text(
+            "operator_mappings:\n"
+            '  "tensor_cast.attention.default":\n'
+            "    kernel_type: NonExistentKernel\n"
+            "    query_mode: attention_special\n",
+            encoding="utf-8",
+        )
+        ds = ProfilingDataSource(str(db), _make_mock_device_profile())
+        op = _make_attention_op_with_query_lens(
+            (128, 4, 128),
+            (12307, 8, 128),
+            [4096] * 128,
+            [1] * 128,
+            torch.bfloat16,
+        )
+        result = ds.lookup(op)
+        assert result is None
+        assert ds.last_miss_reason == "csv_not_found"
+
+    def test_shape_mismatch_reason(self, tmp_path):
+        """CSV exists but no matching row → shape_mismatch."""
+        rows = [
+            _fia_row(
+                "128,4,128;12307,128,128;12307,128,128;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;",
+                "DT_BF16;DT_BF16;DT_BF16" + ";DT_UNDEFINED" * 28,
+                "128,4,128;",
+                58.2,
+                4096,
+                0,
+                8,
+            ),
+        ]
+        db = _build_enriched_db(tmp_path, rows)
+        ds = ProfilingDataSource(str(db), _make_mock_device_profile())
+        # Query with N=99 — won't match
+        op = _make_attention_op_with_query_lens(
+            (128, 99, 128),
+            (12307, 8, 128),
+            [4096] * 128,
+            [1] * 128,
+            torch.bfloat16,
+        )
+        result = ds.lookup(op)
+        assert result is None
+        assert ds.last_miss_reason == "shape_mismatch"
+
+    def test_insufficient_args_reason(self, tmp_path):
+        """Too few args → insufficient_args."""
+        rows = [
+            _fia_row(
+                "128,4,128;12307,128,128;12307,128,128;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;",
+                "DT_BF16;DT_BF16;DT_BF16" + ";DT_UNDEFINED" * 28,
+                "128,4,128;",
+                58.2,
+                4096,
+                0,
+                8,
+            ),
+        ]
+        db = _build_enriched_db(tmp_path, rows)
+        ds = ProfilingDataSource(str(db), _make_mock_device_profile())
+        op = MagicMock()
+        op.func.__str__ = lambda self: "torch.ops.tensor_cast.attention.default"
+        op.func.__repr__ = lambda self: "torch.ops.tensor_cast.attention.default"
+        op.args = (torch.zeros(128, 4, 128),)  # only 1 arg
+        op.kwargs = {}
+        op.out = None
+        result = ds.lookup(op)
+        assert result is None
+        assert ds.last_miss_reason == "insufficient_args"
+
+    def test_missing_seq_lens_reason(self, tmp_path):
+        """No seq_lens tensor → missing_seq_lens."""
+        rows = [
+            _fia_row(
+                "128,4,128;12307,128,128;12307,128,128;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;",
+                "DT_BF16;DT_BF16;DT_BF16" + ";DT_UNDEFINED" * 28,
+                "128,4,128;",
+                58.2,
+                4096,
+                0,
+                8,
+            ),
+        ]
+        db = _build_enriched_db(tmp_path, rows)
+        ds = ProfilingDataSource(str(db), _make_mock_device_profile())
+        query = torch.zeros(128, 4, 128, dtype=torch.bfloat16)
+        key = torch.zeros(12307, 8, 128, dtype=torch.bfloat16)
+        value = torch.zeros(12307, 8, 128, dtype=torch.bfloat16)
+        # seq_lens is None (args[6] = None)
+        args = (query, key, value, None, None, None, None, None)
+        op = MagicMock()
+        op.func.__str__ = lambda self: "torch.ops.tensor_cast.attention.default"
+        op.func.__repr__ = lambda self: "torch.ops.tensor_cast.attention.default"
+        op.args = args
+        op.kwargs = {}
+        op.out = None
+        result = ds.lookup(op)
+        assert result is None
+        assert ds.last_miss_reason == "missing_seq_lens"

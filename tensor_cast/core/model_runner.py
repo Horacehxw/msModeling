@@ -75,6 +75,7 @@ class ModelRunner:
                 data_source = ProfilingDataSource(
                     profiling_database,
                     self.device_profile,
+                    parallel_config=user_input.get_parallel_config(),
                 )
                 self.perf_models.append(
                     EmpiricalPerformanceModel(

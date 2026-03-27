@@ -70,9 +70,14 @@ class InterpolatingDataSource(DataSourcePerformanceModel):
 
     def lookup(self, op_invoke_info: "OpInvokeInfo") -> Optional[QueryResult]:
         result = self.base.lookup(op_invoke_info)
-        if result is not None:
+        if result is not None and result.source != QuerySource.PARTIAL:
             return result
-        return self._interpolate(op_invoke_info)
+        # PARTIAL or None — try interpolation
+        interp_result = self._interpolate(op_invoke_info)
+        if interp_result is not None:
+            return interp_result
+        # Fall back to PARTIAL (if available) or None
+        return result
 
     def _interpolate(self, op_invoke_info: "OpInvokeInfo") -> Optional[QueryResult]:
         """Determine which query path to use and dispatch to the right interpolator."""
@@ -348,14 +353,26 @@ class InterpolatingDataSource(DataSourcePerformanceModel):
             lat = None
 
             # First try exact match via base ProfilingDataSource
+            kernel_types = [spec.kernel_type] + (spec.alternate_kernel_types or [])
             if spec.query_mode == "attention" and spec.attention_params:
-                lat = self.base._lookup_attention_by_params(
-                    spec.kernel_type, spec.attention_params, spec.dtype
+                result_exact = self.base._query_by_attn_params(
+                    kernel_types, spec.attention_params, spec.dtype
                 )
+                lat = result_exact[0] if result_exact else None
             else:
-                lat = self.base._lookup_compute_by_shapes(
-                    spec.kernel_type, spec.input_shapes, spec.dtype
-                )
+                torch_dtype = None
+                for k, v in DTYPE_MAP.items():
+                    if v == spec.dtype:
+                        torch_dtype = k
+                        break
+                if torch_dtype is not None:
+                    tc_inputs = [(shape, torch_dtype) for shape in spec.input_shapes]
+                    result_exact = self.base._query_by_shapes(
+                        kernel_types, tc_inputs, spec.tc_input_count
+                    )
+                    lat = result_exact[0] if result_exact else None
+                else:
+                    lat = None
 
             # If exact miss, try interpolation
             if lat is None:
@@ -385,7 +402,7 @@ class InterpolatingDataSource(DataSourcePerformanceModel):
             confidence=0.5,
             source=QuerySource.INTERPOLATED,
             details={
-                "kernel_type": hit_kernels,
+                "kernel_type": ",".join(hit_kernels),
                 "composite": True,
                 "method": "decomposed_interpolation",
             },
