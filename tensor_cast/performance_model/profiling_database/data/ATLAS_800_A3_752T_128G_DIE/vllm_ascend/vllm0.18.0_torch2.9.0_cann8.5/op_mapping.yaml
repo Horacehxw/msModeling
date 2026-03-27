@@ -47,7 +47,7 @@ device: ATLAS_800_A3_752T_128G_DIE
 cann_version: "8.5"
 pytorch_version: "2.9.0"
 op_plugin_version: "7.3.0"
-collection_date: "2026-03-25"
+collection_date: "2026-03-27"
 
 communication_data_ref: "../../hccl/v8.5/"
 communication_fallback: analytic
@@ -116,8 +116,8 @@ operator_mappings:
   "aten.cat.default":
     zero_cost: true
     notes: >
-      [HIGH] ConcatD never appears in CANN 8.5 vLLM profiling.
-      NPU concat is typically zero-copy view when tensors are contiguous.
+      [HIGH] NPU concat is typically zero-copy view when tensors are contiguous.
+      ConcatD appears in 0326 profiling for non-contiguous cases but with negligible latency.
       MoE shared expert path concat is negligible.
 
   "tensor_cast.cat.default":
@@ -981,6 +981,49 @@ operator_mappings:
       MoE routing scale operation (routed_scaling_factor). DSv3 only.
       0325 profiling: muls_add_kernel(174x), muls_add_kernel_1(1682x) — different BLOCK_SIZE configs.
       Normalized to muls_add_kernel by parse_kernel_details.py.
+
+  # ===== 0325/0326 profiling 新增覆盖 =====
+
+  "profiling.AttentionUpdate":
+    kernel_type: AttentionUpdate
+    notes: >
+      [HIGH] aclnnAttentionUpdate — log-sum-exp attention output merger for MLA chunked-context prefill.
+      torch_npu.npu_attention_update() merges partial attention outputs from SP chunks.
+      DSv3 PF 183x (61 layers × 3 fwd), avg 714us. Independent aclnn kernel, NOT FIA internal.
+      Input pattern: (N; N; N,128; N,128) where N=num_tokens*num_heads, 128=v_head_dim.
+      Future: may be added to MLA composite sub_kernels (prefill branch) when
+      chunked-context loop modeling is implemented.
+
+  "profiling.PagedCacheLoadNdKernel":
+    kernel_type: PagedCacheLoadNdKernel
+    notes: >
+      [MEDIUM] ATB paged KV cache load for MLA chunked-context prefill.
+      torch_npu.atb.npu_paged_cache_load / npu_gather_pa_kv_cache.
+      DSv3 PF 183x, avg 16-20us. Low priority for MLA composite.
+      Shape depends on block table layout (block_count, block_size, head_dim).
+
+  "profiling.Pack":
+    kernel_type: Pack
+    zero_cost: true
+    notes: >
+      [LOW] CANN internal tensor packing kernel. DSv3 0326 profiling.
+      Appears in aclgraph compiled execution. TC does not model.
+
+  "profiling.ConcatD":
+    kernel_type: ConcatD
+    zero_cost: true
+    notes: >
+      [LOW] CANN concat kernel (aclnnCat → ConcatD). Appears in 0326 profiling for
+      non-contiguous tensor concatenation. Low latency, TC does not model separately.
+
+  "profiling.RealDiv":
+    kernel_type: RealDiv
+    zero_cost: true
+    notes: >
+      [LOW] op-plugin: DivKernelNpuOpApi.cpp → aclnnDiv → RealDiv.
+      TC aten.div.Tensor marked zero_cost (MoE softmax normalization, <0.002ms).
+      Profiling: Qwen3 RealDiv(6-382x), DSv3 RealDiv(4-130x). Kept as placeholder
+      for completeness; latency captured by MoeGatingTopK in TC model.
 
 
 # ============================================================================
