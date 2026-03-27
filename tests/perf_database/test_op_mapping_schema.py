@@ -1,15 +1,15 @@
 """Schema validation for all op_mapping.yaml files.
 
 Validates structural correctness of every entry across all data versions:
-  - Dispatch路径完整性: 每条映射必须能被 ProfilingDataSource.lookup() 正确分派
-  - sub_kernels 类型: composite 映射的 sub_kernels 必须是列表
-  - CSV 存在性: 引用的 kernel_type / sub_kernel 必须有对应 CSV 文件
-  - 互斥字段: composite 和 kernel_type 不应同时出现在非预期组合中
+  - Dispatch path completeness: every mapping must be dispatchable by ProfilingDataSource.lookup()
+  - sub_kernels type: composite mappings must have sub_kernels as a list
+  - CSV existence: referenced kernel_type / sub_kernel must have a corresponding CSV file
+  - Mutually exclusive fields: composite and kernel_type must not appear in unexpected combinations
 
-这些测试能拦住的典型错误:
-  - 删除 composite:true 但仍用 sub_kernels (导致 _lookup_compute KeyError)
-  - sub_kernels 写成字符串而非列表 (导致逐字符迭代)
-  - 引用不存在的 CSV 文件 (导致静默 miss)
+Typical errors caught by these tests:
+  - Removing composite:true but keeping sub_kernels (causes _lookup_compute KeyError)
+  - sub_kernels written as a string instead of a list (causes character-by-character iteration)
+  - Referencing a non-existent CSV file (causes silent miss)
 """
 
 from pathlib import Path
