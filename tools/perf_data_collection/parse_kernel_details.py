@@ -26,6 +26,11 @@ OUTPUT_FORMATS = "Output Formats"
 TYPE_COL = "Type"
 OP_STATE = "OP State"
 ACCELERATOR_CORE = "Accelerator Core"
+EP_SIZE_COL = "EP Size"
+
+# DispatchFFNCombine 相关常量
+DISPATCH_FFN_COMBINE_OP_NAME = "DispatchFFNCombine"
+DEFAULT_EP_WORLD_SIZE = 16  # 默认 EP 规模，用于从 weight shape 推断 EP Size
 DURATION_US = "Duration(us)"
 AVG_DURATION_US = "Profiling Average Duration(us)"
 STD_DURATION_US = "Profiling Std Duration(us)"
@@ -259,11 +264,18 @@ def infer_fia_runtime_metadata(
 class KernelDetailsParser:
     """Parse one or more kernel_details*.csv files and export aggregated op stats by op type."""
 
-    def __init__(self, device: str, kernel_details_path: str, vllm_ascend_version: str):
+    def __init__(
+            self,
+            device: str,
+            kernel_details_path: str,
+            vllm_ascend_version: str,
+            ep_world_size: int = DEFAULT_EP_WORLD_SIZE,
+    ):
         self.device = device
         self.kernel_details_path = Path(kernel_details_path)
         self.vllm_ascend_version = normalize_vllm_ascend_version(vllm_ascend_version)
         self.device_dir = normalize_device_name(device)
+        self.ep_world_size = ep_world_size
         self.repo_root = Path(__file__).resolve().parents[2]
         self.output_dir = (
             self.repo_root
@@ -551,7 +563,7 @@ class KernelDetailsParser:
             median_duration = statistics.median(item["durations"])
             avg_extra = {
                 profiling_column_name(f"Average {col}"): (
-                    float(item["sum_extra"][col]) / count
+                        float(item["sum_extra"][col]) / count
                 )
                 for col in EXTRA_NUMERIC_COLUMNS
             }
@@ -565,6 +577,9 @@ class KernelDetailsParser:
                     OUTPUT_SHAPES: output_shapes,
                     OUTPUT_DTYPES: item["output_dtypes"],
                     OUTPUT_FORMATS: item["output_formats"],
+                    EP_SIZE_COL: get_ep_size_value(
+                        op_type, self.ep_world_size
+                    ),
                     AVG_DURATION_US: f"{avg_duration:.6f}",
                     MEDIAN_DURATION_US: f"{median_duration:.6f}",
                     STD_DURATION_US: f"{std_duration:.6f}",
@@ -619,6 +634,10 @@ class KernelDetailsParser:
         for file_index, (op_type, type_rows) in enumerate(rows_by_type.items(), start=1):
             output_path = self.output_dir / f"{self._sanitize_filename(op_type)}.csv"
             ordered_columns = list(base_ordered_columns)
+            # EP Size 列仅对 DispatchFFNCombine 有意义
+            if op_type == DISPATCH_FFN_COMBINE_OP_NAME:
+                ordered_columns.insert(8, EP_SIZE_COL)
+            # FIA 运行时列仅对 FusedInferAttentionScore 有意义
             if op_type == FIA_OP_TYPE:
                 ordered_columns.extend(FIA_RUNTIME_COLUMNS)
             normalized_rows = []
@@ -672,7 +691,33 @@ def build_argparser() -> argparse.ArgumentParser:
             "'kernel_details'."
         ),
     )
+    parser.add_argument(
+        "--ep-world-size",
+        type=int,
+        default=DEFAULT_EP_WORLD_SIZE,
+        help=(
+            f"EP (Expert Parallel) world size for inferring EP Size from weight shape. "
+            f"Only used for {DISPATCH_FFN_COMBINE_OP_NAME} operator. "
+            f"Default: {DEFAULT_EP_WORLD_SIZE}."
+        ),
+    )
     return parser
+
+
+def get_ep_size_value(op_type: str, ep_world_size: int) -> str:
+    """
+    获取 EP Size 列的值（仅对 DispatchFFNCombine 有效）。
+
+    Args:
+        op_type: 算子类型
+        ep_world_size: EP 并行规模
+
+    Returns:
+        EP Size 字符串，非 DispatchFFNCombine 返回空字符串
+    """
+    if op_type != DISPATCH_FFN_COMBINE_OP_NAME:
+        return ""
+    return str(ep_world_size)
 
 
 def main() -> None:
@@ -681,6 +726,7 @@ def main() -> None:
         device=args.device,
         kernel_details_path=args.kernel_details_path,
         vllm_ascend_version=args.vllm_ascend_version,
+        ep_world_size=args.ep_world_size,
     )
     output_files = parser.parse_and_export()
     print(
@@ -692,7 +738,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
 
 # Backward-compatible alias for external imports from older naming.
 AscendProfilerParser = KernelDetailsParser
