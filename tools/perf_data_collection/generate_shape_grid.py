@@ -610,52 +610,88 @@ def generate_dispatch_ffn_combine_shapes(
     max_value: int,
 ) -> tuple[list[tuple[int, ...]], list[tuple[int, ...]]]:
     inputs = infer_scalar_shape_count(7, template_inputs)
+
+    # 1. Determine base architectural parameters from source row templates
+    # tokens (M) from Input 0 (x). No strict alignment detected.
     tokens = random_dim(
         rng,
         min_value,
         max_value,
         template_dim=inputs[0][0] if inputs[0] else None,
     )
+
+    # hidden (K) from Input 0 or Input 1. STRICT 32-ALIGNMENT REQUIRED.
+    hidden_template = inputs[0][1] if inputs[0] and len(inputs[0]) >= 2 else (
+        inputs[1][1] if inputs[1] and len(inputs[1]) >= 2 else 5120
+    )
     hidden = random_dim(
         rng,
         min_value,
-        max_value,
-        template_dim=inputs[0][-1] if inputs[0] else None,
-        alignment=16,
+        min(max_value, 8000),
+        template_dim=min(hidden_template,4000),
+        alignment=32,
     )
+
+    # experts (E) from Input 1. Max 64 per card verified. 8-alignment for optimal perf.
+    experts_template = inputs[1][0] if inputs[1] else 64
     experts = random_dim(
         rng,
-        2,
-        min(max_value, 256),
-        template_dim=inputs[1][0] if inputs[1] else None,
+        8,  # Minimum experts for MoE
+        64, # Max verified experts per card
+        template_dim=experts_template,
         alignment=8,
     )
-    inter = random_dim(
-        rng,
-        min_value,
-        max_value,
-        template_dim=inputs[1][-1] if inputs[1] else None,
-        alignment=16,
-    )
-    routed = random_dim(
-        rng,
-        min_value,
-        max_value,
-        template_dim=inputs[2][1] if len(inputs[2]) >= 2 else None,
-        alignment=16,
-    )
-    topk = inputs[3][-1] if inputs[3] else 8
-    token_hidden = (tokens, hidden)
-    route = (tokens, topk)
-    return [
-        token_hidden,
-        (experts, hidden, inter),
-        (experts, routed, hidden),
-        route,
-        (experts * inter,),
-        (experts * hidden,),
-        route,
-    ], [token_hidden, (experts,)]
+
+    # n_dim (2 * inter). Inter requires STRICT 16-ALIGNMENT -> n_dim requires 32-alignment.
+    if len(inputs[1]) >= 3:
+        n_dim = random_dim(
+            rng,
+            min_value,
+            max_value,
+            template_dim=min(inputs[1][2],4500),
+            alignment=32, # Ensure inter = n_dim // 2 is 16-aligned
+        )
+    else:
+        # Default to 2 * hidden, but ensure 32-aligned for inter 16-align
+        n_dim_raw = max(min_value, hidden * 2)
+        n_dim = ((n_dim_raw + 31) // 32) * 32
+    inter = n_dim // 2
+
+    # topk from Input 3 (tokens, topk)
+    topk = inputs[3][1] if inputs[3] and len(inputs[3]) >= 2 else 8
+
+    # Ensure tokens * hidden * topk doesn't exceed HCCL_BUFFSIZE (default 200MB)
+    # Formula: ((m * k * topK * sizeof(int8_t)) * 3 + 3MB) <= 200MB
+    # We cap m * k * topk at 58M to stay safely within the 200MB limit with margin.
+    max_mkt = 58 * 1024 * 1024
+    if tokens * hidden * topk > max_mkt:
+        tokens = max(1, max_mkt // (hidden * topk))
+
+    # 2. Derive all 7 input shapes based on strict coupling rules from vllm-ascend
+    x_shape = (tokens, hidden)
+    w1_shape = (experts, hidden, n_dim)
+    w2_shape = (experts, inter, hidden)
+    indices_shape = (tokens, topk)
+    # Scales are flattened 1D tensors in the profiling data (experts * width)
+    scale1_shape = (experts * n_dim,) if inputs[4] else ()
+    scale2_shape = (experts * hidden,) if inputs[5] else ()
+    probs_shape = (tokens, topk)
+
+    # 3. Output shapes: [out (tokens, hidden), expert_token_nums (experts,)]
+    out_shape = (tokens, hidden)
+    expert_token_nums = (experts,)
+
+    generated_inputs = [
+        x_shape,      # input 0: x
+        w1_shape,     # input 1: weight1
+        w2_shape,     # input 2: weight2
+        indices_shape, # input 3: expert_idx
+        scale1_shape, # input 4: scale1
+        scale2_shape, # input 5: scale2
+        probs_shape   # input 6: probs
+    ]
+
+    return generated_inputs, [out_shape, expert_token_nums]
 
 
 def generate_interleave_rope_shapes(
