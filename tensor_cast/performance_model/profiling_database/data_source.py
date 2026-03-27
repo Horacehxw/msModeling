@@ -11,6 +11,7 @@ class QuerySource(Enum):
     MEASURED = auto()
     INTERPOLATED = auto()
     EXTRAPOLATED = auto()
+    PARTIAL = auto()
 
 
 @dataclass

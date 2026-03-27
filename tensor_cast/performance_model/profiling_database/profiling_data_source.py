@@ -337,6 +337,8 @@ class SubKernelSpec:
     dtype: str  # Profiling dtype string, e.g. "DT_BF16"
     query_mode: str = "compute"  # "compute" | "attention"
     attention_params: Optional[Dict[str, Any]] = field(default=None)
+    tc_input_count: Optional[int] = None
+    alternate_kernel_types: Optional[List[str]] = None
 
 
 def _is_decode_mla(args: tuple) -> bool:

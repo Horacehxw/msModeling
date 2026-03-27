@@ -16,6 +16,7 @@ from tensor_cast.performance_model.profiling_database.profiling_data_source impo
     _decompose_mlapo_quant,
     _is_decode_mla,
     ProfilingDataSource,
+    SubKernelSpec,
 )
 
 
@@ -1267,3 +1268,39 @@ class TestDecomposeMlapoQuant:
         args = _make_mlapo_args()[:15]  # truncate to < 20
         op = _make_op_info(torch.ops.tensor_cast.mlapo_quant.default, args)
         assert _decompose_mlapo_quant(op, {}) is None
+
+
+class TestSubKernelSpecExtension:
+    def test_default_tc_input_count_is_none(self):
+        spec = SubKernelSpec(
+            kernel_type="MatMulV2",
+            input_shapes=[(128, 5120)],
+            dtype="DT_BF16",
+        )
+        assert spec.tc_input_count is None
+
+    def test_tc_input_count_set(self):
+        spec = SubKernelSpec(
+            kernel_type="QuantBatchMatmulV3",
+            input_shapes=[(4099, 7168), (2112, 7168)],
+            dtype="DT_BF16",
+            tc_input_count=2,
+        )
+        assert spec.tc_input_count == 2
+
+    def test_alternate_kernel_types_default_none(self):
+        spec = SubKernelSpec(
+            kernel_type="MatMulV2",
+            input_shapes=[(128, 5120)],
+            dtype="DT_BF16",
+        )
+        assert spec.alternate_kernel_types is None
+
+    def test_alternate_kernel_types_set(self):
+        spec = SubKernelSpec(
+            kernel_type="MatMulV2",
+            input_shapes=[(128, 5120)],
+            dtype="DT_BF16",
+            alternate_kernel_types=["MatMulV3", "MatMulCommon"],
+        )
+        assert spec.alternate_kernel_types == ["MatMulV3", "MatMulCommon"]

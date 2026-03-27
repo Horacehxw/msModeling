@@ -234,7 +234,18 @@ for csv_file in ['MatMulV2.csv', 'QuantBatchMatmulV3.csv']:
 #     7. 继续下一轮
 #   用 best 结果的 metrics JSON 作为最终报告
 
-# TC 命令模板 (AI 需要根据 Step 0/0.5 结果填充 NQ/QL):
+# TC 命令模板 (使用 $NQ/$QL 变量, 由迭代优化确定):
+#
+# ⚠️ 关键规则: 迭代优化完成后, 在生成报告的 "验证命令" 章节时,
+# 必须将 $NQ/$QL 替换为最终确定的具体数值 (如 --num-queries 1 --query-length 4112)。
+# 报告中的命令必须可直接复制到终端运行, 绝不能出现 $NQ, $QL, <NQ>, <QL> 等占位符。
+# 如果复用已有 metrics JSON 跳过迭代, 从上一次成功运行的报告中获取具体 nq/ql 数值。
+#
+# 已知最优默认值 (v0.18.0 profiling M-dim 分析, 供跳过迭代时使用):
+#   Qwen3 PF: MatMulV2 dominant M=4112 → nq=1 ql=4112
+#   Qwen3 DC: MatMulV2 dominant M=16   → nq=16 ql=1
+#   DSv3  PF: QuantBatchMatmulV3 dominant M=8192 → nq=1 ql=8192
+#   DSv3  DC: QuantBatchMatmulV3 dominant M=5    → nq=5 ql=1
 
 # --- Qwen3 Prefill ---
 # --quantize-linear-action DISABLED (BF16)
@@ -409,6 +420,7 @@ for name, path in [
 如果 results/*_metrics.json 已存在且日期为当天且迭代参数未变更，可直接读取而不重新运行迭代。
 **如果数据版本变更了 (DATA_DIR 或 PROF_BASE 改变)，必须重新运行完整迭代。**
 **迭代优化的目标是 M4，但最终报告必须展示 M1-M6 全部指标 + 每个场景的迭代记录 (nq/ql/M4 per iter)。**
+**⚠️ 报告中的验证命令必须始终使用具体数值 (如 --num-queries 1 --query-length 4112), 绝不能留下 $NQ/$QL/<NQ>/<QL> 等占位符。即使复用已有 metrics JSON, 也必须填入上次运行或 Agent 4 默认值中的具体 nq/ql 数值, 确保命令可直接复制运行。**
 
 **Agent 3: 团队动态**
 ```
@@ -515,6 +527,8 @@ M3 趋势 (Qwen3 PF):  Phase1 → Phase2 → 当前
 ## 验证命令与数据源 (必须)
 {列出本次报告用到的完整 TC 命令和数据源, 便于复现}
 {必须包含迭代优化记录: 每个场景的 iter/nq/ql/M4}
+**⚠️ 所有命令必须包含具体的数值参数 (如 --num-queries 1 --query-length 4112), 绝不能使用 $NQ, $QL, <NQ>, <QL> 等占位符。**
+**命令必须可以直接复制到终端运行。如果复用已有 metrics JSON 未重新迭代, 从上一次成功运行的参数或 Agent 4 默认值中获取具体数值。**
 示例:
 ```
 DATA_DIR=tensor_cast/.../vllm0.18.0_torch2.9.0_cann8.5
@@ -623,7 +637,7 @@ feat/perf-database vs gitcode-ascend/develop:
 
 ## 二-A、验证命令与数据源 (必须)
 {列出每个场景用到的:
- 1. 完整 TC 命令 (含所有参数)
+ 1. 完整 TC 命令 (含所有参数, **必须使用具体数值, 禁止 $NQ/$QL/<NQ>/<QL> 等占位符, 确保可直接复制运行**)
  2. DATA_DIR 路径
  3. PROFILING 路径 (M6 用)
  4. TC batch tokens (nq×ql) vs profiling dominant M-dim
